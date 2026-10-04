@@ -330,6 +330,24 @@ to the categories above.
       closes; keyboard-accessible (Shift+F10 / menu key opens the editing
       menu). Builds on the menu bar item; tab, folder and reference
       entries appear as those items land.
+- [ ] Per-module attribute applicability. Requested 2026-10-04. A project
+      attribute definition can be marked as valid only for selected
+      modules (`AttributeDefinition.modules`: list of module ids; absent /
+      empty = all modules, so existing projects are unchanged). Server
+      rules in `ProjectService`: writing a value for an attribute that
+      does not apply to the requirement's module is rejected (400 /
+      -32602); `required` and defaults only apply in the listed modules;
+      CSV import treats a non-applicable column as ignored (reported in
+      `ignored_columns`) or rejects non-empty cells — decide at
+      implementation; moving or copying a requirement to another module
+      drops non-applicable values (reported); removing a module cleans it
+      from every list; link-mirror/system attributes keep their own
+      module scope. UI: module checklist in the attribute dialog; tables,
+      detail panel, add form, views and exports (CSV/XLSX/DOCX/ReqIF) show
+      only the module's applicable attributes. Templates declare
+      applicability by module key (`RBC_Template`: test fields → SysTest/
+      SwTest; SIL/Allocation/Verification Method → StRS/SyRS/SwRS).
+      Needs a project format-version bump (format-version item).
 - [ ] Multiple open modules (tabs), detachable module windows, and
       drag-and-drop linking. Requested 2026-10-04. (1) Tabs: opening a
       module adds a tab to a tab bar listing the open modules (project ·
@@ -355,10 +373,10 @@ to the categories above.
       "traceability matrix / coverage view" item). (1) Module types:
       `Module.type` ∈ `requirements` | `test_cases` | `test_execution`
       (backward-compatible default `requirements`), chosen at creation,
-      shown as an icon in the sidebar/tabs, set by templates. Attributes
-      gain an optional applicability list of module types (default: all),
-      so test fields stop appearing as columns in requirement modules and
-      vice versa. Link configurations are checked for sensible type pairs
+      shown as an icon in the sidebar/tabs, set by templates. Attribute
+      applicability (see "Per-module attribute applicability") is extended
+      so an attribute can also apply to module types, not only to listed
+      modules. Link configurations are checked for sensible type pairs
       (requirements→requirements, test_cases→requirements,
       test_execution→test_cases). (2) `RBC_Template` update: StRS/SyRS/SwRS
       = requirements, SysTest/SwTest = test_cases, new SysTestExec/SwTestExec
