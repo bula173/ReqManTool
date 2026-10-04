@@ -205,6 +205,48 @@ of a module (the classic "generate a spec document" DOORS output) ❌.
 Ordered roughly by how directly each was requested / how foundational it is
 to the categories above.
 
+- [ ] Tool version + build version in the UI footer. Requested 2026-10-04.
+      One version source (`backend/reqman/__init__.py` `__version__`,
+      later the release tag via the distribution item); build id = short
+      git commit + build date, injected into the frontend at
+      `npm run build` (Vite `define`, falls back to `dev`) and exposed by
+      the backend as `GET /version` → `{version, build}` (+ WebSocket
+      `version.get`). The app shell footer shows e.g.
+      `ReqManTool 0.1.0 · build 6efc9a7 (2026-10-04)` and flags a
+      frontend/backend version mismatch.
+- [ ] Project templates (JSON) + CENELEC/ERTMS `RBC_Template` + subproject
+      tree. Requested 2026-10-04. (1) Templates are JSON files with a
+      `format_version`: built-in ones ship in `backend/reqman/templates/`,
+      user ones live in the data directory (never listed as projects). A
+      template holds attribute definitions, modules (name, prefix), link
+      configurations between template modules, and views — no
+      requirements. `GET /templates`; creating a project accepts an
+      optional `template_id`; "Save as template" turns a project's
+      structure into a user template; WebSocket parity for all of it.
+      (2) Built-in `RBC_Template` for an ERTMS/ETCS RBC under EN 50126 /
+      EN 50128 / EN 50129: modules StRS (stakeholder requirements), SyRS
+      (system requirements), SwRS (software requirements), SysTest (system
+      test cases), SwTest (software test cases); default link
+      configurations SyRS→StRS, SwRS→SyRS, SysTest→SyRS, SwTest→SwRS;
+      CENELEC attributes (Object Type, Status, SIL, Safety Related, Hazard
+      Ref, Allocation, Verification Method, Source, Rationale, test
+      fields) and role views (Requirements, Safety, Test Cases, Review).
+      (3) Subprojects: `Project.parent_project_id` (backward-compatible,
+      `None` = top level) forms a generic→specific product-line tree per
+      EN 50129, e.g. RTE → RBC_GP (generic product) → RBC_GA_NCBIR
+      (generic application) → RBC_SA_NCBIR (specific application) →
+      RBC_NCBIR; a subproject is typically created from the same template.
+      Sidebar shows the tree; cycles and dangling parents rejected
+      server-side.
+- [ ] Cross-project traceability in a subproject tree (follows the item
+      above). A link configuration may target a module in the project's
+      parent (or any ancestor) project, e.g. RBC_SA_NCBIR SyRS → RBC_GA_NCBIR
+      SyRS. Requirement ids are only unique per project, so cross-project
+      link ends are shown project-qualified (`RBC_GP:SYRS-0001`); link
+      pairs stay in the source (child) project; removing a requirement in
+      a parent cleans up child link pairs and mirrors; navigation, tooltip
+      and exports (ReqIF/CSV/XLSX/DOCX) handle qualified ends. Requested
+      2026-10-04 (chosen over a links-free tree).
 - [ ] Distribution package + user-space install. Requested 2026-10-04.
       (1) Packaging: a `pyproject.toml` for the backend with a `reqman`
       console script; the built frontend (`npm run build` → `dist/`) is

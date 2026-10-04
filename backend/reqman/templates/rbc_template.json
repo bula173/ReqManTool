@@ -1,0 +1,204 @@
+{
+  "format_version": 1,
+  "id": "rbc_template",
+  "name": "RBC_Template",
+  "description": "ERTMS/ETCS Radio Block Centre project structured for the CENELEC railway standards EN 50126 (RAMS), EN 50128 (software) and EN 50129 (safety-related electronic systems): stakeholder, system and software requirements with system and software test specifications, traced V-model style.",
+  "attributes": [
+    {
+      "id": "object_type",
+      "name": "Object Type",
+      "type": "enum",
+      "required": false,
+      "default": null,
+      "choices": ["Heading", "Requirement", "Information", "Definition", "Assumption", "Test Case"]
+    },
+    {
+      "id": "status",
+      "name": "Status",
+      "type": "enum",
+      "required": false,
+      "default": "Draft",
+      "choices": ["Draft", "Proposed", "Reviewed", "Approved", "Rejected", "Deleted"]
+    },
+    {
+      "id": "sil",
+      "name": "SIL",
+      "type": "enum",
+      "required": false,
+      "default": null,
+      "choices": ["Basic Integrity", "SIL 1", "SIL 2", "SIL 3", "SIL 4"]
+    },
+    {
+      "id": "safety_related",
+      "name": "Safety Related",
+      "type": "boolean",
+      "required": false,
+      "default": false,
+      "choices": null
+    },
+    {
+      "id": "srac",
+      "name": "SRAC",
+      "type": "boolean",
+      "required": false,
+      "default": false,
+      "choices": null
+    },
+    {
+      "id": "hazard_ref",
+      "name": "Hazard Ref",
+      "type": "string",
+      "required": false,
+      "default": null,
+      "choices": null
+    },
+    {
+      "id": "allocation",
+      "name": "Allocation",
+      "type": "enum",
+      "required": false,
+      "default": null,
+      "choices": ["Hardware", "Software", "Hardware/Software", "Operational Procedure", "External Interface", "Not Allocated"]
+    },
+    {
+      "id": "verification_method",
+      "name": "Verification Method",
+      "type": "enum",
+      "required": false,
+      "default": null,
+      "choices": ["Test", "Analysis", "Inspection", "Review", "Demonstration"]
+    },
+    {
+      "id": "source",
+      "name": "Source",
+      "type": "string",
+      "required": false,
+      "default": null,
+      "choices": null
+    },
+    {
+      "id": "rationale",
+      "name": "Rationale",
+      "type": "text",
+      "required": false,
+      "default": null,
+      "choices": null
+    },
+    {
+      "id": "target_release",
+      "name": "Target Release",
+      "type": "string",
+      "required": false,
+      "default": null,
+      "choices": null
+    },
+    {
+      "id": "preconditions",
+      "name": "Preconditions",
+      "type": "text",
+      "required": false,
+      "default": null,
+      "choices": null
+    },
+    {
+      "id": "test_steps",
+      "name": "Test Steps",
+      "type": "text",
+      "required": false,
+      "default": null,
+      "choices": null
+    },
+    {
+      "id": "expected_result",
+      "name": "Expected Result",
+      "type": "text",
+      "required": false,
+      "default": null,
+      "choices": null
+    },
+    {
+      "id": "test_result",
+      "name": "Test Result",
+      "type": "enum",
+      "required": false,
+      "default": null,
+      "choices": ["Not Run", "Passed", "Failed", "Blocked", "Not Applicable"]
+    }
+  ],
+  "modules": [
+    {
+      "key": "strs",
+      "name": "StRS",
+      "prefix": "STRS",
+      "description": "Stakeholder Requirements Specification: customer, infrastructure-manager and operational needs for the RBC, including references to the ERTMS/ETCS UNISIG subsets in force."
+    },
+    {
+      "key": "syrs",
+      "name": "SyRS",
+      "prefix": "SYRS",
+      "description": "System Requirements Specification (EN 50126 system requirements, EN 50129 safety requirements): RBC functions, interfaces (onboard, interlocking, neighbouring RBC, operator), RAM and safety requirements with SIL allocation."
+    },
+    {
+      "key": "swrs",
+      "name": "SwRS",
+      "prefix": "SWRS",
+      "description": "Software Requirements Specification (EN 50128): software requirements allocated from the SyRS, each with SIL and verification method."
+    },
+    {
+      "key": "systest",
+      "name": "SysTest",
+      "prefix": "SYST",
+      "description": "System test specification: test cases verifying the SyRS."
+    },
+    {
+      "key": "swtest",
+      "name": "SwTest",
+      "prefix": "SWT",
+      "description": "Software test specification (EN 50128 overall software testing): test cases verifying the SwRS."
+    }
+  ],
+  "link_configurations": [
+    {
+      "key": "syrs_strs",
+      "name": "Satisfies StRS",
+      "source_module": "syrs",
+      "target_module": "strs"
+    },
+    {
+      "key": "swrs_syrs",
+      "name": "Satisfies SyRS",
+      "source_module": "swrs",
+      "target_module": "syrs"
+    },
+    {
+      "key": "systest_syrs",
+      "name": "Verifies SyRS",
+      "source_module": "systest",
+      "target_module": "syrs"
+    },
+    {
+      "key": "swtest_swrs",
+      "name": "Verifies SwRS",
+      "source_module": "swtest",
+      "target_module": "swrs"
+    }
+  ],
+  "views": [
+    {
+      "name": "Requirements",
+      "attribute_ids": ["object_text", "object_type", "status", "sil", "safety_related", "allocation", "verification_method", "source", "link:syrs_strs", "link:swrs_syrs"]
+    },
+    {
+      "name": "Safety",
+      "attribute_ids": ["object_text", "sil", "safety_related", "srac", "hazard_ref", "status", "rationale"]
+    },
+    {
+      "name": "Test Cases",
+      "attribute_ids": ["object_text", "object_type", "preconditions", "test_steps", "expected_result", "test_result", "status", "link:systest_syrs", "link:swtest_swrs"]
+    },
+    {
+      "name": "Review",
+      "attribute_ids": ["object_text", "status", "source", "rationale", "target_release"]
+    }
+  ]
+}
