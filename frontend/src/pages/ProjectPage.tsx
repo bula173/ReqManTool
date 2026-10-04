@@ -40,6 +40,7 @@ import {
   useReorderModule,
 } from '../api/queries';
 import { AddAttributeModal } from '../components/AddAttributeModal';
+import { GitStatusPanel } from '../components/GitStatusPanel';
 import { LinkConfigurationModal } from '../components/LinkConfigurationModal';
 import { NewModuleModal } from '../components/NewModuleModal';
 import { ProjectParentModal } from '../components/ProjectParentModal';
@@ -215,6 +216,8 @@ export function ProjectPage() {
           </Button>
         </Group>
       </Group>
+
+      <GitStatusPanel projectId={projectId} />
 
       <Card withBorder>
         <Group justify="space-between" mb="sm">

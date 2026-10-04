@@ -3,11 +3,13 @@ import { api } from './client';
 import type {
   AttributeDefinition,
   CsvImportResult,
+  GitStatus,
   LinkConfiguration,
   Module,
   Project,
   ProjectListEntry,
   Requirement,
+  RequirementHistory,
   TemplateSummary,
   VersionInfo,
   View,
@@ -20,6 +22,15 @@ export const queryKeys = {
   module: (projectId: string, moduleId: string) => ['projects', projectId, 'modules', moduleId] as const,
   requirements: (projectId: string, moduleId: string) =>
     ['projects', projectId, 'modules', moduleId, 'requirements'] as const,
+  /**
+   * Under the module's requirements key, so every requirement mutation (which
+   * invalidates that prefix) and live sync also refresh the history.
+   */
+  requirementHistory: (projectId: string, moduleId: string, requirementId: string) =>
+    ['projects', projectId, 'modules', moduleId, 'requirements', requirementId, 'history'] as const,
+  gitStatus: (projectId: string) => ['projects', projectId, 'git'] as const,
+  /** Mutation key of "Enable history (git)", for pending indicators (`useIsMutating`). */
+  enableHistory: (projectId: string) => ['enableHistory', projectId] as const,
   config: ['config'] as const,
   version: ['version'] as const,
   templates: ['templates'] as const,
@@ -198,6 +209,56 @@ export function useAddAttribute(projectId: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.project(projectId) });
     },
+  });
+}
+
+// --- history (git) -----------------------------------------------------------
+
+/**
+ * Invalidates every project's git status. Called after any successful
+ * mutation (see the QueryClient's MutationCache in main.tsx): each change may
+ * add or amend a commit. Other clients' changes arrive through live sync,
+ * which invalidates the whole project prefix.
+ */
+export function invalidateGitStatus(qc: QueryClient): void {
+  qc.invalidateQueries({ predicate: (query) => query.queryKey[0] === 'projects' && query.queryKey[2] === 'git' });
+}
+
+export function useGitStatus(projectId: string | undefined): UseQueryResult<GitStatus> {
+  return useQuery({
+    queryKey: queryKeys.gitStatus(projectId ?? ''),
+    queryFn: () => api.get<GitStatus>(`/projects/${projectId}/git`),
+    enabled: !!projectId,
+  });
+}
+
+/** "Enable history (git)": creates the project's repository (or branch `current`) and commits. */
+export function useEnableHistory(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: queryKeys.enableHistory(projectId),
+    mutationFn: () => api.post<GitStatus>(`/projects/${projectId}/git/enable`),
+    onSuccess: (status) => {
+      qc.setQueryData(queryKeys.gitStatus(projectId), status);
+      qc.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === 'projects' && query.queryKey[1] === projectId && query.queryKey[6] === 'history',
+      });
+    },
+  });
+}
+
+export function useRequirementHistory(
+  projectId: string | undefined,
+  moduleId: string | undefined,
+  requirementId: string | undefined,
+  enabled = true,
+): UseQueryResult<RequirementHistory> {
+  return useQuery({
+    queryKey: queryKeys.requirementHistory(projectId ?? '', moduleId ?? '', requirementId ?? ''),
+    queryFn: () =>
+      api.get<RequirementHistory>(`/projects/${projectId}/modules/${moduleId}/requirements/${requirementId}/history`),
+    enabled: enabled && !!projectId && !!moduleId && !!requirementId,
   });
 }
 

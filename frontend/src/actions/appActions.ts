@@ -4,6 +4,7 @@ import {
   IconFileImport,
   IconFolderOpen,
   IconFolderPlus,
+  IconHistory,
   IconInfoCircle,
   IconKeyboard,
   IconLayoutSidebarRight,
@@ -12,7 +13,8 @@ import {
   IconTemplate,
   IconUpload,
 } from '@tabler/icons-react';
-import { API_BASE_URL } from '../api/client';
+import { notifications } from '@mantine/notifications';
+import { API_BASE_URL, ApiError } from '../api/client';
 import type { Action, ActionContext, DynamicMenuItem, ExportFormat } from './types';
 
 /** Application-wide actions: the File, View and Help menus. */
@@ -143,6 +145,32 @@ export const appActions: Action<'app'>[] = [
     isAvailable: (ctx) => ctx.project !== null,
     run: (ctx) => {
       if (ctx.project) ctx.commands.openDialog({ kind: 'saveAsTemplate', project: ctx.project });
+    },
+  },
+  {
+    // Creates the open project's git repository (or its `current` branch);
+    // offered only while the server reports that it can (see GitStatus).
+    id: 'project.enableHistory',
+    element: 'app',
+    label: 'Enable history (git)',
+    icon: IconHistory,
+    isAvailable: (ctx) => ctx.project !== null && ctx.gitStatus?.can_enable === true,
+    run: (ctx) => {
+      ctx.commands.enableHistory().then(
+        (status) =>
+          notifications.show({
+            message:
+              status.state === 'ready'
+                ? 'History enabled: every change is now committed to the project repository'
+                : (status.message ?? 'History could not be enabled'),
+            color: status.state === 'ready' ? 'green' : 'yellow',
+          }),
+        (err) =>
+          notifications.show({
+            message: err instanceof ApiError ? err.message : 'Failed to enable history',
+            color: 'red',
+          }),
+      );
     },
   },
   {

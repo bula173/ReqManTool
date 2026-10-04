@@ -3,7 +3,6 @@ import {
   Alert,
   Badge,
   Button,
-  Card,
   Center,
   Group,
   Loader,
@@ -28,7 +27,6 @@ import {
   IconPlus,
   IconArrowsMove,
   IconTrash,
-  IconX,
 } from '@tabler/icons-react';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -48,6 +46,7 @@ import type { FindRequirementResult } from '../api/queries';
 import { EditableAttributeCell } from '../components/EditableAttributeCell';
 import { LinkModal } from '../components/LinkModal';
 import { MoveRequirementModal } from '../components/MoveRequirementModal';
+import { RequirementDetailPanel } from '../components/RequirementDetailPanel';
 import { RequirementFormModal } from '../components/RequirementFormModal';
 import type { Requirement } from '../api/types';
 
@@ -428,51 +427,16 @@ export function ModulePage() {
       </Table.ScrollContainer>
 
       {appState.detailPanelOpen && (
-      <Card withBorder w={320} style={{ flexShrink: 0 }}>
-        <Group justify="space-between" mb="sm" wrap="nowrap">
-          <Title order={5}>Requirement details</Title>
-          <Tooltip label="Hide the detail panel (View › Requirement detail panel)">
-            <ActionIcon
-              variant="subtle"
-              size="sm"
-              aria-label="Hide requirement details"
-              onClick={() => run('view.toggleDetailPanel')}
-            >
-              <IconX size={14} />
-            </ActionIcon>
-          </Tooltip>
-        </Group>
-        {!selectedRequirement && (
-          <Text c="dimmed" size="sm">
-            Select a requirement to see its full details.
-          </Text>
-        )}
-        {selectedRequirement && (
-          <Stack gap="sm">
-            <div>
-              <Text size="xs" c="dimmed">
-                Id
-              </Text>
-              <Text fw={600}>{selectedRequirement.id}</Text>
-            </div>
-            {attributes.map((attr) => (
-              <div key={attr.id}>
-                <Text size="xs" c="dimmed">
-                  {attr.name}
-                </Text>
-                <EditableAttributeCell
-                  attr={attr}
-                  value={selectedRequirement.attributes[attr.id]}
-                  onSave={(value) => handleCellSave(selectedRequirement, attr.id, value)}
-                  disabled={attr.system ? undefined : updateRequirement.isPending}
-                  projectId={projectId}
-                  onNavigateToLinked={handleNavigateToLinked}
-                />
-              </div>
-            ))}
-          </Stack>
-        )}
-      </Card>
+        <RequirementDetailPanel
+          projectId={projectId}
+          moduleId={moduleId}
+          attributes={attributes}
+          requirement={selectedRequirement}
+          onSave={handleCellSave}
+          saving={updateRequirement.isPending}
+          onNavigateToLinked={handleNavigateToLinked}
+          onClose={() => run('view.toggleDetailPanel')}
+        />
       )}
       </Group>
 

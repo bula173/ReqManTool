@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from .config import DEFAULT_DATA_DIR, check_config_writable, load_saved_data_dir, save_data_dir
 from .csv_import import MAX_CSV_IMPORT_BYTES
 from .formats import NewerFormatError
+from .git_repo import GitHistory, GitSettings
 from .service import ConflictError, ProjectService
 from .store import ProjectStore
 from .templates import MAX_TEMPLATE_IMPORT_BYTES
@@ -50,7 +51,9 @@ def _initial_data_dir() -> Path:
 
 DATA_DIR = _initial_data_dir()
 store = ProjectStore(DATA_DIR)
-service = ProjectService(store)
+# Per-project git history (REQMAN_GIT*, see git_repo.GitSettings); shared across data directory switches.
+history = GitHistory(GitSettings.from_env())
+service = ProjectService(store, history=history)
 
 logger.info("Requirements data directory: %s", DATA_DIR)
 
@@ -147,7 +150,7 @@ async def set_config(body: SetDataDirBody):
     _wrap(save_data_dir, str(new_dir))
     DATA_DIR = new_dir
     store = new_store
-    service = ProjectService(store)
+    service = ProjectService(store, history=history)
     logger.info("Requirements data directory changed to: %s", DATA_DIR)
 
     await manager.broadcast_root_changed()
@@ -358,6 +361,31 @@ def get_project(project_id: str):
     return _wrap(service.get_project, project_id).to_dict()
 
 
+# --- history (git) ----------------------------------------------------------
+
+
+@app.get("/projects/{project_id}/git")
+def get_git_status(project_id: str):
+    return _wrap(service.git_status, project_id)
+
+
+def _changed_despite_failure(exc: BaseException) -> bool:
+    """Whether a failed request still changed the project (``EnableFailed``): broadcast it anyway."""
+    return bool(getattr(exc, "project_changed", False))
+
+
+@app.post("/projects/{project_id}/git/enable")
+async def enable_git_history(project_id: str):
+    try:
+        status = _wrap(service.enable_history, project_id)
+    except HTTPException as exc:
+        if _changed_despite_failure(exc.__cause__):
+            await manager.broadcast(project_id)
+        raise
+    await manager.broadcast(project_id)
+    return status
+
+
 @app.post("/projects/{project_id}/attributes")
 async def add_attribute(project_id: str, body: AddAttributeBody):
     project = _wrap(
@@ -545,6 +573,11 @@ def get_requirement(project_id: str, module_id: str, requirement_id: str):
     return _wrap(service.get_requirement, project_id, module_id, requirement_id).to_dict()
 
 
+@app.get("/projects/{project_id}/modules/{module_id}/requirements/{requirement_id}/history")
+def get_requirement_history(project_id: str, module_id: str, requirement_id: str):
+    return _wrap(service.requirement_history, project_id, module_id, requirement_id)
+
+
 @app.put("/projects/{project_id}/modules/{module_id}/requirements/{requirement_id}")
 async def update_requirement(project_id: str, module_id: str, requirement_id: str, body: UpdateRequirementBody):
     requirement = _wrap(
@@ -625,6 +658,8 @@ RPC_METHODS = {
     "project.get": lambda p: service.get_project(p["id"]),
     "project.list": lambda p: service.list_projects(),
     "project.purge": lambda p: {"purged": service.purge_project(p["id"])},
+    "project.git_status": lambda p: service.git_status(p["id"]),
+    "project.git_enable": lambda p: service.enable_history(p["id"]),
     "attribute.add": lambda p: service.add_attribute_definition(
         p["project_id"], p["id"], p["name"], p.get("type", "string"),
         p.get("required", False), p.get("default"), p.get("choices"),
@@ -660,6 +695,7 @@ RPC_METHODS = {
     ),
     "requirement.get": lambda p: service.get_requirement(p["project_id"], p["module_id"], p["id"]),
     "requirement.list": lambda p: service.list_requirements(p["project_id"], p["module_id"]),
+    "requirement.history": lambda p: service.requirement_history(p["project_id"], p["module_id"], p["id"]),
     "requirement.remove": lambda p: (
         service.remove_requirement(p["project_id"], p["module_id"], p["id"]),
         {"id": p["id"], "removed": True},
@@ -700,7 +736,7 @@ def _error_response(request_id, code: int, message: str) -> dict:
 
 
 MUTATING_METHODS = {
-    "project.create", "project.set_parent", "project.purge", "attribute.add",
+    "project.create", "project.set_parent", "project.purge", "project.git_enable", "attribute.add",
     "module.create", "module.purge", "module.reorder",
     "link_configuration.create", "link_configuration.remove",
     "view.create", "view.remove",
@@ -741,6 +777,10 @@ async def _dispatch(request: dict, sender: WebSocket | None = None) -> dict:
     except FileNotFoundError as exc:
         return _error_response(request_id, -32001, str(exc))
     except (ValueError, KeyError) as exc:
+        if method_name in MUTATING_METHODS and _changed_despite_failure(exc):
+            project_id = _project_id_of(method_name, params, None)
+            if project_id:
+                await manager.broadcast(project_id, exclude=sender)
         return _error_response(request_id, -32602, str(exc))
     except Exception as exc:  # noqa: BLE001 - surfaced to the RPC caller
         logger.exception("Unhandled error in RPC method %s", method_name)

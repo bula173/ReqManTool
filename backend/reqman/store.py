@@ -24,6 +24,10 @@ a stub) is fully read-only.
 Every data file is read as ``utf-8-sig`` (a leading UTF-8 byte order mark,
 as some editors save files, is ignored) and written as plain UTF-8 without
 one.
+
+Inside ``recording_writes`` the store notes which projects' files were
+written or deleted, so ``ProjectService`` knows which project repositories
+to auto-commit after a mutation (see ``git_repo.py``).
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -133,6 +138,37 @@ class ProjectStore:
         self.root.mkdir(parents=True, exist_ok=True)
         # project id -> (mtime_ns, ctime_ns, size, inode) of a project.json whose version was checked
         self._format_cache: dict[str, tuple[int, int, int, int]] = {}
+        # Per thread: the ids of projects whose files were written while recording (see ``recording_writes``).
+        self._recording = threading.local()
+
+    # --- write recording -------------------------------------------------------
+
+    @contextmanager
+    def recording_writes(self) -> Iterator[set[str]]:
+        """Collect the ids of projects whose files are written or deleted inside the block.
+
+        ``ProjectService`` wraps each mutation in this, so it knows which
+        project repositories to auto-commit afterwards. Nested blocks share
+        the outer block's set. Recording is per thread.
+        """
+        current = getattr(self._recording, "touched", None)
+        if current is not None:
+            yield current
+            return
+        touched: set[str] = set()
+        self._recording.touched = touched
+        try:
+            yield touched
+        finally:
+            self._recording.touched = None
+
+    def is_recording(self) -> bool:
+        return getattr(self._recording, "touched", None) is not None
+
+    def _touch(self, project_id: str) -> None:
+        touched = getattr(self._recording, "touched", None)
+        if touched is not None:
+            touched.add(project_id)
 
     # --- format version guard ----------------------------------------------
 
@@ -174,6 +210,17 @@ class ProjectStore:
 
     def _project_dir(self, project_id: str) -> Path:
         return self.root / project_id
+
+    def project_path(self, project_id: str) -> Path:
+        """The folder of an existing project (its git work tree). ``FileNotFoundError`` otherwise."""
+        if not self.project_exists(project_id):
+            raise FileNotFoundError(f"Project '{project_id}' not found")
+        return self._project_dir(project_id)
+
+    @staticmethod
+    def requirement_relative_path(module_id: str, requirement_id: str) -> str:
+        """A requirement file's path inside its project folder, with ``/`` separators (as git names it)."""
+        return f"modules/{module_id}/requirements/{requirement_id}.json"
 
     def _project_file(self, project_id: str) -> Path:
         return self._project_dir(project_id) / "project.json"
@@ -242,6 +289,7 @@ class ProjectStore:
     def save_project(self, project: Project) -> None:
         """Write project.json at the current ``format_version`` (its first key)."""
         self._check_project_format(project.id)
+        self._touch(project.id)
         self._project_dir(project.id).mkdir(parents=True, exist_ok=True)
         _write_json(self._project_file(project.id), with_format_version(project.to_dict(), PROJECT_FORMAT))
 
@@ -392,6 +440,7 @@ class ProjectStore:
 
     def save_module(self, project_id: str, module: Module) -> None:
         self._check_project_format(project_id)
+        self._touch(project_id)
         self._requirements_dir(project_id, module.id).mkdir(parents=True, exist_ok=True)
         _write_json(self._module_file(project_id, module.id), module.to_dict())
 
@@ -418,6 +467,7 @@ class ProjectStore:
 
     def save_requirement(self, project_id: str, module_id: str, requirement: Requirement) -> None:
         self._check_project_format(project_id)
+        self._touch(project_id)
         path = self._requirement_file(project_id, module_id, requirement.id)
         _write_json(path, requirement.to_dict())
 
@@ -437,6 +487,7 @@ class ProjectStore:
             raise FileNotFoundError(
                 f"Requirement '{requirement_id}' not found in module '{module_id}'"
             )
+        self._touch(project_id)
         path.unlink()
 
     def list_requirement_ids(self, project_id: str, module_id: str) -> list[str]:
@@ -444,7 +495,8 @@ class ProjectStore:
         req_dir = self._requirements_dir(project_id, module_id)
         if not req_dir.exists():
             return []
-        return sorted(p.stem for p in req_dir.glob("*.json"))
+        # Hidden files (macOS AppleDouble ``._X.json``, ...) are no requirements.
+        return sorted(p.stem for p in req_dir.glob("*.json") if not p.name.startswith("."))
 
     def load_all_requirements(self, project_id: str, module_id: str) -> list[Requirement]:
         return [
@@ -506,6 +558,7 @@ class ProjectStore:
 
     def save_link_pairs(self, project_id: str, config_id: str, pairs: list[LinkPair]) -> None:
         self._check_project_format(project_id)
+        self._touch(project_id)
         path = self._link_pairs_file(project_id, config_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         _write_json(path, {"pairs": [p.to_dict() for p in pairs]})
@@ -514,4 +567,5 @@ class ProjectStore:
         self._check_project_format(project_id)
         path = self._link_pairs_file(project_id, config_id)
         if path.exists():
+            self._touch(project_id)
             path.unlink()

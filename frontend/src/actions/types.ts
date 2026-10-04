@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react';
-import type { Module, Project, Requirement, TemplateSummary, View } from '../api/types';
+import type { GitStatus, Module, Project, Requirement, TemplateSummary, View } from '../api/types';
 
 /**
  * The shared action registry's types.
@@ -78,6 +78,8 @@ export interface AppCommands {
   setActiveView: (viewId: string | null) => void;
   setDetailPanelOpen: (open: boolean) => void;
   setColorScheme: (scheme: 'light' | 'dark') => void;
+  /** "Enable history (git)" for the open project; resolves with its new git status. */
+  enableHistory: () => Promise<GitStatus>;
   /** Starts a file download (export endpoints answer with Content-Disposition: attachment). */
   download: (url: string) => void;
   openExternal: (url: string) => void;
@@ -102,6 +104,8 @@ export interface AppState {
   selectedRequirement: Requirement | null;
   clipboard: RequirementClipboard | null;
   views: View[];
+  /** The open project's history (git) status, once loaded. */
+  gitStatus: GitStatus | null;
   activeViewId: string | null;
   detailPanelOpen: boolean;
   colorScheme: 'light' | 'dark';

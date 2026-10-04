@@ -15,9 +15,10 @@ attributes, directional traceability links, and ReqIF/CSV export.
 Deliberate constraints that shape every design decision below:
 
 - **Local-first, file-based storage.** Every project is a folder of JSON
-  files on disk, not a database. This is a *feature*: the user manages
-  history, backup, branching, and code review of their requirements with
-  ordinary git, the same as source code. The backend never assumes a
+  files on disk, not a database. This is a *feature*: history, backup,
+  branching, and code review of requirements use ordinary git, the same as
+  source code. Each project folder is its own git repository that
+  ReqManTool commits to automatically (see "Project history (git)" below). The backend never assumes a
   network filesystem, a database server, or multiple concurrent writers.
 - **Single active user per data directory.** There is no authentication and
   no locking. Two people editing the same requirement at once is
@@ -89,7 +90,9 @@ persistence" below.
   .reqman-staging/                # transient: a project created from a
                                   #   template is assembled here, then
                                   #   renamed into place (removed afterwards)
-  <project-id>/
+  <project-id>/                   # one git repository per project (subprojects
+                                  #   are sibling folders, never nested)
+    .git/                         # created by ReqManTool (see "Project history")
     project.json                  # format_version (first key), then
                                    #   Project: id, name, description,
                                    #   parent_project_id (only if set),
@@ -423,9 +426,9 @@ before `Project.from_dict`.
 
 ### Git-friendly persistence
 
-The data directory is meant to be a git repository the user manages
-themselves (branches, history, code review of requirement changes — see
-"Local-first" above). Every JSON write
+Every project folder is meant to be a git repository (branches, history,
+code review of requirement changes — see "Local-first" above and "Project
+history (git)" below). Every JSON write
 (`ProjectStore.save_*`/`save_link_pairs`/`config.save_data_dir`) uses
 `indent=2` and a trailing newline, and dataclass field order is stable, so
 diffs are minimal and readable instead of single-line blobs or
@@ -447,6 +450,182 @@ again and the error is re-raised, so a failed operation leaves the module
 and the counters unchanged. `_allocate_requirement_id` also skips any id that
 already exists on disk, so a crash between the two steps can never cause an
 id to be reused.
+
+## Project history (git)
+
+Every project folder is its own git repository (modules are plain folders,
+never submodules), driven through the `git` command line
+(`backend/reqman/git_repo.py`, no Python dependency). Subprojects are
+sibling folders in the data directory (`parent_project_id` is only a field),
+so a project's repository never contains another project's files.
+
+- **States** (`GET /projects/{id}/git`, WS `project.git_status`): `ready`
+  (own repository on branch `current`: every change is committed), `paused`
+  (own repository on another branch, a detached HEAD, or busy — see below:
+  files are saved, no commits), `no_repo` (plain files; "Enable history (git)" creates the
+  repository), `nested`, `foreign` (see below), `git_missing` (plain files,
+  warning shown), `off` (`REQMAN_GIT=off`) and `error` (git cannot inspect
+  the folder, e.g. "dubious ownership").
+- **Paused while a merge, cherry-pick, revert or rebase is in progress, or
+  with unresolved conflicts.** If `MERGE_HEAD`, `CHERRY_PICK_HEAD`,
+  `REVERT_HEAD`, `sequencer/`, `rebase-merge/` or `rebase-apply/` exists
+  in the git dir, or `git ls-files -u` lists unmerged entries (anywhere,
+  not only data files, e.g. after a `git stash pop` conflict — a deliberate,
+  conservative choice: `commit --only` would still work outside a merge,
+  but the user is visibly mid-resolution), the project is `paused` with a
+  message naming the operation ("A merge is in progress in the project
+  repository: auto-commit is paused … Finish or abort it and resolve any
+  conflicts to resume history"). Staging would otherwise mark the user's
+  conflicts as resolved with the markers inside. The check runs again right
+  before `git add`, so an operation started meanwhile skips the commit. Files are still saved;
+  nothing is staged or committed, "Enable history" is 409, and the first
+  change after the user finished commits everything saved meanwhile. The
+  check costs a few file checks plus `git ls-files -u` twice per mutation.
+- **Nested work trees are never touched.** If the data directory lies
+  inside another repository's work tree (`git rev-parse --show-toplevel`
+  from the project folder's parent succeeds — for example a data directory
+  inside the ReqManTool checkout, or a data directory the user versions as
+  one repository), the project is `nested`: no `git init`, no commit, even
+  if the project folder has a repository of its own. The status names the
+  enclosing repository and tells the user to move the data directory.
+  Every writing git command names the project's repository explicitly
+  (`--git-dir`/`--work-tree`) and inherited `GIT_DIR`/`GIT_WORK_TREE`/...
+  variables are dropped, so git can never fall back to an outer repository.
+  Discovery crosses file systems (`GIT_DISCOVERY_ACROSS_FILESYSTEM=1`), so
+  an enclosing repository on another mount is still found.
+- **Only the folder's own `.git` directory.** The project's repository is
+  used only if `<project folder>/.git` is a real directory (not a symlink)
+  and `git rev-parse --absolute-git-dir` and `--git-common-dir` both
+  resolve to it (compared with the folder's real path plus `.git`, without
+  following a `.git` link). A `.git` *symlink* or *file* (`gitdir:
+  ../other/.git`, a separate git dir) or a linked worktree (`git worktree
+  add`) would make a commit or `git checkout -b current` change another
+  repository's HEAD, index and refs, so such a folder is `foreign`: "the
+  project folder's .git points to another repository (separate git dir or
+  linked worktree); history is not supported for it". No init, commit or
+  checkout ever; files are saved as plain files; "Enable history" is 409
+  (WS -32602). Supporting separate git dirs is a later product question.
+- **New projects** (blank, from a template, subprojects) get `git init`,
+  `HEAD` → `refs/heads/current`, `*.tmp` in `.git/info/exclude` (the
+  temporary files of atomic writes) and an initial commit "Create project
+  '<name>'". A template project is created in `.reqman-staging/` and
+  renamed in; the repository is created after the rename. Existing projects
+  get "Enable history (git)" (`POST /projects/{id}/git/enable`, WS
+  `project.git_enable`, broadcasts `changed`): a folder without a
+  repository is initialised the same way ("Enable history (git) for project
+  '<name>'"); a repository of the user's on another branch gets a new
+  `current` branch at its HEAD (`git checkout -b`, which changes no file);
+  an already enabled project only commits pending changes. A nested or
+  foreign folder, a merge/cherry-pick/revert/rebase in progress or
+  unresolved conflicts, a detached HEAD, or an existing `current` branch
+  that is not checked out is refused with 409 before anything changes (ReqManTool
+  never switches branches, since that changes files); git turned off or
+  missing is 400. A step that fails part-way (e.g. the repository was
+  created but the initial commit failed) is 400 with the error recorded as
+  `last_error`, and still broadcasts `changed` (REST and WebSocket), since
+  the status changed.
+- **Auto-commit.** Every public mutating `ProjectService` method is wrapped
+  in `_records_history`: `ProjectStore.recording_writes` notes the projects
+  whose files the operation wrote or deleted, and after the operation
+  succeeded each is committed (REST and WebSocket alike; a failed operation
+  commits nothing). Only data files are staged, committed and counted as
+  pending: `git status`, `git add -A` and `git commit --only` take the
+  pathspecs `:(literal)project.json`, `:(glob)modules/*/module.json`,
+  `:(glob)modules/*/requirements/[!.]*.json` and `:(glob)links/[!.]*.json`
+  (those that match a changed file), and the status output is filtered the
+  same way, so `.DS_Store`, macOS AppleDouble files (`._X.json`, also
+  skipped when the store lists requirements), `Thumbs.db`, editor backups (`*~`, `*.swp`), other
+  files in the folder and anything the user staged themselves are left
+  alone; deleted data files are still staged. Signing is off
+  (`commit.gpgsign=false`) and **no hook ever runs**: every git command gets
+  `-c core.hooksPath=/dev/null` (overriding the repository's
+  `.git/hooks` and any `core.hooksPath` from repository, global or system
+  config; on Windows, where git would look in a `dev\null` folder of the
+  drive root, it is an empty directory made once per server process with
+  `tempfile.mkdtemp` in the user's temp folder, made again under the same
+  name if it goes missing, and `/dev/null` for the rest of the process if
+  it cannot be made or is no real directory),
+  inherited `GIT_CONFIG_PARAMETERS`/`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_*`/
+  `GIT_CONFIG_VALUE_*` are dropped so they cannot override it, and `git
+  init` runs with `--template=` so no template hook (`init.templateDir`) is
+  copied into a new repository. `-c core.fsmonitor=false -c gc.auto=0 -c
+  maintenance.auto=false` keep a configured fsmonitor program and automatic
+  gc/maintenance from running too. `.gitattributes` filters (e.g. Git LFS)
+  are honoured on purpose: they define how the user's repository stores
+  files. An auto-commit never waits for input or a hook. Inherited `GIT_*_PATHSPECS` variables are dropped too; commands
+  given a requirement file path run with `GIT_LITERAL_PATHSPECS=1`. Data
+  files edited by hand are included in the next commit and described like
+  any other change.
+- **Messages** are generated from the changed files (`history.py`:
+  `describe_changes`, `commit_message`), e.g. "SYRS-0012: Status Draft →
+  Reviewed; SYRS-0013 added": requirement added/removed/moved/reordered and
+  per-attribute old → new values (link mirror attributes are left out; the
+  link file entry "Link A → B added (Satisfies)" covers them), modules,
+  attributes, link configurations, views and module order. Entries go into
+  the subject while it stays within 72 characters ("; +N more"), the full
+  list into the body (at most 200 lines). Auto-commits end with a
+  `ReqMan-Session: <id>` trailer.
+- **Squash.** A change amends the previous commit instead of adding one
+  when that commit has the `ReqMan-Session` trailer (so never the initial
+  commit or a user's commit), exactly one parent, the same author name and
+  email, a committer time within the squash window (default 10 minutes,
+  measured from the previous change, so a session lasts while changes keep
+  coming), and no ref other than `refs/heads/current` contains it (no tag
+  such as `baseline/<name>`, no `baseline` or other branch, no
+  remote-tracking branch, no stash). The amended message describes the
+  whole session (the session's parent → now). If a session's changes cancel
+  out, the session commit is dropped (`git reset --soft HEAD~1`).
+- **Author**: `REQMAN_GIT_AUTHOR_NAME`/`REQMAN_GIT_AUTHOR_EMAIL`, each
+  falling back to what git itself would use (`git var GIT_AUTHOR_IDENT`:
+  `GIT_AUTHOR_*`, the repository's and the user's git config), then to the
+  login name and `<login>@localhost`.
+- **Settings are environment variables** (read at start-up,
+  `GitSettings.from_env`): `REQMAN_GIT=off` turns history off,
+  `REQMAN_GIT_SQUASH_MINUTES` sets the window (`0` never squashes),
+  `REQMAN_GIT_AUTHOR_NAME`/`_EMAIL` the author, `REQMAN_GIT_EXECUTABLE`
+  the git command. They are deliberately not keys of `.reqman/config.json`:
+  a new persisted key needs a `CONFIG_FORMAT` bump, after which an older
+  ReqManTool refuses to start with that config file, which is too high a
+  price for settings that have good defaults; a settings UI (later) can
+  add them with a bump and a migration.
+- **Failures never lose data.** The files are written before git runs. A
+  git error, or any unexpected error (e.g. while describing a hand-edited
+  file; the message generator also tolerates wrong JSON types), never fails
+  the mutation or project creation: it is logged and kept in memory as `last_error` (shown in the
+  status, cleared by the next successful commit); since every commit
+  stages all changed data files, the next change retries it. The status
+  also reports `pending_changes` (data files that differ from HEAD), which
+  survives a restart.
+- **Concurrency and cost.** Writing git operations are serialized per
+  project folder by a lock. Reads (status, history) take no lock and run
+  with `GIT_OPTIONAL_LOCKS=0`. A mutation costs about 11–12 short git
+  processes (state checks, status, HEAD, squash checks, the in-progress
+  re-check, add, diff, cat-file, commit),
+  roughly 80 ms on macOS; mutations run on the server's event loop, so git
+  runs inline before the response.
+- **History** (`GET /projects/{p}/modules/{m}/requirements/{r}/history`,
+  WS `requirement.history`, read-only, no broadcast): `git log
+  --first-parent` of the requirement file (newest first, at most
+  `HISTORY_LIMIT` = 200 commits, `truncated` beyond) with each revision read
+  through one `git cat-file --batch`; the JSON is compared revision by
+  revision into `entries` (`change`: `added`/`modified`/`removed`, `diffs`
+  per attribute, parent and order). **First-parent semantics:** only the
+  commits of `current`'s first-parent chain are listed, each compared with
+  its first parent, so a merge is listed with what it brought into
+  `current` (its author and subject), the commits of a merged side branch
+  are not listed themselves, and diverged branches cause no phantom diffs.
+  No `--follow`: requirement files are never renamed (ids are never reused
+  and requirements never move between modules), and rename detection would
+  mistake a requirement removed and another added in one squashed commit
+  for a rename. As a guard, history stops at a revision whose content names
+  another requirement id; the oldest own revision is then listed as
+  `added` (not `truncated`). `blame` maps each current attribute to the
+  last listed commit that changed it. `uncommitted` is true when the file
+  differs from HEAD. A project without a readable repository (off, git
+  missing, no repository, nested, foreign) answers `available: false` with
+  the `reason`, not an error; a missing requirement is 404.
+- Not yet (later slices): baselines (`baseline` branch, `baseline/<name>`
+  tags, browse/compare), the project Git panel, remotes.
 
 ## Backend layering
 
@@ -485,6 +664,13 @@ backend/reqman/
                    built-in templates/ folder, shape checks (no domain
                    rules — ProjectService validates by building the project
                    in memory). templates/ holds the built-in JSON files.
+  git_repo.py      GitHistory: per-project git repositories through the
+                   git CLI (state detection incl. nested work trees, init,
+                   auto-commit with squash, status, requirement history).
+                   GitSettings: the REQMAN_GIT* environment settings.
+  history.py       Pure functions, duck-typed like csv_export.py: commit
+                   message entries from changed files, and a requirement's
+                   change list + attribute blame from its file revisions.
   config.py        Where the *chosen data directory itself* is persisted
                    (`.reqman/config.json` next to the repo, or
                    REQMAN_DATA_DIR/--dir override) — deliberately
@@ -519,6 +705,7 @@ resource:
 | Resource | Routes |
 |---|---|
 | Projects | `POST/GET /projects` (`GET` lists unloadable projects as `{id, name, error}` stubs; `POST` body: `name`, `description`, optional `template_id`, optional `parent_project_id`), `GET /projects/{id}`, `PUT /projects/{id}/parent` (`{"parent_project_id": id or null}`) |
+| History (git) | `GET /projects/{id}/git` (status; WS `project.git_status`), `POST /projects/{id}/git/enable` (WS `project.git_enable`, broadcasts `changed`, also after a part-way failure; 409 nested/foreign/detached/merge etc. in progress/`current` not checked out, 400 git off or missing or a failed step), `GET .../modules/{m}/requirements/{r}/history` (WS `requirement.history`) — see "Project history (git)" |
 | Templates | `GET /templates` → `[{id, source, name, description, modules: [{key, name, prefix}], error}]`, `POST /projects/{id}/save-as-template` (`{name, description}`; 409 on a name clash; broadcasts `templates_changed`), `POST /templates/import` (raw template JSON request body, `Content-Type: application/json` required (415 otherwise), UTF-8 with optional BOM, at most 1 MiB (413); invalid → 400, name clash → 409; returns the template summary; broadcasts `templates_changed`; WS: `template.import` `{text}`) |
 | Attributes | `POST /projects/{id}/attributes` |
 | Link configurations | `POST/GET /projects/{id}/link-configurations`, `DELETE .../link-configurations/{config_id}` |
@@ -599,12 +786,17 @@ frontend/src/
                     indented project options, descendant lookup)
   pages/
     HomePage.tsx     redirects to the first project, or an empty state
-    ProjectPage.tsx  project overview: parent/subprojects, attributes, link
-                     configurations, views, modules; New subproject, Change
-                     parent and Save as template actions
+    ProjectPage.tsx  project overview: parent/subprojects, history (git)
+                     status line (GitStatusPanel: state, last commit,
+                     pending changes, warnings, Enable history), attributes,
+                     link configurations, views, modules; New subproject,
+                     Change parent and Save as template actions
     ModulePage.tsx   the requirements tree/table — the largest page;
                      owns the tree-flattening logic and renders the
-                     right-click context menu from the action registry
+                     right-click context menu from the action registry;
+                     the detail panel is RequirementDetailPanel (Details
+                     tab with "last changed by/when" label tooltips from the
+                     attribute blame, History tab with per-attribute diffs)
 ```
 
 Server state (projects/modules/requirements/config/link-configurations)
@@ -700,6 +892,12 @@ project follows — read them before making a change. In short:
   against a `ProjectStore` over a `tmp_path`, no HTTP involved. This is
   where most business-rule edge cases (cycle detection, direction
   enforcement, id allocation, cleanup cascades) are covered.
+- `backend/tests/conftest.py` — runs every test with `REQMAN_GIT=off` and
+  git isolated from the user's configuration (`GIT_CONFIG_GLOBAL=/dev/null`,
+  `GIT_CONFIG_NOSYSTEM=1`, fixed author/committer). `test_git_history.py`,
+  `test_git_history_edge_cases.py`, `test_git_history_safety.py` and
+  `test_git_history_conflicts_and_isolation.py` opt in, with repositories
+  in `tmp_path` only (never in the checkout).
 - `backend/tests/test_api.py` — exercises the FastAPI app via
   `TestClient`, including WebSocket round-trips and the live-sync
   broadcast (opens two WebSocket connections, mutates via REST, asserts

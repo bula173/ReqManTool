@@ -112,3 +112,98 @@ export interface TemplateSummary {
   /** Why the template cannot be used, or null if it is valid. */
   error: string | null;
 }
+
+/**
+ * A project's history (git) state (GET /projects/{id}/git, WS `project.git_status`):
+ * - `off`: git history turned off for this server (REQMAN_GIT=off)
+ * - `git_missing`: no usable git executable; plain files
+ * - `no_repo`: no repository yet; "Enable history (git)" creates it
+ * - `nested`: the data directory is inside another repository's work tree;
+ *   ReqManTool never creates or commits there (move the data directory)
+ * - `foreign`: the project folder's `.git` points to another repository (a
+ *   separate git dir or a linked worktree); never touched, history unsupported
+ * - `ready`: own repository on branch `current`; every change is auto-committed
+ * - `paused`: own repository on another branch or a detached HEAD; no commits
+ * - `error`: git could not inspect the folder
+ */
+export type GitState =
+  | 'off'
+  | 'git_missing'
+  | 'no_repo'
+  | 'nested'
+  | 'foreign'
+  | 'ready'
+  | 'paused'
+  | 'error';
+
+export interface GitCommitInfo {
+  commit: string;
+  subject: string;
+  author_name: string;
+  author_email: string;
+  /** Committer date (ISO 8601): the time of the latest change squashed into the commit. */
+  date: string;
+}
+
+export interface GitStatus {
+  state: GitState;
+  /** Why history is not recorded (or how to resume it); null when all is well. */
+  message: string | null;
+  git_version: string | null;
+  branch: string | null;
+  head: GitCommitInfo | null;
+  /** The enclosing repository's top level, for `nested`. */
+  enclosing_repo: string | null;
+  /** Data files that differ from the last commit. */
+  pending_changes: number;
+  /** The last auto-commit failure (files are saved; retried on the next change), or null. */
+  last_error: string | null;
+  /** Whether "Enable history (git)" can be used now. */
+  can_enable: boolean;
+  squash_window_minutes: number;
+  /** The identity commits are made with. */
+  author: { name: string; email: string } | null;
+}
+
+/** One difference of a history entry: an attribute value, the parent, or the sibling order. */
+export interface HistoryDiff {
+  kind: 'attribute' | 'parent' | 'order';
+  /** Set for `attribute`. */
+  attribute_id: string | null;
+  old: unknown;
+  new: unknown;
+}
+
+export interface HistoryCommit {
+  commit: string;
+  author_name: string;
+  author_email: string;
+  authored_date: string;
+  /** Committer date (ISO 8601). */
+  date: string;
+  subject: string;
+}
+
+export interface HistoryEntry extends HistoryCommit {
+  change: 'added' | 'modified' | 'removed';
+  diffs: HistoryDiff[];
+  /** The file could not be parsed at this revision. */
+  unreadable: boolean;
+}
+
+/**
+ * GET /projects/{p}/modules/{m}/requirements/{r}/history (WS `requirement.history`).
+ * `available: false` (with `reason`) when the project has no readable repository.
+ */
+export interface RequirementHistory {
+  available: boolean;
+  reason: string | null;
+  /** Newest first. */
+  entries: HistoryEntry[];
+  /** Per attribute id: the last commit that changed it. */
+  blame: Record<string, HistoryCommit>;
+  /** Older history exists beyond the listed entries. */
+  truncated: boolean;
+  /** The requirement file has changes that are not committed yet. */
+  uncommitted: boolean;
+}

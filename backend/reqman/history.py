@@ -1,0 +1,412 @@
+"""What a git change means for requirements: commit messages and per-requirement history.
+
+Pure functions over the raw JSON bytes of a project's data files at two or
+more revisions. No git calls and no ``reqman.models``/``service`` import
+(duck-typed like ``csv_export.py``), so it is easy to test standalone;
+``git_repo.py`` fetches the file versions and ``ProjectService`` supplies the
+project (for attribute and link names).
+
+- ``describe_changes`` turns the files changed by one (possibly squashed)
+  commit into short entries such as ``"SYRS-0012: Status Draft → Reviewed"``
+  or ``"SYRS-0013 added"``; ``commit_message`` joins them into a subject,
+  an optional body and the ``ReqMan-Session`` trailer that marks a commit
+  ReqManTool may squash into.
+- ``requirement_history`` turns the versions of one requirement file (newest
+  first, as ``git log --first-parent`` lists them) into a change list with
+  per-attribute diffs, and derives the attribute blame from it: for each
+  attribute, the last commit that changed it.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from typing import Any, Iterable
+
+SESSION_TRAILER = "ReqMan-Session"
+
+# Subject line budget: entries are added while the subject stays this short.
+MAX_SUBJECT_LENGTH = 72
+# Body lines listed before "… and N more".
+MAX_BODY_ENTRIES = 200
+# Attribute values in messages are cut to this many characters.
+MAX_VALUE_LENGTH = 40
+
+_PROJECT_FILE = re.compile(r"^project\.json$")
+_MODULE_FILE = re.compile(r"^modules/([^/]+)/module\.json$")
+_REQUIREMENT_FILE = re.compile(r"^modules/([^/]+)/requirements/([^/]+)\.json$")
+_LINK_FILE = re.compile(r"^links/([^/]+)\.json$")
+
+_UNREADABLE = object()
+
+
+@dataclass
+class FileChange:
+    """One data file changed by a commit: its path and contents before/after (``None`` = absent)."""
+
+    path: str
+    old: bytes | None
+    new: bytes | None
+
+
+@dataclass
+class Revision:
+    """One version of a requirement file, from ``git log`` (``content`` ``None`` = deleted)."""
+
+    commit: str
+    author_name: str
+    author_email: str
+    authored_date: str
+    date: str
+    subject: str
+    content: bytes | None
+
+
+def _parse(data: bytes | None) -> Any:
+    """The JSON value of ``data``; ``None`` if absent, ``_UNREADABLE`` if it cannot be parsed."""
+    if data is None:
+        return None
+    try:
+        return json.loads(data.decode("utf-8-sig"))
+    except (ValueError, RecursionError):
+        return _UNREADABLE
+
+
+def format_value(value: Any) -> str:
+    """A short, single-line rendering of an attribute value for a commit message."""
+    if value is None or value == "":
+        return "(empty)"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    text = " ".join(text.split())
+    if len(text) > MAX_VALUE_LENGTH:
+        text = text[: MAX_VALUE_LENGTH - 1].rstrip() + "…"
+    return text
+
+
+# --- naming -----------------------------------------------------------------
+
+
+@dataclass
+class _Naming:
+    attribute_names: dict[str, str]
+    attribute_order: list[str]
+    system_attribute_ids: set[str]
+    link_names: dict[str, str]
+    module_names: dict[str, str]
+
+
+def _list(value: Any) -> list:
+    """``value`` if it is a list, else ``[]`` (a hand-edited file can hold anything)."""
+    return value if isinstance(value, list) else []
+
+
+def _naming(projects: Iterable[Any]) -> _Naming:
+    """Attribute/link names from project.json objects; later ones win (pass old, then new)."""
+    naming = _Naming({}, [], set(), {}, {})
+    for project in projects:
+        if not isinstance(project, dict):
+            continue
+        for attr in _list(project.get("attributes")):
+            if isinstance(attr, dict) and isinstance(attr.get("id"), str):
+                attr_id = attr["id"]
+                if attr_id not in naming.attribute_names:
+                    naming.attribute_order.append(attr_id)
+                naming.attribute_names[attr_id] = str(attr.get("name") or attr_id)
+                if attr.get("system"):
+                    naming.system_attribute_ids.add(attr_id)
+        for config in _list(project.get("link_configurations")):
+            if isinstance(config, dict) and isinstance(config.get("id"), str):
+                naming.link_names[config["id"]] = str(config.get("name") or config["id"])
+                naming.system_attribute_ids.add(config["id"])
+    return naming
+
+
+def _by_id(items: Any) -> dict[str, dict]:
+    if not isinstance(items, list):
+        return {}
+    return {i["id"]: i for i in items if isinstance(i, dict) and isinstance(i.get("id"), str)}
+
+
+# --- commit messages -----------------------------------------------------------
+
+
+def _describe_project(old: Any, new: Any) -> list[str]:
+    if new is None or new is _UNREADABLE:
+        return ["Project file removed" if new is None else "Project file changed"]
+    name = new.get("name", "") if isinstance(new, dict) else ""
+    if old is None:
+        return [f"Project '{name}' created"]
+    if old is _UNREADABLE or not isinstance(old, dict) or not isinstance(new, dict):
+        return ["Project settings changed"]
+    entries: list[str] = []
+    if old.get("name") != new.get("name"):
+        entries.append(f"Project renamed '{old.get('name')}' → '{new.get('name')}'")
+    if old.get("description") != new.get("description"):
+        entries.append("Project description changed")
+    if old.get("parent_project_id") != new.get("parent_project_id"):
+        entries.append(
+            f"Parent project {format_value(old.get('parent_project_id'))} → "
+            f"{format_value(new.get('parent_project_id'))}"
+        )
+    for key, label, skip_system in (
+        ("attributes", "Attribute", True),
+        ("link_configurations", "Link configuration", False),
+        ("views", "View", False),
+    ):
+        before, after = _by_id(old.get(key)), _by_id(new.get(key))
+        for item_id, item in after.items():
+            if skip_system and item.get("system"):
+                continue  # link mirrors: the link configuration entry describes them
+            if item_id not in before:
+                entries.append(f"{label} '{item.get('name', item_id)}' added")
+            elif before[item_id] != item:
+                entries.append(f"{label} '{item.get('name', item_id)}' changed")
+        for item_id, item in before.items():
+            if item_id not in after and not (skip_system and item.get("system")):
+                entries.append(f"{label} '{item.get('name', item_id)}' removed")
+    old_order, new_order = _list(old.get("module_order")), _list(new.get("module_order"))
+    if old_order != new_order and sorted(map(str, old_order)) == sorted(map(str, new_order)):
+        entries.append("Module order changed")
+    if not entries:
+        ignored = {"format_version", "id_counters", "module_order"}
+        if {k: v for k, v in old.items() if k not in ignored} != {
+            k: v for k, v in new.items() if k not in ignored
+        }:
+            entries.append("Project settings changed")
+    return entries
+
+
+def _describe_module(module_id: str, old: Any, new: Any) -> list[str]:
+    current = new if isinstance(new, dict) else old if isinstance(old, dict) else {}
+    name = current.get("name", module_id)
+    if old is None:
+        return [f"Module '{name}' added"]
+    if new is None:
+        return [f"Module '{name}' removed"]
+    if isinstance(old, dict) and isinstance(new, dict) and old.get("name") != new.get("name"):
+        return [f"Module '{old.get('name')}' renamed to '{new.get('name')}'"]
+    return [f"Module '{name}' changed"]
+
+
+def _requirement_parts(old: dict, new: dict, naming: _Naming) -> list[str]:
+    parts: list[str] = []
+    old_attrs = old.get("attributes") if isinstance(old.get("attributes"), dict) else {}
+    new_attrs = new.get("attributes") if isinstance(new.get("attributes"), dict) else {}
+    keys = [k for k in naming.attribute_order if k in old_attrs or k in new_attrs]
+    keys += sorted(k for k in set(old_attrs) | set(new_attrs) if k not in naming.attribute_names)
+    for key in keys:
+        if key in naming.system_attribute_ids:
+            continue  # link mirrors: the link file entry describes the link itself
+        before, after = old_attrs.get(key), new_attrs.get(key)
+        if before != after:
+            label = naming.attribute_names.get(key, key)
+            parts.append(f"{label} {format_value(before)} → {format_value(after)}")
+    if old.get("parent_id") != new.get("parent_id"):
+        parent = new.get("parent_id")
+        parts.append(f"moved under {parent}" if parent else "moved to top level")
+    elif old.get("order") != new.get("order"):
+        parts.append("reordered")
+    return parts
+
+
+def _describe_requirement(requirement_id: str, old: Any, new: Any, naming: _Naming) -> list[str]:
+    if old is None and new is None:
+        return []
+    if old is None:
+        return [f"{requirement_id} added"]
+    if new is None:
+        return [f"{requirement_id} removed"]
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return [f"{requirement_id} changed"]
+    parts = _requirement_parts(old, new, naming)
+    return [f"{requirement_id}: {', '.join(parts)}"] if parts else []
+
+
+def _pairs(data: Any) -> set[tuple[str, str]]:
+    if not isinstance(data, dict) or not isinstance(data.get("pairs"), list):
+        return set()
+    return {
+        (str(p.get("source_id")), str(p.get("target_id")))
+        for p in data["pairs"]
+        if isinstance(p, dict)
+    }
+
+
+def _describe_links(config_id: str, old: Any, new: Any, naming: _Naming) -> list[str]:
+    if new is None:
+        return []  # the link configuration was removed: the project entry says so
+    name = naming.link_names.get(config_id, config_id)
+    before, after = _pairs(old), _pairs(new)
+    entries = [f"Link {s} → {t} added ({name})" for s, t in sorted(after - before)]
+    entries += [f"Link {s} → {t} removed ({name})" for s, t in sorted(before - after)]
+    return entries
+
+
+def describe_changes(changes: list[FileChange], project: Any = None) -> list[str]:
+    """Short entries describing ``changes``, project first, then modules, requirements and links.
+
+    ``project`` is the current project.json object (for attribute and link
+    names); the old and new project.json contents in ``changes`` are used
+    too, so a removed attribute is still named. Changes to link-mirror
+    (system) attributes and id counters are left out: the link and the new
+    requirement entries already describe them.
+    """
+    parsed = [(c.path, _parse(c.old), _parse(c.new)) for c in changes]
+    project_versions: list[Any] = []
+    for path, old, new in parsed:
+        if _PROJECT_FILE.match(path):
+            project_versions = [old, new]
+    naming = _naming([*project_versions[:1], project, *project_versions[1:]])
+
+    groups: dict[int, list[tuple[str, list[str]]]] = {0: [], 1: [], 2: [], 3: [], 4: []}
+    for path, old, new in parsed:
+        if _PROJECT_FILE.match(path):
+            groups[0].append((path, _describe_project(old, new)))
+        elif match := _MODULE_FILE.match(path):
+            groups[1].append((path, _describe_module(match.group(1), old, new)))
+        elif match := _REQUIREMENT_FILE.match(path):
+            requirement_id = match.group(2)
+            if old is _UNREADABLE or new is _UNREADABLE:
+                groups[2].append((requirement_id, [f"{requirement_id} changed"]))
+            else:
+                groups[2].append((requirement_id, _describe_requirement(requirement_id, old, new, naming)))
+        elif match := _LINK_FILE.match(path):
+            groups[3].append((path, _describe_links(match.group(1), old, new, naming)))
+        else:
+            what = "added" if old is None else "removed" if new is None else "changed"
+            groups[4].append((path, [f"{path} {what}"]))
+    entries: list[str] = []
+    for key in sorted(groups):
+        for _sort_key, items in sorted(groups[key], key=lambda item: item[0]):
+            entries.extend(items)
+    return entries
+
+
+def commit_message(entries: list[str], session_id: str | None = None) -> str:
+    """A commit message: entries joined into the subject while it stays short, the rest in the body.
+
+    With ``session_id``, a ``ReqMan-Session: <id>`` trailer marks the commit
+    as an auto-commit that a later change of the same editing session may
+    amend (squash).
+    """
+    entries = [e for e in entries if e] or ["Update project data"]
+    subject = entries[0]
+    used = 1
+    while used < len(entries) and len(subject) + 2 + len(entries[used]) <= MAX_SUBJECT_LENGTH:
+        subject += "; " + entries[used]
+        used += 1
+    remaining = len(entries) - used
+    parts = [subject + (f"; +{remaining} more" if remaining else "")]
+    if remaining:
+        listed = entries[:MAX_BODY_ENTRIES]
+        body = "\n".join(listed)
+        if len(entries) > len(listed):
+            body += f"\n… and {len(entries) - len(listed)} more"
+        parts.append(body)
+    if session_id:
+        parts.append(f"{SESSION_TRAILER}: {session_id}")
+    return "\n\n".join(parts) + "\n"
+
+
+def session_of(message: str) -> str | None:
+    """The ``ReqMan-Session`` trailer value of a commit message, or ``None``."""
+    paragraphs = [p for p in message.strip().split("\n\n") if p.strip()]
+    if not paragraphs:
+        return None
+    for line in paragraphs[-1].splitlines():
+        key, sep, value = line.partition(":")
+        if sep and key.strip() == SESSION_TRAILER and value.strip():
+            return value.strip()
+    return None
+
+
+# --- requirement history ----------------------------------------------------------
+
+
+def _attribute_diffs(old: dict | None, new: dict | None) -> list[dict[str, Any]]:
+    """Per-attribute, parent and order differences between two requirement objects."""
+    old = old or {}
+    new = new or {}
+    old_attrs = old.get("attributes") if isinstance(old.get("attributes"), dict) else {}
+    new_attrs = new.get("attributes") if isinstance(new.get("attributes"), dict) else {}
+    diffs: list[dict[str, Any]] = []
+    keys = list(new_attrs) + [k for k in old_attrs if k not in new_attrs]
+    for key in keys:
+        before, after = old_attrs.get(key), new_attrs.get(key)
+        if before != after:
+            diffs.append({"kind": "attribute", "attribute_id": key, "old": before, "new": after})
+    if old.get("parent_id") != new.get("parent_id") and (old or new.get("parent_id") is not None):
+        diffs.append({"kind": "parent", "attribute_id": None, "old": old.get("parent_id"), "new": new.get("parent_id")})
+    if old.get("order") != new.get("order") and old:
+        diffs.append({"kind": "order", "attribute_id": None, "old": old.get("order"), "new": new.get("order")})
+    return diffs
+
+
+def requirement_history(
+    requirement_id: str, revisions: list[Revision], truncated: bool = False
+) -> dict[str, Any]:
+    """The change list (newest first) and attribute blame of one requirement.
+
+    ``revisions`` are the versions of its file, newest first, as ``git log
+    --first-parent`` lists them (each compared with the previous one, which
+    is its first parent's version). If ``truncated``, the oldest revision is
+    only the baseline the next one is compared with and is not listed
+    itself. History stops at a revision whose content names another
+    requirement id: the older revisions are not this requirement's, so the
+    history is complete and its oldest own revision is listed (``added``).
+
+    ``blame`` maps each attribute the requirement has now to the last listed
+    commit that changed it (including setting it at creation).
+    """
+    usable: list[tuple[Revision, Any]] = []
+    for revision in revisions:
+        content = _parse(revision.content)
+        if isinstance(content, dict) and content.get("id") not in (None, requirement_id):
+            # Older revisions are another requirement's (e.g. a file edited by hand):
+            # this requirement's history starts after them, complete, with its creation.
+            truncated = False
+            break
+        usable.append((revision, content))
+    chronological = list(reversed(usable))
+    baseline: Any = None
+    if truncated and chronological:
+        baseline = chronological[0][1]
+        chronological = chronological[1:]
+
+    entries: list[dict[str, Any]] = []
+    blame: dict[str, dict[str, Any]] = {}
+    previous = baseline if isinstance(baseline, dict) else None
+    previous_present = baseline is not None
+    for revision, content in chronological:
+        current = content if isinstance(content, dict) else None
+        if content is None:
+            change = "removed" if previous_present else None
+        elif not previous_present:
+            change = "added"
+        else:
+            change = "modified"
+        diffs = _attribute_diffs(previous, current) if content is not _UNREADABLE else []
+        if change is not None and (change != "modified" or diffs or content is _UNREADABLE):
+            info = {
+                "commit": revision.commit,
+                "author_name": revision.author_name,
+                "author_email": revision.author_email,
+                "authored_date": revision.authored_date,
+                "date": revision.date,
+                "subject": revision.subject,
+            }
+            entries.append({**info, "change": change, "diffs": diffs, "unreadable": content is _UNREADABLE})
+            for diff in diffs:
+                if diff["kind"] == "attribute":
+                    blame[diff["attribute_id"]] = info
+        if content is not _UNREADABLE:
+            previous = current
+            previous_present = content is not None
+    latest = previous if isinstance(previous, dict) else {}
+    latest_attrs = latest.get("attributes") if isinstance(latest.get("attributes"), dict) else {}
+    blame = {key: value for key, value in blame.items() if key in latest_attrs}
+    entries.reverse()
+    return {"entries": entries, "blame": blame, "truncated": truncated}

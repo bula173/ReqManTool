@@ -333,6 +333,70 @@
       check; sidebar entries for normal projects and modules are `<a>`
       without href, so they cannot be reached with Tab (pre-existing); no
       frontend unit tests (no test runner in the repo).
+- [x] Git integration, slice 2a: per-project repos, auto-commit and
+      per-requirement history (baselines and the project Git panel are
+      slice 2b, see backlog). New `backend/reqman/git_repo.py` (git CLI
+      via subprocess, no new dependency) and `backend/reqman/history.py`
+      (pure message, diff and blame functions). (1) State: `GET
+      /projects/{id}/git` and WebSocket `project.git_status` (read-only)
+      report `off` | `git_missing` | `no_repo` | `nested` | `foreign` |
+      `ready` | `paused` | `error`, plus message, branch, head,
+      enclosing_repo, pending_changes, last_error, can_enable,
+      squash_window_minutes and author. `nested`: the project folder's
+      parent is inside any git work tree (e.g. a data dir inside the
+      ReqManTool checkout); never init, never commit, the user is told to
+      move the data dir. `foreign`: `.git` is a gitfile, a symlink or a
+      linked worktree. `paused`: another branch, a detached HEAD, a
+      merge/cherry-pick/revert/rebase/sequencer in progress or unmerged
+      entries; the in-progress check is re-run just before staging.
+      (2) Repos: new projects (blank, template after the staging rename,
+      subprojects — sibling folders, so no overlap) get `git init` on
+      `current` plus an initial commit. Existing projects: "Enable history
+      (git)" via `POST /projects/{id}/git/enable` and WebSocket
+      `project.git_enable` (broadcasts `changed`, also after a partial
+      failure) and the File menu action `project.enableHistory`; 409 /
+      -32602 when nested, foreign, detached, `current` exists but is not
+      checked out, or an operation is in progress; 400 when git is off or
+      missing; on another branch it creates `current` at HEAD.
+      (3) Auto-commit: a `_records_history` decorator on every mutating
+      `ProjectService` method commits only data files on `current`
+      (`project.json`, `modules/*/module.json`,
+      `modules/*/requirements/[!.]*.json`, `links/[!.]*.json`); junk
+      (`.DS_Store`, `*~`, AppleDouble `._*`) is never committed and the
+      store skips dot-files; hand-edited data files are swept into the
+      next commit. Generated messages ("SYRS-0012: Status Draft →
+      Reviewed; SYRS-0013 added"). Session squash amends HEAD only if it
+      has the `ReqMan-Session` trailer, one parent, the same author, is
+      within the window and no ref other than `refs/heads/current`
+      contains it; a session that cancels out is dropped. Hooks never run
+      (`core.hooksPath=/dev/null` on POSIX, a private empty dir on
+      Windows); fsmonitor, gc.auto and maintenance off; inherited
+      GIT_DIR / GIT_CONFIG_* / pathspec env vars dropped; messages via
+      stdin. Files are always saved first; a git failure is shown as
+      `last_error` and retried on the next write. (4) Settings are env
+      vars, not config keys (no CONFIG_FORMAT bump): `REQMAN_GIT=off`,
+      `REQMAN_GIT_SQUASH_MINUTES` (default 10, 0 = never),
+      `REQMAN_GIT_AUTHOR_NAME`/`REQMAN_GIT_AUTHOR_EMAIL`,
+      `REQMAN_GIT_EXECUTABLE`; the author falls back to the git identity,
+      then `<login>@localhost`. (5) History: `GET
+      /projects/{p}/modules/{m}/requirements/{r}/history` and WebSocket
+      `requirement.history` (read-only): `git log --first-parent` (no
+      `--follow`; ids are never reused), per-attribute diffs from parsing
+      the JSON at each revision, per-attribute blame; limit 200,
+      `truncated` and `uncommitted` flags; `available: false` with a
+      reason when there is no repo. Frontend: `RequirementDetailPanel.tsx`
+      (Details tab with "last changed by/when" tooltips from the blame,
+      History tab with the timeline and diffs), `GitStatusPanel.tsx` on
+      the project page (state, warnings, Enable button), API types and
+      queries; git status is invalidated after every mutation, history
+      refreshed via live sync. `docs/ARCHITECTURE.md` "Project history
+      (git)" section. Backend tests 756 → 913 (`test_git_history.py`,
+      `test_git_history_edge_cases.py`, `test_git_history_safety.py`,
+      `test_git_history_conflicts_and_isolation.py`,
+      `test_history_messages.py`, `conftest.py` with git off by default
+      and an isolated git config); suite runtime about 27 s → 90 s. Not
+      covered (see backlog): baselines, the full project Git panel and
+      the 2a follow-ups; the UI was not tried in a browser.
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -365,8 +429,8 @@ UNISIG subsets) ❌, safety registers — hazard log with closure status, SRAC
 register propagated down the project tree ❌.
 
 **History & baselines** — per-object change history (who/when/what changed)
-❌ — deliberately left to the user's own git history per their explicit
-choice (files are diff-friendly by design, see Notes), **baselines**
+✅ via per-project git repos (auto-commit, per-requirement History tab and
+per-attribute blame in the detail panel), **baselines**
 (named, immutable snapshots of a module at a point in time, comparable to
 each other with a diff view) — this is DOORS' formal equivalent of "tag a
 commit," genuinely useful even with git underneath since it's project-data-
@@ -411,46 +475,41 @@ custom report templates ❌.
 Ordered roughly by how directly each was requested / how foundational it is
 to the categories above.
 
-- [ ] Git integration: one git repo per project, auto-commit, baselines,
-      per-requirement history. Requested 2026-10-04 (replaces the
-      2026-09-16 "git integration" placeholder). Decisions: one repo per
-      project with modules as plain folders (no submodules); auto-commit
-      every change, squashed per editing session; baselines = merge + tag.
-      (1) Repos: each project folder is its own git repo (git CLI via
-      subprocess, no new Python dependency; the feature degrades to plain
-      files with a visible warning if `git` is missing). New projects run
-      `git init` with branch `current` and an initial commit; existing
-      projects get an explicit "Enable history (git)" action; a project
-      inside another repo's work tree (e.g. the data directory placed in
-      the ReqManTool checkout, as today with `rbc/`) is detected and the
-      user is told to move the data directory first. (2) Commits: after
-      every successful mutation the written files are staged and
-      committed on `current`; consecutive changes by the same author
-      within a configurable window (default 10 min) amend the previous
-      ReqManTool commit instead of adding one — never amending a commit
-      that is reachable from `baseline` or tagged; messages are generated
-      ("SYRS-0012: Status Draft → Reviewed; SYRS-0013 added"); author =
-      configured user name/email (git config fallback, Cloudflare Access
-      identity once user handling exists). A git failure never loses the
-      saved files: it is reported and retried on the next write.
-      (3) Branches: `current` is the working branch and always checked
-      out; `baseline` only ever holds baselined states. "Create baseline"
-      closes the squash window, fast-forwards `baseline` to `current`, and
-      creates an annotated tag `baseline/<name>` (name, description,
-      date, tool + format version). Baselines are listed from the tags;
-      a baseline is browsed read-only by reading the project at its tag
-      (`git show`/archive into a temporary read-only store); two baselines
-      (or baseline ↔ current) are compared with requirement-level
-      semantics (added / removed / modified per attribute and link).
-      (4) History: per requirement, `git log --follow` of its file gives
-      the change list (author, date, message) with per-attribute diffs
-      computed by parsing the JSON at each revision; a blame view shows,
-      per attribute, who changed it last and when (derived from the log,
-      with raw `git blame` on the JSON as a fallback). UI: History tab in
-      the detail panel, "last changed by/when" tooltips, a project Git
-      panel (branch, recent commits, pending squash, baselines with
-      create/browse/compare). No remotes/push in-app — the user pushes.
-      REST + WebSocket parity; history/baseline reads are read-only.
+- [ ] Git integration, slice 2b: baselines + project Git panel (slice 2a
+      — per-project repos, auto-commit, per-requirement history — is done,
+      see Done). Requested 2026-10-04 (replaces the 2026-09-16 "git
+      integration" placeholder). Decisions (final, 2026-10-04): one repo
+      per project with modules as plain folders (no submodules);
+      auto-commit every change, squashed per editing session (10-minute
+      window, configurable; never amend a commit reachable from
+      `baseline` or tagged); `current` is the working branch; baselines
+      fast-forward a `baseline` branch (not merge) and add an annotated
+      `baseline/<name>` tag; per-requirement history and attribute blame.
+      (1) Baselines: "Create baseline" closes the squash window,
+      fast-forwards `baseline` to `current`, and creates an annotated tag
+      `baseline/<name>` (name, description, date, tool + format version).
+      Baselines are listed from the tags; a baseline is browsed read-only
+      at its tag; two baselines (or baseline ↔ current) are compared with
+      requirement-level semantics (added / removed / modified per
+      attribute and link). (2) UI: a project Git panel (branch, recent
+      commits, pending squash, baselines with create/browse/compare);
+      today `GitStatusPanel.tsx` shows only the state, warnings and the
+      Enable button. REST + WebSocket parity; reads are read-only.
+      (3) Follow-ups from 2a: git runs synchronously on the event loop
+      (about 11–12 git processes, ~80–200 ms per mutation; CSV import of
+      3000 requirements 17 s → 20 s) and sessions have no maximum length
+      — decide on a session cap and/or moving git work off the event
+      loop; `git merge --squash` (SQUASH_MSG) does not pause history;
+      separate git dirs and linked worktrees are refused (`foreign`),
+      supporting them is open; Windows: with no private hooks dir it
+      falls back to `/dev/null`, which resolves under the drive root
+      (report an error instead?), and `os.path.isjunction` needs Python
+      3.12+ (no `requires-python` pin); a settings UI and config keys for
+      the git settings (needs a CONFIG_FORMAT bump with migration); raw
+      `git blame` fallback; author from Cloudflare Access once user
+      handling exists; no remotes/push in-app (the user pushes). The
+      user's current data dir inside the ReqManTool checkout shows
+      `nested`, so it gets no history until moved.
 - [ ] Left-click and right-click menus everywhere. Requested 2026-10-04.
       Two distinct menus, adapted to what was clicked: **left click** opens
       a navigation/view menu (open, open in new tab, detach, show links,

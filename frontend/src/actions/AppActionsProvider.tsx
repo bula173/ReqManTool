@@ -6,6 +6,8 @@ import {
   subscribeDatasetCleared,
   useConfig,
   useCopyRequirement,
+  useEnableHistory,
+  useGitStatus,
   useModule,
   useMoveRequirement,
   useProject,
@@ -43,6 +45,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const requirementsQuery = useRequirements(projectId ?? undefined, moduleId ?? undefined);
   const viewsQuery = useViews(projectId ?? undefined);
   const templatesQuery = useTemplates();
+  const gitStatusQuery = useGitStatus(projectId ?? undefined);
+  const enableHistory = useEnableHistory(projectId ?? '');
   // The data folder the clipboard and selection belong to (null until known).
   const dataDir = useConfig().data?.data_dir ?? null;
 
@@ -103,6 +107,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       setActiveView: (viewId) => setActiveViewState({ projectId, viewId }),
       setDetailPanelOpen,
       setColorScheme,
+      enableHistory: () => enableHistory.mutateAsync(),
       download: (url) => {
         const link = document.createElement('a');
         link.href = url;
@@ -135,6 +140,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       moveRequirement.mutateAsync,
       reorderRequirement.mutateAsync,
       removeRequirement.mutateAsync,
+      enableHistory.mutateAsync,
     ],
   );
 
@@ -147,6 +153,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     selectedRequirement,
     clipboard,
     views,
+    gitStatus: projectId ? (gitStatusQuery.data ?? null) : null,
     activeViewId,
     detailPanelOpen,
     colorScheme,

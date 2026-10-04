@@ -10,10 +10,18 @@ and mirrored attributes consistent when a requirement is removed, moved,
 or purged. It also owns project templates (create a project from one, save
 a project as one) and the subproject tree (``parent_project_id``). See
 docs/ARCHITECTURE.md for the reasoning behind each of these.
+
+It also decides when project history is recorded (``git_repo.py``): every
+public mutating method is wrapped in ``_records_history``, which notes the
+projects whose files the operation wrote (``ProjectStore.recording_writes``)
+and, after the operation succeeded, auto-commits them with a message
+generated from the changed files (``history.describe_changes``). A new
+project gets its repository right after it is created.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import re
@@ -23,6 +31,8 @@ from typing import Any, Callable
 
 from .csv_import import RESERVED_COLUMNS
 from .formats import NewerFormatError
+from .git_repo import GitHistory, RepoConflict
+from .history import FileChange, describe_changes
 from .models import AttributeDefinition, LinkConfiguration, LinkPair, Module, Project, Requirement, View
 from .store import ProjectStore, validate_prefix
 from .templates import (
@@ -63,6 +73,27 @@ _TEMPLATE_CHECK_PROJECT_ID = "template-check"
 
 class ConflictError(ValueError):
     """The request clashes with existing data (REST 409; WebSocket treats it like any ValueError)."""
+
+
+def _records_history(method: Callable) -> Callable:
+    """Auto-commit the projects a successful mutation wrote (see ``ProjectService._auto_commit``).
+
+    Applied to every public method that writes project files. Nested calls
+    commit once, after the outermost one. A failed operation commits
+    nothing; whatever it already wrote is included in the next commit.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self: "ProjectService", *args: Any, **kwargs: Any) -> Any:
+        if self.store.is_recording():
+            return method(self, *args, **kwargs)
+        with self.store.recording_writes() as touched:
+            result = method(self, *args, **kwargs)
+        for project_id in sorted(touched):
+            self._auto_commit(project_id)
+        return result
+
+    return wrapper
 
 
 @dataclass
@@ -134,10 +165,85 @@ def _unique_slug(
 class ProjectService:
     """Business logic shared by the REST API and the WebSocket RPC endpoint."""
 
-    def __init__(self, store: ProjectStore, builtin_templates_dir: Path | None = None):
+    def __init__(
+        self,
+        store: ProjectStore,
+        builtin_templates_dir: Path | None = None,
+        history: GitHistory | None = None,
+    ):
         self.store = store
         self.builtin_templates_dir = (
             builtin_templates_dir if builtin_templates_dir is not None else BUILTIN_TEMPLATES_DIR
+        )
+        # Without one, git history is off (plain files): the default for direct use and tests.
+        self.history = history if history is not None else GitHistory()
+
+    # --- history (git) -----------------------------------------------------------
+
+    def _describer(self, project_id: str) -> Callable[[list[FileChange]], list[str]]:
+        """Commit message entries for a project's changed files, named after its current attributes."""
+
+        def describe(changes: list[FileChange]) -> list[str]:
+            try:
+                project: Any = self.store.load_project(project_id).to_dict()
+            except (OSError, ValueError):
+                project = None
+            return describe_changes(changes, project)
+
+        return describe
+
+    def _auto_commit(self, project_id: str) -> None:
+        """Commit a project's changed data files; a git problem is recorded, never raised."""
+        if not self.history.enabled:
+            return
+        try:
+            project_dir = self.store.project_path(project_id)
+        except FileNotFoundError:
+            return
+        self.history.auto_commit(project_dir, self._describer(project_id))
+
+    def git_status(self, project_id: str) -> dict[str, Any]:
+        """The project's history (git) status: state, explanation, branch, HEAD, pending changes.
+
+        Read-only. A missing project is 404 and a stub (unloadable project)
+        fails with its load error, like every other project operation.
+        """
+        self.store.load_project(project_id)
+        return self.history.status(self.store.project_path(project_id))
+
+    def enable_history(self, project_id: str) -> dict[str, Any]:
+        """Start recording git history for an existing project; returns the new status.
+
+        See ``GitHistory.enable``. A project inside another repository's work
+        tree, whose ``.git`` points to another repository (``foreign``), with
+        a merge/cherry-pick/revert/rebase in progress or unresolved
+        conflicts, a detached HEAD, or on another branch while a ``current`` branch
+        exists is refused with ``ConflictError`` (409); git turned off or
+        missing is a ``ValueError`` (400), and so is a failed step
+        (``EnableFailed``, whose ``project_changed`` tells the API to
+        broadcast anyway). Enabling an already enabled project only commits
+        pending changes.
+        """
+        project = self.store.load_project(project_id)
+        project_dir = self.store.project_path(project_id)
+        try:
+            self.history.enable(project_dir, project.name, self._describer(project_id))
+        except RepoConflict as exc:
+            raise ConflictError(str(exc)) from exc
+        return self.history.status(project_dir)
+
+    def requirement_history(self, project_id: str, module_id: str, requirement_id: str) -> dict[str, Any]:
+        """A requirement's change list with per-attribute diffs, and the attribute blame.
+
+        Read-only. The requirement must exist (404 otherwise). A project
+        without a readable repository answers ``available: false`` with the
+        reason instead of failing.
+        """
+        self.store.load_requirement(project_id, module_id, requirement_id)
+        return self.history.requirement_history(
+            self.store.project_path(project_id),
+            self.store.requirement_relative_path(module_id, requirement_id),
+            requirement_id,
         )
 
     # --- projects ----------------------------------------------------------
@@ -170,6 +276,7 @@ class ProjectService:
                 attributes=list(BUILTIN_ATTRIBUTES),
             )
             self.store.save_project(project)
+            self._start_history(project)
             return project
 
         template = self._load_template(template_id)
@@ -196,7 +303,14 @@ class ProjectService:
                 self.store.publish_staged_project(staging, project.id)
             except FileExistsError as exc:
                 raise ValueError(f"{exc}; try again") from exc
+        # The repository is created in the final folder, after the rename.
+        self._start_history(project)
         return project
+
+    def _start_history(self, project: Project) -> None:
+        """Give a new project its git repository and initial commit (skipped when not possible)."""
+        if self.history.enabled:
+            self.history.init_new_project(self.store.project_path(project.id), project.name)
 
     def get_project(self, project_id: str) -> Project:
         return self.store.load_project(project_id)
@@ -308,6 +422,7 @@ class ProjectService:
             if project_id is None:
                 break  # a new project has no subprojects: only its parent's format matters
 
+    @_records_history
     def set_project_parent(self, project_id: str, parent_project_id: str | None) -> Project:
         """Move a project in the subproject tree; ``None`` makes it top level."""
         project = self.store.load_project(project_id)
@@ -317,6 +432,7 @@ class ProjectService:
             self.store.save_project(project)
         return project
 
+    @_records_history
     def add_attribute_definition(
         self,
         project_id: str,
@@ -414,6 +530,7 @@ class ProjectService:
 
     # --- modules ----------------------------------------------------------------
 
+    @_records_history
     def create_module(self, project_id: str, name: str, prefix: str, description: str = "") -> Module:
         """Create a module, appended at the end of the project's module order.
 
@@ -466,6 +583,7 @@ class ProjectService:
         project = self.store.load_project(project_id)
         return [self.store.load_module(project_id, mid) for mid in self._module_order(project)]
 
+    @_records_history
     def reorder_module(self, project_id: str, module_id: str, direction: str) -> Module:
         """Move a module one place up or down in the project's module order.
 
@@ -616,6 +734,7 @@ class ProjectService:
                 project.id_counters[module.prefix] = counter
                 return candidate
 
+    @_records_history
     def add_requirement(
         self,
         project_id: str,
@@ -654,6 +773,7 @@ class ProjectService:
             stack.extend(children_of.get(child_id, []))
         return descendants
 
+    @_records_history
     def move_requirement(
         self, project_id: str, module_id: str, requirement_id: str, parent_id: str | None
     ) -> Requirement:
@@ -677,6 +797,7 @@ class ProjectService:
         self.store.save_requirement(project_id, module_id, requirement)
         return requirement
 
+    @_records_history
     def reorder_requirement(
         self, project_id: str, module_id: str, requirement_id: str, direction: str
     ) -> Requirement:
@@ -702,6 +823,7 @@ class ProjectService:
 
         return self.store.load_requirement(project_id, module_id, requirement_id)
 
+    @_records_history
     def copy_requirement(
         self, project_id: str, module_id: str, requirement_id: str, target_parent_id: str | None
     ) -> Requirement:
@@ -743,6 +865,7 @@ class ProjectService:
 
         return self.store.load_requirement(project_id, module_id, new_root.id)
 
+    @_records_history
     def update_requirement(
         self, project_id: str, module_id: str, requirement_id: str, attributes: dict[str, Any]
     ) -> Requirement:
@@ -785,6 +908,7 @@ class ProjectService:
                     if other_module is not None:
                         self._refresh_link_attribute(project_id, config.id, other_module, other_id)
 
+    @_records_history
     def remove_requirement(self, project_id: str, module_id: str, requirement_id: str) -> None:
         removed = self.store.load_requirement(project_id, module_id, requirement_id)
         for other in self.store.load_all_requirements(project_id, module_id):
@@ -795,6 +919,7 @@ class ProjectService:
         self._cleanup_links_for_requirement(project_id, requirement_id)
         self.store.delete_requirement(project_id, module_id, requirement_id)
 
+    @_records_history
     def purge_module(self, project_id: str, module_id: str) -> int:
         """Delete every requirement of a module (and its links); the number deleted.
 
@@ -812,6 +937,7 @@ class ProjectService:
             self.store.delete_requirement(project_id, module_id, requirement_id)
         return len(ids)
 
+    @_records_history
     def purge_project(self, project_id: str) -> int:
         # A missing project is not found and a stub (unloadable project) is
         # refused, even when there is nothing to delete.
@@ -823,6 +949,7 @@ class ProjectService:
 
     # --- link configurations ("link modules") ----------------------------------
 
+    @_records_history
     def create_link_configuration(
         self, project_id: str, name: str, source_module_id: str, target_module_id: str
     ) -> LinkConfiguration:
@@ -865,6 +992,7 @@ class ProjectService:
     def list_link_configurations(self, project_id: str) -> list[LinkConfiguration]:
         return self.store.load_project(project_id).link_configurations
 
+    @_records_history
     def remove_link_configuration(self, project_id: str, config_id: str) -> None:
         project = self.store.load_project(project_id)
         if not any(c.id == config_id for c in project.link_configurations):
@@ -882,6 +1010,7 @@ class ProjectService:
 
     # --- views ----------------------------------------------------------------
 
+    @_records_history
     def create_view(self, project_id: str, name: str, attribute_ids: list[str]) -> View:
         project = self.store.load_project(project_id)
         view = self._add_view(project, name, attribute_ids)
@@ -926,6 +1055,7 @@ class ProjectService:
     def list_views(self, project_id: str) -> list[View]:
         return self.store.load_project(project_id).views
 
+    @_records_history
     def remove_view(self, project_id: str, view_id: str) -> None:
         project = self.store.load_project(project_id)
         if not any(v.id == view_id for v in project.views):
@@ -956,6 +1086,7 @@ class ProjectService:
             requirement.attributes.pop(config_id, None)
         self.store.save_requirement(project_id, module_id, requirement)
 
+    @_records_history
     def link_requirements(
         self, project_id: str, config_id: str, source_id: str, target_id: str
     ) -> dict[str, Requirement]:
@@ -989,6 +1120,7 @@ class ProjectService:
             "target": self.store.load_requirement(project_id, target_module, target_id),
         }
 
+    @_records_history
     def unlink_requirements(
         self, project_id: str, config_id: str, source_id: str, target_id: str
     ) -> dict[str, Requirement]:
@@ -1362,6 +1494,7 @@ class ProjectService:
 
     # --- import ----------------------------------------------------------------
 
+    @_records_history
     def import_csv(self, project_id: str, module_id: str, csv_text: str) -> dict[str, Any]:
         """Create requirements in one module from CSV text (see ``csv_import.py``).
 

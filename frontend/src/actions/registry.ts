@@ -108,6 +108,7 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
         entries: [action('file.newProjectFromTemplate'), action('file.importTemplate')],
       },
       action('file.saveAsTemplate'),
+      action('project.enableHistory'),
       divider,
       action('file.importCsv'),
       {
