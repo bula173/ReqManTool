@@ -14,11 +14,11 @@ Read these from the caller's request, and use the defaults when they are not giv
 |---|---|---|
 | `items` | `1` | How many backlog items to deliver in this run. |
 | `item` | next in-scope item | A specific backlog item to deliver first. |
-| `commit` | `false` | Commit each delivered item. Only true if the caller explicitly asks for commits. |
+| `commit` | `true` | Commit each delivered item locally (project rule). False only if the caller asks for no commits. |
 | `scout` | `when-empty` | `when-empty`: scout only when no in-scope backlog item is left. `always`: scout once at the end of the run. `never`. |
 | `max_fix_rounds` | `3` | Fix → test → review rounds per item before giving up. |
 
-Without `commit`, deliver at most one item per run. Uncommitted changes from several items would mix in one diff and make review unreliable. Raise this limit only if the caller asks for it explicitly.
+With `commit` false, deliver at most one item per run. Uncommitted changes from several items would mix in one diff and make review unreliable. Raise this limit only if the caller asks for it explicitly.
 
 ## Preflight
 
@@ -42,7 +42,7 @@ For each item, up to `items`:
 
    If the item is still failing or unapproved after the last round, stop the whole run. Report the remaining findings, and do not close the item.
 6. **Close**: call `reqman-backlog-closer` with the item, a summary of what was delivered (from the implementer and fixer reports), any partial-slice leftovers, and the follow-ups that belong on the remaining item.
-7. **Commit**: only if `commit` is true. Stage the item's files explicitly by path, never with `git add -A`. Leave out `CLAUDE.original.md` and data directories. Commit with a normal descriptive message that ends with the attribution line given in the session. Do not push unless the caller asked for it.
+7. **Commit**: only if `commit` is true. Stage the item's files explicitly by path, never with `git add -A`. Leave out `CLAUDE.original.md` and data directories. Commit with a normal descriptive message that ends with the attribution line given in the session. Never push: the user decides when to push.
 8. Re-read `docs/BACKLOG.md` and pick the next in-scope item.
 
 ## Scouting

@@ -26,7 +26,7 @@ ReqManTool is a local requirements-management application with a Python/FastAPI 
 7. Do not add authentication, multi-user permissions, or a database unless the user explicitly changes the project scope.
 8. Prefer small, focused changes. Do not rewrite unrelated code or erase existing user changes.
 9. Add or update focused tests for changed behavior before broad refactoring.
-10. Do not commit or create branches unless explicitly requested.
+10. Commit each completed backlog item locally as its own commit (stage paths explicitly; never `rbc/`-style user data or `CLAUDE.original.md`). Never push, and do not create branches, unless the user explicitly asks.
 
 ## Validation commands
 
