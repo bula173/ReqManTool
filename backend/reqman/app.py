@@ -1,0 +1,627 @@
+"""The FastAPI application: REST routes, the ``/ws`` WebSocket JSON-RPC
+endpoint, and the live-sync broadcast connection manager.
+
+Route handlers are intentionally thin — parse the request, call a
+``ProjectService`` method via ``_wrap`` (which maps ``FileNotFoundError``
+to 404 and ``ValueError`` to 400), broadcast on success. All real business
+logic lives in ``service.py``; see its module docstring and
+docs/ARCHITECTURE.md for why. ``RPC_METHODS`` mirrors the REST surface
+one-to-one so a WebSocket client (used for live requirement editing by the
+frontend) and a REST client see identical behavior.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Any, Literal
+
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse, Response
+from pydantic import BaseModel
+
+from .config import DEFAULT_DATA_DIR, load_saved_data_dir, save_data_dir
+from .service import ProjectService
+from .store import ProjectStore
+
+logger = logging.getLogger("reqman.app")
+
+CORS_ORIGINS = os.environ.get("REQMAN_CORS_ORIGINS", "http://localhost:5173").split(",")
+
+
+def _initial_data_dir() -> Path:
+    env_value = os.environ.get("REQMAN_DATA_DIR")
+    if env_value:
+        return Path(env_value).resolve()
+    saved = load_saved_data_dir()
+    if saved:
+        return Path(saved).resolve()
+    return DEFAULT_DATA_DIR.resolve()
+
+
+DATA_DIR = _initial_data_dir()
+store = ProjectStore(DATA_DIR)
+service = ProjectService(store)
+
+logger.info("Requirements data directory: %s", DATA_DIR)
+
+app = FastAPI(title="ReqManTool")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class ConnectionManager:
+    def __init__(self) -> None:
+        self.connections: set[WebSocket] = set()
+
+    def add(self, websocket: WebSocket) -> None:
+        self.connections.add(websocket)
+
+    def discard(self, websocket: WebSocket) -> None:
+        self.connections.discard(websocket)
+
+    async def broadcast(self, project_id: str, exclude: WebSocket | None = None) -> None:
+        await self._send_all({"event": "changed", "project_id": project_id}, exclude)
+
+    async def broadcast_root_changed(self) -> None:
+        await self._send_all({"event": "root_changed"})
+
+    async def _send_all(self, message: dict, exclude: WebSocket | None = None) -> None:
+        for connection in list(self.connections):
+            if connection is exclude:
+                continue
+            try:
+                await connection.send_json(message)
+            except Exception:  # noqa: BLE001 - a dead connection shouldn't break the broadcast
+                self.connections.discard(connection)
+
+
+manager = ConnectionManager()
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    return RedirectResponse(url="/docs")
+
+
+# --- config ----------------------------------------------------------
+
+
+class SetDataDirBody(BaseModel):
+    data_dir: str
+
+
+@app.get("/config")
+def get_config():
+    return {"data_dir": str(DATA_DIR)}
+
+
+@app.post("/config")
+async def set_config(body: SetDataDirBody):
+    global DATA_DIR, store, service
+
+    new_dir = Path(body.data_dir).expanduser().resolve()
+    try:
+        new_store = ProjectStore(new_dir)
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"Cannot use '{new_dir}': {exc}") from exc
+
+    DATA_DIR = new_dir
+    store = new_store
+    service = ProjectService(store)
+    save_data_dir(str(DATA_DIR))
+    logger.info("Requirements data directory changed to: %s", DATA_DIR)
+
+    await manager.broadcast_root_changed()
+    return {"data_dir": str(DATA_DIR)}
+
+
+@app.get("/fs/browse")
+def browse_folders(path: str | None = None):
+    target = Path(path).expanduser().resolve() if path else DATA_DIR.parent
+
+    if not target.exists() or not target.is_dir():
+        raise HTTPException(status_code=404, detail=f"Directory not found: '{target}'")
+
+    directories = []
+    try:
+        entries = list(os.scandir(target))
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"Cannot list '{target}': {exc}") from exc
+
+    for entry in entries:
+        try:
+            if entry.is_dir():
+                directories.append(entry.name)
+        except OSError:
+            continue
+    directories.sort(key=str.lower)
+
+    return {
+        "path": str(target),
+        "parent": str(target.parent) if target.parent != target else None,
+        "directories": [{"name": name, "path": str(target / name)} for name in directories],
+    }
+
+
+# --- request bodies -----------------------------------------------------------
+
+
+class CreateProjectBody(BaseModel):
+    name: str
+    description: str = ""
+
+
+class AddAttributeBody(BaseModel):
+    id: str
+    name: str
+    type: str = "string"
+    required: bool = False
+    default: Any = None
+    choices: list[str] | None = None
+
+
+class CreateModuleBody(BaseModel):
+    name: str
+    prefix: str
+    description: str = ""
+
+
+class AddRequirementBody(BaseModel):
+    attributes: dict[str, Any] = {}
+    parent_id: str | None = None
+
+
+class UpdateRequirementBody(BaseModel):
+    attributes: dict[str, Any] = {}
+
+
+class MoveRequirementBody(BaseModel):
+    parent_id: str | None = None
+
+
+class ReorderRequirementBody(BaseModel):
+    direction: Literal["up", "down"]
+
+
+class CopyRequirementBody(BaseModel):
+    target_parent_id: str | None = None
+
+
+class LinkBody(BaseModel):
+    config_id: str
+    source_id: str
+    target_id: str
+
+
+class CreateLinkConfigurationBody(BaseModel):
+    name: str
+    source_module_id: str
+    target_module_id: str
+
+
+class CreateViewBody(BaseModel):
+    name: str
+    attribute_ids: list[str] = []
+
+
+# --- error handling -----------------------------------------------------------
+
+
+def _wrap(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# --- projects ----------------------------------------------------------
+
+
+@app.post("/projects")
+async def create_project(body: CreateProjectBody):
+    project = _wrap(service.create_project, body.name, body.description)
+    await manager.broadcast(project.id)
+    return project.to_dict()
+
+
+@app.get("/projects")
+def list_projects():
+    return [p.to_dict() for p in service.list_projects()]
+
+
+@app.get("/projects/{project_id}")
+def get_project(project_id: str):
+    return _wrap(service.get_project, project_id).to_dict()
+
+
+@app.post("/projects/{project_id}/attributes")
+async def add_attribute(project_id: str, body: AddAttributeBody):
+    project = _wrap(
+        service.add_attribute_definition,
+        project_id,
+        body.id,
+        body.name,
+        body.type,
+        body.required,
+        body.default,
+        body.choices,
+    )
+    await manager.broadcast(project_id)
+    return project.to_dict()
+
+
+@app.post("/projects/{project_id}/link-configurations")
+async def create_link_configuration(project_id: str, body: CreateLinkConfigurationBody):
+    config = _wrap(
+        service.create_link_configuration,
+        project_id,
+        body.name,
+        body.source_module_id,
+        body.target_module_id,
+    )
+    await manager.broadcast(project_id)
+    return config.to_dict()
+
+
+@app.get("/projects/{project_id}/link-configurations")
+def list_link_configurations(project_id: str):
+    return [c.to_dict() for c in _wrap(service.list_link_configurations, project_id)]
+
+
+@app.delete("/projects/{project_id}/link-configurations/{config_id}")
+async def remove_link_configuration(project_id: str, config_id: str):
+    _wrap(service.remove_link_configuration, project_id, config_id)
+    await manager.broadcast(project_id)
+    return {"id": config_id, "removed": True}
+
+
+@app.post("/projects/{project_id}/views")
+async def create_view(project_id: str, body: CreateViewBody):
+    view = _wrap(service.create_view, project_id, body.name, body.attribute_ids)
+    await manager.broadcast(project_id)
+    return view.to_dict()
+
+
+@app.get("/projects/{project_id}/views")
+def list_views(project_id: str):
+    return [v.to_dict() for v in _wrap(service.list_views, project_id)]
+
+
+@app.delete("/projects/{project_id}/views/{view_id}")
+async def remove_view(project_id: str, view_id: str):
+    _wrap(service.remove_view, project_id, view_id)
+    await manager.broadcast(project_id)
+    return {"id": view_id, "removed": True}
+
+
+@app.get("/projects/{project_id}/requirements/{requirement_id}")
+def find_requirement(project_id: str, requirement_id: str):
+    module_id, requirement = _wrap(service.find_requirement, project_id, requirement_id)
+    return {"module_id": module_id, "requirement": requirement.to_dict()}
+
+
+@app.post("/projects/{project_id}/purge")
+async def purge_project(project_id: str):
+    purged = _wrap(service.purge_project, project_id)
+    await manager.broadcast(project_id)
+    return {"purged": purged}
+
+
+@app.get("/projects/{project_id}/export/reqif")
+def export_reqif(project_id: str):
+    xml = _wrap(service.export_reqif, project_id)
+    return Response(
+        content=xml,
+        media_type="application/xml",
+        headers={"Content-Disposition": f'attachment; filename="{project_id}.reqif"'},
+    )
+
+
+@app.get("/projects/{project_id}/export/csv")
+def export_csv(project_id: str):
+    csv_text = _wrap(service.export_csv, project_id)
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{project_id}.csv"'},
+    )
+
+
+@app.get("/projects/{project_id}/export/xlsx")
+def export_xlsx(project_id: str):
+    xlsx_bytes = _wrap(service.export_xlsx, project_id)
+    return Response(
+        content=xlsx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{project_id}.xlsx"'},
+    )
+
+
+@app.get("/projects/{project_id}/export/docx")
+def export_docx(project_id: str):
+    docx_bytes = _wrap(service.export_docx, project_id)
+    return Response(
+        content=docx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{project_id}.docx"'},
+    )
+
+
+# --- modules ----------------------------------------------------------
+
+
+@app.post("/projects/{project_id}/modules")
+async def create_module(project_id: str, body: CreateModuleBody):
+    module = _wrap(service.create_module, project_id, body.name, body.prefix, body.description)
+    await manager.broadcast(project_id)
+    return module.to_dict()
+
+
+@app.get("/projects/{project_id}/modules")
+def list_modules(project_id: str):
+    return [m.to_dict() for m in _wrap(service.list_modules, project_id)]
+
+
+@app.get("/projects/{project_id}/modules/{module_id}")
+def get_module(project_id: str, module_id: str):
+    return _wrap(service.get_module, project_id, module_id).to_dict()
+
+
+@app.post("/projects/{project_id}/modules/{module_id}/purge")
+async def purge_module(project_id: str, module_id: str):
+    purged = _wrap(service.purge_module, project_id, module_id)
+    await manager.broadcast(project_id)
+    return {"purged": purged}
+
+
+# --- requirements ----------------------------------------------------------
+
+
+@app.post("/projects/{project_id}/modules/{module_id}/requirements")
+async def add_requirement(project_id: str, module_id: str, body: AddRequirementBody):
+    requirement = _wrap(
+        service.add_requirement, project_id, module_id, body.attributes, body.parent_id
+    )
+    await manager.broadcast(project_id)
+    return requirement.to_dict()
+
+
+@app.get("/projects/{project_id}/modules/{module_id}/requirements")
+def list_requirements(project_id: str, module_id: str):
+    return [r.to_dict() for r in _wrap(service.list_requirements, project_id, module_id)]
+
+
+@app.get("/projects/{project_id}/modules/{module_id}/requirements/{requirement_id}")
+def get_requirement(project_id: str, module_id: str, requirement_id: str):
+    return _wrap(service.get_requirement, project_id, module_id, requirement_id).to_dict()
+
+
+@app.put("/projects/{project_id}/modules/{module_id}/requirements/{requirement_id}")
+async def update_requirement(project_id: str, module_id: str, requirement_id: str, body: UpdateRequirementBody):
+    requirement = _wrap(
+        service.update_requirement, project_id, module_id, requirement_id, body.attributes
+    )
+    await manager.broadcast(project_id)
+    return requirement.to_dict()
+
+
+@app.delete("/projects/{project_id}/modules/{module_id}/requirements/{requirement_id}")
+async def remove_requirement(project_id: str, module_id: str, requirement_id: str):
+    _wrap(service.remove_requirement, project_id, module_id, requirement_id)
+    await manager.broadcast(project_id)
+    return {"id": requirement_id, "removed": True}
+
+
+@app.put("/projects/{project_id}/modules/{module_id}/requirements/{requirement_id}/parent")
+async def move_requirement(project_id: str, module_id: str, requirement_id: str, body: MoveRequirementBody):
+    requirement = _wrap(
+        service.move_requirement, project_id, module_id, requirement_id, body.parent_id
+    )
+    await manager.broadcast(project_id)
+    return requirement.to_dict()
+
+
+@app.post("/projects/{project_id}/modules/{module_id}/requirements/{requirement_id}/reorder")
+async def reorder_requirement(project_id: str, module_id: str, requirement_id: str, body: ReorderRequirementBody):
+    requirement = _wrap(
+        service.reorder_requirement, project_id, module_id, requirement_id, body.direction
+    )
+    await manager.broadcast(project_id)
+    return requirement.to_dict()
+
+
+@app.post("/projects/{project_id}/modules/{module_id}/requirements/{requirement_id}/copy")
+async def copy_requirement(project_id: str, module_id: str, requirement_id: str, body: CopyRequirementBody):
+    requirement = _wrap(
+        service.copy_requirement, project_id, module_id, requirement_id, body.target_parent_id
+    )
+    await manager.broadcast(project_id)
+    return requirement.to_dict()
+
+
+# --- links ----------------------------------------------------------
+
+
+@app.post("/projects/{project_id}/links")
+async def link_requirements(project_id: str, body: LinkBody):
+    result = _wrap(
+        service.link_requirements, project_id, body.config_id, body.source_id, body.target_id
+    )
+    await manager.broadcast(project_id)
+    return {"source": result["source"].to_dict(), "target": result["target"].to_dict()}
+
+
+@app.delete("/projects/{project_id}/links")
+async def unlink_requirements(project_id: str, body: LinkBody):
+    result = _wrap(
+        service.unlink_requirements, project_id, body.config_id, body.source_id, body.target_id
+    )
+    await manager.broadcast(project_id)
+    return {"source": result["source"].to_dict(), "target": result["target"].to_dict()}
+
+
+# --- WebSocket JSON-RPC -----------------------------------------------------
+
+RPC_METHODS = {
+    "project.create": lambda p: service.create_project(p["name"], p.get("description", "")),
+    "project.get": lambda p: service.get_project(p["id"]),
+    "project.list": lambda p: service.list_projects(),
+    "project.purge": lambda p: {"purged": service.purge_project(p["id"])},
+    "attribute.add": lambda p: service.add_attribute_definition(
+        p["project_id"], p["id"], p["name"], p.get("type", "string"),
+        p.get("required", False), p.get("default"), p.get("choices"),
+    ),
+    "module.create": lambda p: service.create_module(
+        p["project_id"], p["name"], p["prefix"], p.get("description", "")
+    ),
+    "module.get": lambda p: service.get_module(p["project_id"], p["id"]),
+    "module.list": lambda p: service.list_modules(p["project_id"]),
+    "module.purge": lambda p: {"purged": service.purge_module(p["project_id"], p["id"])},
+    "link_configuration.create": lambda p: service.create_link_configuration(
+        p["project_id"], p["name"], p["source_module_id"], p["target_module_id"]
+    ),
+    "link_configuration.list": lambda p: service.list_link_configurations(p["project_id"]),
+    "link_configuration.remove": lambda p: (
+        service.remove_link_configuration(p["project_id"], p["id"]),
+        {"id": p["id"], "removed": True},
+    )[1],
+    "view.create": lambda p: service.create_view(
+        p["project_id"], p["name"], p.get("attribute_ids", [])
+    ),
+    "view.list": lambda p: service.list_views(p["project_id"]),
+    "view.remove": lambda p: (
+        service.remove_view(p["project_id"], p["id"]),
+        {"id": p["id"], "removed": True},
+    )[1],
+    "requirement.add": lambda p: service.add_requirement(
+        p["project_id"], p["module_id"], p.get("attributes", {}), p.get("parent_id")
+    ),
+    "requirement.update": lambda p: service.update_requirement(
+        p["project_id"], p["module_id"], p["id"], p.get("attributes", {})
+    ),
+    "requirement.get": lambda p: service.get_requirement(p["project_id"], p["module_id"], p["id"]),
+    "requirement.list": lambda p: service.list_requirements(p["project_id"], p["module_id"]),
+    "requirement.remove": lambda p: (
+        service.remove_requirement(p["project_id"], p["module_id"], p["id"]),
+        {"id": p["id"], "removed": True},
+    )[1],
+    "requirement.move": lambda p: service.move_requirement(
+        p["project_id"], p["module_id"], p["id"], p.get("parent_id")
+    ),
+    "requirement.reorder": lambda p: service.reorder_requirement(
+        p["project_id"], p["module_id"], p["id"], p["direction"]
+    ),
+    "requirement.copy": lambda p: service.copy_requirement(
+        p["project_id"], p["module_id"], p["id"], p.get("target_parent_id")
+    ),
+    "requirement.link": lambda p: service.link_requirements(
+        p["project_id"], p["config_id"], p["source_id"], p["target_id"]
+    ),
+    "requirement.unlink": lambda p: service.unlink_requirements(
+        p["project_id"], p["config_id"], p["source_id"], p["target_id"]
+    ),
+}
+
+
+def _serialize(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_serialize(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _serialize(v) for k, v in value.items()}
+    if hasattr(value, "to_dict"):
+        return value.to_dict()
+    return value
+
+
+def _error_response(request_id, code: int, message: str) -> dict:
+    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+
+
+MUTATING_METHODS = {
+    "project.create", "project.purge", "attribute.add", "module.create", "module.purge",
+    "link_configuration.create", "link_configuration.remove",
+    "view.create", "view.remove",
+    "requirement.add", "requirement.update", "requirement.remove", "requirement.move",
+    "requirement.reorder", "requirement.copy",
+    "requirement.link", "requirement.unlink",
+}
+
+
+def _project_id_of(method_name: str, params: dict, result: Any) -> str | None:
+    if method_name == "project.create":
+        return result.id
+    return params.get("project_id") if "project_id" in params else params.get("id")
+
+
+async def _dispatch(request: dict, sender: WebSocket | None = None) -> dict:
+    request_id = request.get("id")
+    method_name = request.get("method")
+    params = request.get("params") or {}
+
+    method = RPC_METHODS.get(method_name)
+    if method is None:
+        return _error_response(request_id, -32601, f"Method not found: {method_name}")
+
+    try:
+        result = method(params)
+        if method_name in MUTATING_METHODS:
+            project_id = _project_id_of(method_name, params, result)
+            if project_id:
+                await manager.broadcast(project_id, exclude=sender)
+        return {"jsonrpc": "2.0", "id": request_id, "result": _serialize(result)}
+    except FileNotFoundError as exc:
+        return _error_response(request_id, -32001, str(exc))
+    except (ValueError, KeyError) as exc:
+        return _error_response(request_id, -32602, str(exc))
+    except Exception as exc:  # noqa: BLE001 - surfaced to the RPC caller
+        logger.exception("Unhandled error in RPC method %s", method_name)
+        return _error_response(request_id, -32000, str(exc))
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    manager.add(websocket)
+    try:
+        while True:
+            raw_message = await websocket.receive_text()
+            try:
+                request = json.loads(raw_message)
+            except json.JSONDecodeError:
+                await websocket.send_json(_error_response(None, -32700, "Parse error"))
+                continue
+            await websocket.send_json(await _dispatch(request, sender=websocket))
+    except WebSocketDisconnect:
+        pass
+    finally:
+        manager.discard(websocket)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="ReqManTool server")
+    parser.add_argument(
+        "--dir", default=None, help="Requirements storage directory (overrides any saved setting)"
+    )
+    parser.add_argument("--host", default="localhost")
+    parser.add_argument("--port", type=int, default=8899)
+    args = parser.parse_args()
+
+    if args.dir:
+        os.environ["REQMAN_DATA_DIR"] = args.dir
+    logging.basicConfig(level=logging.INFO)
+    uvicorn.run("reqman.app:app", host=args.host, port=args.port)

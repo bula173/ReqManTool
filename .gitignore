@@ -19,7 +19,7 @@ yarn-error.log*
 __pycache__/
 *.py[cod]
 *.egg-info/
-.venv/
+.venv*/
 venv/
 
 # C/C++
@@ -32,3 +32,8 @@ venv/
 
 # Logs
 *.log
+
+# ReqManTool requirements data (created at runtime, not source)
+/example_database/
+/backend/data/
+/.reqman/

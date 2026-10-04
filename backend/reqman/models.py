@@ -1,0 +1,171 @@
+"""Persisted data shapes: Project, Module, Requirement, AttributeDefinition,
+LinkConfiguration, LinkPair.
+
+Plain dataclasses only — no behavior, no validation beyond field defaults.
+Each type carries its own ``to_dict``/``from_dict`` for JSON (de)serialization;
+field order is the on-disk JSON key order (see docs/ARCHITECTURE.md's
+"Git-friendly persistence" section for why that's kept stable).
+
+Business rules that touch these types (id generation, nesting/link
+invariants, attribute validation) live in ``service.py``, not here.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, asdict
+from typing import Any, Literal
+
+AttributeType = Literal["string", "text", "integer", "boolean", "enum"]
+
+
+@dataclass
+class AttributeDefinition:
+    id: str
+    name: str
+    type: AttributeType = "string"
+    required: bool = False
+    default: Any = None
+    choices: list[str] | None = None
+    system: bool = False
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(data: dict) -> "AttributeDefinition":
+        return AttributeDefinition(
+            id=data["id"],
+            name=data["name"],
+            type=data.get("type", "string"),
+            required=data.get("required", False),
+            default=data.get("default"),
+            choices=data.get("choices"),
+            system=data.get("system", False),
+        )
+
+
+@dataclass
+class LinkConfiguration:
+    id: str
+    name: str
+    source_module_id: str
+    target_module_id: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(data: dict) -> "LinkConfiguration":
+        return LinkConfiguration(
+            id=data["id"],
+            name=data["name"],
+            source_module_id=data["source_module_id"],
+            target_module_id=data["target_module_id"],
+        )
+
+
+@dataclass
+class LinkPair:
+    source_id: str
+    target_id: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(data: dict) -> "LinkPair":
+        return LinkPair(source_id=data["source_id"], target_id=data["target_id"])
+
+
+@dataclass
+class View:
+    id: str
+    name: str
+    attribute_ids: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(data: dict) -> "View":
+        return View(
+            id=data["id"],
+            name=data["name"],
+            attribute_ids=data.get("attribute_ids", []),
+        )
+
+
+@dataclass
+class Requirement:
+    id: str
+    attributes: dict[str, Any] = field(default_factory=dict)
+    parent_id: str | None = None
+    order: int = 0
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(data: dict) -> "Requirement":
+        return Requirement(
+            id=data["id"],
+            attributes=data.get("attributes", {}),
+            parent_id=data.get("parent_id"),
+            order=data.get("order", 0),
+        )
+
+
+@dataclass
+class Module:
+    id: str
+    name: str
+    prefix: str
+    description: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(data: dict) -> "Module":
+        return Module(
+            id=data["id"],
+            name=data["name"],
+            prefix=data["prefix"],
+            description=data.get("description", ""),
+        )
+
+
+@dataclass
+class Project:
+    id: str
+    name: str
+    description: str = ""
+    attributes: list[AttributeDefinition] = field(default_factory=list)
+    id_counters: dict[str, int] = field(default_factory=dict)
+    link_configurations: list[LinkConfiguration] = field(default_factory=list)
+    views: list[View] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "attributes": [a.to_dict() for a in self.attributes],
+            "id_counters": self.id_counters,
+            "link_configurations": [c.to_dict() for c in self.link_configurations],
+            "views": [v.to_dict() for v in self.views],
+        }
+
+    @staticmethod
+    def from_dict(data: dict) -> "Project":
+        return Project(
+            id=data["id"],
+            name=data["name"],
+            description=data.get("description", ""),
+            attributes=[AttributeDefinition.from_dict(a) for a in data.get("attributes", [])],
+            id_counters=data.get("id_counters", {}),
+            views=[View.from_dict(v) for v in data.get("views", [])],
+            link_configurations=[
+                LinkConfiguration.from_dict(c) for c in data.get("link_configurations", [])
+            ],
+        )
