@@ -49,3 +49,18 @@ Use the narrowest relevant command first, then run the broader checks when pract
 
 - `.claude/skills/reqman-feature/SKILL.md`: implement a feature across backend, API, WebSocket, and frontend.
 - `.claude/skills/reqman-validation/SKILL.md`: validate a change and report failures with actionable evidence.
+
+## Delivery pipeline agents
+
+Subagents in `.claude/agents/`, run in this order. The to-do list is `## Backlog (not started)` in `docs/BACKLOG.md`.
+
+1. `reqman-implementer`: implement the next backlog item (or a named one).
+2. `reqman-test-writer`: write unit/API tests for the uncommitted change.
+3. `reqman-tester`: run pytest, build, and lint; report failures (read-only).
+4. `reqman-reviewer`: review the diff and return ranked findings (read-only).
+5. `reqman-fixer`: fix reviewer or tester findings; then rerun `reqman-tester`.
+6. `reqman-backlog-closer`: move the delivered item from the backlog to `Done`.
+7. `reqman-feature-scout`: research DOORS-class tools for new feature ideas (read-only).
+8. `reqman-backlog-groomer`: add the accepted ideas to the backlog.
+
+`reqman-orchestrator` loops agents 1–8: implement → tests → test → review → fix until green and approved (max 3 rounds) → close; it scouts and grooms when the backlog runs dry. It delivers one item per run unless commits are requested. Run it as the main session with `claude --agent reqman-orchestrator`, or ask the main session to "use reqman-orchestrator".
