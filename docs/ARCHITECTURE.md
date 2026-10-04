@@ -283,6 +283,14 @@ backend/reqman/
                    REQMAN_DATA_DIR/--dir override) — deliberately
                    separate from ProjectStore, which only knows how to
                    read/write *inside* whatever directory it's given.
+  version.py       version_info() → {version, build} for GET /version and
+                   WS version.get. version = reqman.__version__ (the one
+                   version source; frontend/vite.config.ts parses it at
+                   build time). build = REQMAN_BUILD env var, else
+                   "<short commit> (<commit date>)" from git (computed once
+                   per process, pre-warmed in the FastAPI lifespan at
+                   start-up; the backend has no build step, so the commit
+                   date is used), else "dev".
 ```
 
 **Why a service layer at all, instead of putting logic in the route
@@ -297,7 +305,7 @@ almost mechanical adapter.
 ### REST API surface
 
 All routes are project-scoped (`/projects/{project_id}/...`) except
-`/projects`, `/config`, and `/fs/browse`. See `backend/reqman/app.py` for
+`/projects`, `/config`, `/fs/browse`, and `/version`. See `backend/reqman/app.py` for
 the authoritative, current route list — the summary here groups them by
 resource:
 
@@ -313,6 +321,7 @@ resource:
 | Import | `POST /projects/{id}/modules/{module_id}/import/csv` (raw UTF-8 CSV request body, `Content-Type: text/csv` required (415 otherwise), at most 10 MiB (413); WS: `requirement.import_csv`) |
 | Purge | `POST /projects/{id}/purge` |
 | Data directory | `GET/POST /config`, `GET /fs/browse` |
+| Version | `GET /version` → `{version, build}` (WS: `version.get`, read-only, no broadcast) |
 | Live sync | `WS /ws` |
 
 ### WebSocket JSON-RPC
@@ -341,9 +350,15 @@ frontend/src/
   hooks/
     useLiveSync.ts  The one app-wide WebSocket connection; invalidates
                     queries on "changed", clears the cache on "root_changed"
+                    (except the version query: same backend), refetches the version query on reconnect (or on first
+                    connect if it failed while the backend was down)
   layout/
     AppLayout.tsx   Header (title, data-folder settings, color scheme) +
-                    Sidebar + routed <Outlet/>
+                    Sidebar + routed <Outlet/> + VersionFooter (frontend
+                    version/build, backend-version mismatch warning)
+  buildInfo.ts      FRONTEND_VERSION_INFO from the Vite `define` globals
+                    __REQMAN_VERSION__/__REQMAN_BUILD__ (declared in
+                    vite-env.d.ts, computed in vite.config.ts)
   components/       Modals and small reusable pieces (one file per modal:
                     NewProjectModal, NewModuleModal, AddAttributeModal,
                     LinkConfigurationModal, RequirementFormModal, LinkModal,

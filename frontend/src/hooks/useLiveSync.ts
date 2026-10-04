@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { WS_URL } from '../api/client';
+import { clearDatasetCache, queryKeys } from '../api/queries';
 
 interface ChangedEvent {
   event: 'changed';
@@ -19,8 +20,14 @@ type LiveSyncEvent = ChangedEvent | RootChangedEvent;
  * arrives, invalidates every cached query touching that project so views
  * refetch automatically (e.g. another tab's edit shows up without reload).
  * A {"event":"root_changed"} broadcast (the data directory was switched)
- * clears the entire cache, since the whole project/module/requirement set
- * is now a different dataset.
+ * clears the cache, since the whole project/module/requirement set is now a
+ * different dataset; only the backend version query is kept (see
+ * clearDatasetCache).
+ *
+ * On a reconnect (usually a backend restart, possibly as a different
+ * version) the footer's version query is refetched; on the first connect it
+ * is refetched only if it settled in error (the page loaded while the
+ * backend was down).
  */
 export function useLiveSync(): void {
   const queryClient = useQueryClient();
@@ -31,10 +38,22 @@ export function useLiveSync(): void {
     let socket: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let cancelled = false;
+    let hasConnected = false;
 
     const connect = () => {
       if (cancelled) return;
       socket = new WebSocket(WS_URL);
+
+      socket.onopen = () => {
+        // A reconnect usually means the backend restarted, possibly as a
+        // different version: refresh the footer's version check. On the first
+        // open, refresh it only if it failed (backend was down at page load).
+        const qc = queryClientRef.current;
+        if (hasConnected || qc.getQueryState(queryKeys.version)?.status === 'error') {
+          qc.invalidateQueries({ queryKey: queryKeys.version });
+        }
+        hasConnected = true;
+      };
 
       socket.onmessage = (event) => {
         try {
@@ -47,7 +66,7 @@ export function useLiveSync(): void {
               predicate: (query) => query.queryKey[0] === 'projects' && query.queryKey[1] === projectId,
             });
           } else if (data.event === 'root_changed') {
-            qc.clear();
+            clearDatasetCache(qc);
           }
         } catch {
           // ignore malformed messages

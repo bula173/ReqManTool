@@ -140,6 +140,24 @@
       ordering survives export → import; sibling `order` is now max+1 in
       add, move, copy and import (was the sibling count, which collided
       after a removal).
+- [x] Tool version + build version in the UI footer: one version source,
+      `__version__` in `backend/reqman/__init__.py` (the frontend reads it
+      from that file at build time in `vite.config.ts`, fallback
+      `unknown`). `GET /version` and WebSocket `version.get` (read-only, no
+      broadcast) return `{version, build}` via `backend/reqman/version.py`;
+      the backend build id is `REQMAN_BUILD` if set, else
+      `<short commit> (<commit date>)` from git (cached per process,
+      pre-warmed at startup, falls back to `dev`). The frontend build id is
+      injected via Vite `define` (`REQMAN_BUILD` override, else short
+      commit + build date on `npm run build`, `dev` on the dev server or
+      without git). `VersionFooter.tsx` in the `AppLayout.tsx` footer shows
+      `ReqManTool <version> · build <build>`, the backend version/build in
+      a tooltip, a "Version mismatch" badge when frontend and backend
+      versions differ (builds are not compared), and "(backend version
+      unavailable)" when `/version` fails; the version is refetched on
+      WebSocket reconnect. Not covered: tying the version to the release
+      tag (left to the distribution item), a `-dirty` marker on build ids,
+      frontend unit tests (no test runner in the repo).
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -218,15 +236,6 @@ custom report templates ❌.
 Ordered roughly by how directly each was requested / how foundational it is
 to the categories above.
 
-- [ ] Tool version + build version in the UI footer. Requested 2026-10-04.
-      One version source (`backend/reqman/__init__.py` `__version__`,
-      later the release tag via the distribution item); build id = short
-      git commit + build date, injected into the frontend at
-      `npm run build` (Vite `define`, falls back to `dev`) and exposed by
-      the backend as `GET /version` → `{version, build}` (+ WebSocket
-      `version.get`). The app shell footer shows e.g.
-      `ReqManTool 0.1.0 · build 6efc9a7 (2026-10-04)` and flags a
-      frontend/backend version mismatch.
 - [ ] Project templates (JSON) + CENELEC/ERTMS `RBC_Template` + subproject
       tree. Requested 2026-10-04. (1) Templates are JSON files with a
       `format_version`: built-in ones ship in `backend/reqman/templates/`,

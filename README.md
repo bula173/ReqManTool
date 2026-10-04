@@ -45,6 +45,18 @@ By default, data is stored in `example_database/` at the repo root; change
 it any time from the folder icon in the app header (or `--dir <path>` /
 `REQMAN_DATA_DIR` when starting the backend).
 
+## Version
+
+The tool version lives in one place, `__version__` in
+`backend/reqman/__init__.py`; the frontend build reads it from there. The
+app footer shows `ReqManTool <version> · build <commit> (<date>)` and warns
+when the frontend and backend versions differ. `GET /version` (WebSocket
+`version.get`) returns the backend's `{version, build}`. The backend's build
+date is the date of the checked-out commit; the frontend's is the date of
+`npm run build`. `npm run dev` shows build `dev`. Set `REQMAN_BUILD` to
+override the build id (backend: its process environment; frontend: at
+`npm run build` and `npm run dev`); without git it falls back to `dev`.
+
 ## Project layout
 
 ```

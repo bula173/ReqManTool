@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { api } from './client';
 import type {
   AttributeDefinition,
@@ -7,6 +7,7 @@ import type {
   Module,
   Project,
   Requirement,
+  VersionInfo,
   View,
 } from './types';
 
@@ -18,7 +19,20 @@ export const queryKeys = {
   requirements: (projectId: string, moduleId: string) =>
     ['projects', projectId, 'modules', moduleId, 'requirements'] as const,
   config: ['config'] as const,
+  version: ['version'] as const,
 };
+
+// --- version -----------------------------------------------------------
+
+/** The backend's version/build. Refetched by live sync on reconnect, or on first connect after an error. */
+export function useBackendVersion(): UseQueryResult<VersionInfo> {
+  return useQuery({
+    queryKey: queryKeys.version,
+    queryFn: () => api.get<VersionInfo>('/version'),
+    staleTime: 5 * 60_000,
+    retry: 1,
+  });
+}
 
 // --- config -----------------------------------------------------------
 
@@ -29,12 +43,24 @@ export function useConfig(): UseQueryResult<{ data_dir: string }> {
   });
 }
 
+/**
+ * Drops all cached data after the data directory was switched (a different
+ * dataset). Same as `qc.clear()` except that the backend version query is
+ * kept: the backend process, and so its version, is unchanged, and the
+ * footer's observer stays bound to that query instance, so removing it would
+ * stop reconnect/focus refetches from reaching the footer until a reload.
+ */
+export function clearDatasetCache(qc: QueryClient): void {
+  qc.removeQueries({ predicate: (query) => query.queryKey[0] !== queryKeys.version[0] });
+  qc.getMutationCache().clear();
+}
+
 export function useSetDataDir() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (dataDir: string) => api.post<{ data_dir: string }>('/config', { data_dir: dataDir }),
     onSuccess: () => {
-      qc.clear();
+      clearDatasetCache(qc);
     },
   });
 }

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -27,6 +28,7 @@ from .config import DEFAULT_DATA_DIR, load_saved_data_dir, save_data_dir
 from .csv_import import MAX_CSV_IMPORT_BYTES
 from .service import ProjectService
 from .store import ProjectStore
+from .version import build_id, version_info
 
 logger = logging.getLogger("reqman.app")
 
@@ -49,7 +51,17 @@ service = ProjectService(store)
 
 logger.info("Requirements data directory: %s", DATA_DIR)
 
-app = FastAPI(title="ReqManTool")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Resolve the (cached) git build id before serving: WebSocket methods run
+    # synchronously on the event loop, so the first `version.get` must not
+    # wait on the git subprocess.
+    build_id()
+    yield
+
+
+app = FastAPI(title="ReqManTool", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -91,6 +103,14 @@ manager = ConnectionManager()
 @app.get("/", include_in_schema=False)
 def root():
     return RedirectResponse(url="/docs")
+
+
+# --- version ----------------------------------------------------------
+
+
+@app.get("/version")
+def get_version():
+    return version_info()
 
 
 # --- config ----------------------------------------------------------
@@ -505,6 +525,7 @@ async def unlink_requirements(project_id: str, body: LinkBody):
 # --- WebSocket JSON-RPC -----------------------------------------------------
 
 RPC_METHODS = {
+    "version.get": lambda p: version_info(),
     "project.create": lambda p: service.create_project(p["name"], p.get("description", "")),
     "project.get": lambda p: service.get_project(p["id"]),
     "project.list": lambda p: service.list_projects(),

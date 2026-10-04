@@ -57,3 +57,9 @@ export interface CsvImportResult {
 export interface ApiErrorBody {
   detail: string;
 }
+
+/** GET /version (WS `version.get`): the backend's tool version and build id. */
+export interface VersionInfo {
+  version: string;
+  build: string;
+}

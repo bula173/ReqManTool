@@ -8,7 +8,7 @@ Cloudflare login, and it needs no open router ports and no public IP.
 browser ──HTTPS──▶ Cloudflare edge ──(Access login)──▶ Tunnel ──▶ cloudflared on your machine
                                                                       │
                                          localhost:4173  vite preview (built frontend)
-                                                                      │  proxies /projects, /config, /fs, /ws
+                                                                      │  proxies /projects, /config, /fs, /version, /ws
                                          localhost:8899  FastAPI backend ──▶ data directory (JSON + git)
 ```
 
@@ -76,7 +76,7 @@ etc/start-public.sh reqman.mksystemdesign.org --dir ~/ReqManData
 The script:
 - starts the backend on `localhost:8899`; the arguments after the host name are passed to the backend, so `--dir` selects your data directory;
 - builds the frontend so that API calls stay on the page's own address (an empty `VITE_API_BASE_URL`) and live sync uses `wss://reqman.mksystemdesign.org/ws`;
-- serves the build on `localhost:4173`, with `/projects`, `/config`, `/fs` and `/ws` proxied to the backend (see `frontend/vite.config.ts`).
+- serves the build on `localhost:4173`, with `/projects`, `/config`, `/fs`, `/version` and `/ws` proxied to the backend (see `frontend/vite.config.ts`).
 
 Opening or refreshing the address of a project or module page in the browser still loads the app, because the proxy only passes non-HTML requests on those paths to the backend.
 
