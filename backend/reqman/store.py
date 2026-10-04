@@ -39,12 +39,19 @@ def _write_json(path: Path, data: Any) -> None:
     The temporary file lives next to ``path`` (same filesystem, so
     ``os.replace`` is atomic) and its name does not end in ``.json``, so it is
     never listed as a requirement. It is removed if anything fails.
+
+    The temporary file is flushed and ``fsync``ed before the replace, so the
+    target is never swapped for a file whose contents are not yet on disk.
+    The directory itself is not ``fsync``ed: after a power loss right after
+    the replace, the target may still hold its previous (complete) contents.
     """
     text = json.dumps(data, indent=2) + "\n"
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         with open(tmp, "x", encoding="utf-8") as handle:
             handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp, path)
     except BaseException:
         try:

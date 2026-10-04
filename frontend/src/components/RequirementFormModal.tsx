@@ -19,17 +19,42 @@ interface FormValues {
   attrs: Record<string, unknown>;
 }
 
+/**
+ * Whether the attribute has a default the server applies to new
+ * requirements. Mirrors the server rule: a stored default that is not valid
+ * for the attribute's type (legacy data) is ignored.
+ */
+function hasUsableDefault(attr: AttributeDefinition): boolean {
+  const value = attr.default;
+  if (value === null || value === undefined) return false;
+  switch (attr.type) {
+    case 'integer':
+      return typeof value === 'number' && Number.isInteger(value);
+    case 'boolean':
+      return typeof value === 'boolean';
+    case 'enum':
+      return typeof value === 'string' && (attr.choices ?? []).includes(value);
+    default:
+      return typeof value === 'string';
+  }
+}
+
 function defaultValueFor(attr: AttributeDefinition): unknown {
-  if (attr.default !== null && attr.default !== undefined) return attr.default;
+  if (hasUsableDefault(attr)) return attr.default;
   if (attr.type === 'boolean') return false;
-  if (attr.type === 'integer') return '';
   return '';
+}
+
+function isBlank(value: unknown): boolean {
+  return value === null || value === undefined || (typeof value === 'string' && value.trim() === '');
 }
 
 /**
  * Turn form values into the typed attribute values the server accepts:
  * integers as whole numbers, booleans as booleans, enums as one of the
- * choices. An empty integer or enum field is left out (not set).
+ * choices. An empty integer or enum field is sent as null when the
+ * attribute has a default (the user cleared it, so the server must not
+ * apply the default), and left out otherwise.
  */
 function toAttributePayload(
   attributes: AttributeDefinition[],
@@ -38,15 +63,22 @@ function toAttributePayload(
   const payload: Record<string, unknown> = {};
   for (const attr of attributes) {
     const value = values[attr.id];
+    const cleared = value === '' || value === null || value === undefined;
     switch (attr.type) {
       case 'integer': {
-        if (value === '' || value === null || value === undefined) break;
+        if (cleared) {
+          if (hasUsableDefault(attr)) payload[attr.id] = null;
+          break;
+        }
         const n = typeof value === 'number' ? value : Number(value);
         if (!Number.isNaN(n)) payload[attr.id] = n;
         break;
       }
       case 'enum':
-        if (value === '' || value === null || value === undefined) break;
+        if (cleared) {
+          if (hasUsableDefault(attr)) payload[attr.id] = null;
+          break;
+        }
         payload[attr.id] = value;
         break;
       case 'boolean':
@@ -79,6 +111,16 @@ export function RequirementFormModal({
   const addRequirement = useAddRequirement(projectId, moduleId);
   const form = useForm<FormValues>({
     initialValues: buildInitialValues(editableAttributes),
+    // The server rejects a blank required attribute; block submitting it here.
+    validate: (values) => {
+      const errors: Record<string, string> = {};
+      for (const attr of editableAttributes) {
+        if (attr.required && attr.type !== 'boolean' && isBlank(values.attrs[attr.id])) {
+          errors[`attrs.${attr.id}`] = `${attr.name} is required`;
+        }
+      }
+      return errors;
+    },
   });
 
   // Re-seed the form whenever the modal is opened.

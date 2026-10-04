@@ -54,7 +54,7 @@ def test_full_crud_flow(client):
 
     config_id = client.post(
         f"/projects/{project_id}/link-configurations",
-        json={"name": "Parent", "source_module_id": mod2_id, "target_module_id": mod1_id},
+        json={"name": "Derives", "source_module_id": mod2_id, "target_module_id": mod1_id},
     ).json()["id"]
 
     resp = client.post(
@@ -815,3 +815,95 @@ def test_add_and_update_requirement_accept_typed_values_and_null(client):
     resp = client.put(f"{url}/{req_id}", json={"attributes": {"priority": None, "status": None, "safety": False}})
     assert resp.status_code == 200, resp.text
     assert resp.json()["attributes"] == {"object_text": "x", "priority": None, "safety": False, "status": None}
+
+
+def _rpc(ws, method, params, request_id=1):
+    ws.send_text(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}))
+    return json.loads(ws.receive_text())
+
+
+# --- R1: link configuration names ------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["Parent", " id ", "objecttext", "Priority", "  "])
+def test_create_link_configuration_rejects_invalid_names_with_same_rest_and_ws_message(client, name):
+    project_id, src_id = _project_and_module(client)
+    tgt_id = client.post(f"/projects/{project_id}/modules", json={"name": "Target", "prefix": "TGT"}).json()["id"]
+    client.post(f"/projects/{project_id}/attributes", json={"id": "priority", "name": "Priority"})
+    body = {"name": name, "source_module_id": src_id, "target_module_id": tgt_id}
+
+    resp = client.post(f"/projects/{project_id}/link-configurations", json=body)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"].startswith("Link name")
+
+    with client.websocket_connect("/ws") as ws:
+        response = _rpc(ws, "link_configuration.create", {"project_id": project_id, **body})
+    assert response["error"]["code"] == -32602
+    assert response["error"]["message"] == resp.json()["detail"]
+    assert client.get(f"/projects/{project_id}/link-configurations").json() == []
+
+
+# --- R2: attribute defaults and choices ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body, expected",
+    [
+        ({"type": "integer", "default": "5"}, "Invalid default value: Priority: '5' is not an integer"),
+        ({"type": "boolean", "default": 1}, "Invalid default value: Priority: '1' is not a boolean"),
+        (
+            {"type": "enum", "choices": ["Low"], "default": "High"},
+            "Invalid default value: Priority: 'High' is not one of ['Low']",
+        ),
+        ({"type": "enum", "choices": []}, "Enum attribute 'Priority' needs a non-empty list of choices"),
+        ({"type": "enum"}, "Enum attribute 'Priority' needs a non-empty list of choices"),
+        ({"type": "string", "choices": ["a"]}, "Attribute 'Priority' of type 'string' cannot have choices"),
+    ],
+)
+def test_add_attribute_rejects_invalid_default_and_choices_with_same_rest_and_ws_message(client, body, expected):
+    project_id = client.post("/projects", json={"name": "Project One"}).json()["id"]
+    body = {"id": "priority", "name": "Priority", **body}
+
+    resp = client.post(f"/projects/{project_id}/attributes", json=body)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == expected
+
+    with client.websocket_connect("/ws") as ws:
+        response = _rpc(ws, "attribute.add", {"project_id": project_id, **body})
+    assert response["error"]["message"] == expected
+    assert [a["id"] for a in client.get(f"/projects/{project_id}").json()["attributes"]] == ["object_text"]
+
+
+# --- R4: blank values for required attributes ------------------------------------
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_required_attribute_rejects_blank_value_on_rest_and_ws_create_and_update(client, value):
+    project_id, module_id = _project_and_module(client)
+    url = f"/projects/{project_id}/modules/{module_id}/requirements"
+    expected = "required attribute 'ObjectText' is empty"
+
+    resp = client.post(url, json={"attributes": {"object_text": value}})
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == expected
+
+    req_id = client.post(url, json={"attributes": {"object_text": "keep"}}).json()["id"]
+    resp = client.put(f"{url}/{req_id}", json={"attributes": {"object_text": value}})
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == expected
+
+    with client.websocket_connect("/ws") as ws:
+        created = _rpc(
+            ws, "requirement.add",
+            {"project_id": project_id, "module_id": module_id, "attributes": {"object_text": value}},
+        )
+        updated = _rpc(
+            ws, "requirement.update",
+            {"project_id": project_id, "module_id": module_id, "id": req_id, "attributes": {"object_text": value}},
+            request_id=2,
+        )
+    assert created["error"] == {"code": -32602, "message": expected}
+    assert updated["error"] == {"code": -32602, "message": expected}
+
+    reqs = client.get(url).json()
+    assert [(r["id"], r["attributes"]) for r in reqs] == [(req_id, {"object_text": "keep"})]

@@ -72,36 +72,61 @@ class ProjectService:
         if any(a.id == attr_id for a in project.attributes):
             raise ValueError(f"Attribute '{attr_id}' already defined on project '{project_id}'")
         name = self._checked_attribute_name(project, name)
-        project.attributes.append(
-            AttributeDefinition(
-                id=attr_id, name=name, type=type, required=required, default=default, choices=choices
-            )
+        definition = AttributeDefinition(
+            id=attr_id, name=name, type=type, required=required, default=default, choices=choices
         )
+        self._check_choices_and_default(definition)
+        project.attributes.append(definition)
         self.store.save_project(project)
         return project
 
+    @classmethod
+    def _check_choices_and_default(cls, attr: AttributeDefinition) -> None:
+        """Raise if ``attr``'s choices or default do not fit its type.
+
+        An enum needs a non-empty list of string choices; other types take no
+        choices (``None``). The default must be a valid value for the type
+        (``None`` means no default), so it can never be merged into a new
+        requirement as an invalid value.
+        """
+        if attr.type == "enum":
+            if (
+                not isinstance(attr.choices, list)
+                or not attr.choices
+                or not all(isinstance(c, str) for c in attr.choices)
+            ):
+                raise ValueError(f"Enum attribute '{attr.name}' needs a non-empty list of choices")
+        elif attr.choices is not None:
+            raise ValueError(f"Attribute '{attr.name}' of type '{attr.type}' cannot have choices")
+        problem = cls._value_problem(attr, attr.default)
+        if problem is not None:
+            raise ValueError(f"Invalid default value: {problem}")
+
     @staticmethod
-    def _checked_attribute_name(project: Project, name: Any) -> str:
+    def _checked_attribute_name(project: Project, name: Any, kind: str = "Attribute") -> str:
         """Return ``name`` stripped, or raise if it cannot head its own export column.
 
         CSV/XLSX exports head each attribute column with the attribute's name,
         after the reserved ``Id``/``Module``/``Parent`` columns, and the CSV
         import matches columns by name. A reserved or duplicate name (compared
         case-insensitively) would make a project's own export impossible to
-        re-import. Existing project data is never rewritten by this check.
+        re-import. Link configuration names are checked too, because each link
+        has a mirror attribute with the same name. ``kind`` ("Attribute" or
+        "Link") starts the error message. Existing project data is never
+        rewritten by this check.
         """
         if not isinstance(name, str) or not name.strip():
-            raise ValueError("Attribute name must not be empty")
+            raise ValueError(f"{kind} name must not be empty")
         stripped = name.strip()
         folded = stripped.casefold()
         if folded in {column.casefold() for column in RESERVED_COLUMNS}:
             raise ValueError(
-                f"Attribute name '{stripped}' is reserved: {', '.join(RESERVED_COLUMNS)} are "
+                f"{kind} name '{stripped}' is reserved: {', '.join(RESERVED_COLUMNS)} are "
                 "export/import columns"
             )
         for attr in project.attributes:
             if attr.name.strip().casefold() == folded:
-                raise ValueError(f"Attribute name '{stripped}' is already used by attribute '{attr.id}'")
+                raise ValueError(f"{kind} name '{stripped}' is already used by attribute '{attr.id}'")
         return stripped
 
     # --- modules ----------------------------------------------------------------
@@ -162,16 +187,29 @@ class ProjectService:
         system_ids = {a.id for a in project.attributes if a.system} & set(attributes)
         if system_ids:
             return [f"Attribute(s) are system-managed and cannot be set directly: {sorted(system_ids)}"]
-        problems = [
-            problem
-            for attr_id, value in attributes.items()
-            if (problem := self._value_problem(defined[attr_id], value)) is not None
-        ]
-        if is_create:
-            for attr in project.attributes:
-                if attr.required and not attr.system and attr.id not in attributes and attr.default is None:
-                    problems.append(f"required attribute '{attr.name}' is empty")
+        problems: list[str] = []
+        invalid_ids: set[str] = set()
+        for attr_id, value in attributes.items():
+            problem = self._value_problem(defined[attr_id], value)
+            if problem is not None:
+                problems.append(problem)
+                invalid_ids.add(attr_id)
+        # A required attribute must end up with a non-blank value. On create,
+        # an omitted attribute gets its (valid) default; an explicit blank
+        # value overrides the default and so is rejected. On update, only the
+        # attributes being written are checked.
+        effective = self._merged_attributes(project, attributes) if is_create else attributes
+        for attr in project.attributes:
+            if not attr.required or attr.system or attr.id in invalid_ids:
+                continue
+            if (is_create or attr.id in attributes) and self._is_blank(effective.get(attr.id)):
+                problems.append(f"required attribute '{attr.name}' is empty")
         return problems
+
+    @staticmethod
+    def _is_blank(value: Any) -> bool:
+        """``None``, ``""`` and whitespace-only strings count as no value."""
+        return value is None or (isinstance(value, str) and not value.strip())
 
     def _validate_attributes(self, project: Project, attributes: dict[str, Any], *, is_create: bool) -> None:
         if not isinstance(attributes, dict):
@@ -180,10 +218,20 @@ class ProjectService:
         if problems:
             raise ValueError("; ".join(problems))
 
-    @staticmethod
-    def _merged_attributes(project: Project, attributes: dict[str, Any]) -> dict[str, Any]:
-        """Attribute defaults (never for system attributes) overlaid with ``attributes``."""
-        merged = {a.id: a.default for a in project.attributes if a.default is not None and not a.system}
+    @classmethod
+    def _merged_attributes(cls, project: Project, attributes: dict[str, Any]) -> dict[str, Any]:
+        """Attribute defaults overlaid with ``attributes``.
+
+        System attributes never get a default. A stored default that is not
+        valid for its attribute (legacy data written before defaults were
+        checked) is skipped rather than rewritten, so it cannot block or
+        corrupt new requirements.
+        """
+        merged = {
+            a.id: a.default
+            for a in project.attributes
+            if a.default is not None and not a.system and cls._value_problem(a, a.default) is None
+        }
         merged.update(attributes)
         return merged
 
@@ -432,6 +480,9 @@ class ProjectService:
             raise FileNotFoundError(f"Module '{source_module_id}' not found in project '{project_id}'")
         if not self.store.module_exists(project_id, target_module_id):
             raise FileNotFoundError(f"Module '{target_module_id}' not found in project '{project_id}'")
+        # The link's mirror attribute heads its own export column, so the link
+        # name follows the attribute name rule.
+        name = self._checked_attribute_name(project, name, kind="Link")
 
         taken_ids = {c.id for c in project.link_configurations} | {a.id for a in project.attributes}
         config_id = _unique_slug(name, lambda c: c in taken_ids, fallback="link")

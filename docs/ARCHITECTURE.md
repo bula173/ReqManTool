@@ -115,20 +115,32 @@ persistence" below.
   CSV import matches columns, so `add_attribute_definition` stores it
   stripped and rejects (400) an empty name, `Id`/`Module`/`Parent` (the
   reserved export columns), or a name another attribute of the project
-  already has — all compared case-insensitively. Existing projects that
-  already have such names are not rewritten; their CSV import treats
+  already has — all compared case-insensitively. `create_link_configuration`
+  applies the same rule to the link name (its mirror attribute heads an
+  export column too), with errors starting "Link name". Existing projects
+  that already have such names are not rewritten; their CSV import treats
   `Id`/`Module`/`Parent` as the reserved columns and needs the attribute's
   column headed with its `id`.
+  `add_attribute_definition` also rejects (400) an `enum` without a
+  non-empty list of string `choices`, `choices` on any other type (they must
+  be `null`), and a `default` that is not a valid value for the type (same
+  check as requirement values below; `null` means no default).
 - **Attribute values** — `ProjectService._attribute_problems` is the single
   validation path for requirement attributes, used by REST and WebSocket
   add/update and by the CSV import (per row, after cells are parsed into
-  typed values). Besides unknown/system attributes and required attributes
-  without a default (on create), it checks value types: `integer` must be a
-  JSON integer (not a boolean or float, not a numeric string), `boolean` a
-  JSON boolean, `enum` one of `choices`, `string`/`text` a string. `null`
-  (unset) is accepted for every type; violations are 400 errors. Defaults
-  are merged into a new requirement by `_merged_attributes`, which never
-  applies defaults of system attributes.
+  typed values). Besides unknown/system attributes, it checks value types:
+  `integer` must be a JSON integer (not a boolean or float, not a numeric
+  string), `boolean` a JSON boolean, `enum` one of `choices`, `string`/`text`
+  a string. `null` (unset) is accepted for every type except as the value of
+  a required attribute; violations are 400 errors. Required attributes must
+  not be blank (`null`, `""` or whitespace only — "required attribute
+  '<Name>' is empty"): on create the check runs on the merged result, so an
+  omitted attribute may be filled by its default, but an explicit blank
+  value overrides the default and is rejected; on update only the
+  attributes being written are checked. Defaults are merged into a new
+  requirement by `_merged_attributes`, which never applies defaults of
+  system attributes and skips a stored default that is invalid for its type
+  (legacy data; the stored definition is not rewritten).
 - **Module** (`module.json`) — `id`, `name`, `prefix` (e.g. `"REQ"` — the
   namespace requirement ids in this module are allocated from), `description`.
 - **Requirement** (`<id>.json`) — `id`, `attributes: dict[str, Any]` (keyed
@@ -211,7 +223,10 @@ diffs are minimal and readable instead of single-line blobs or
 reordered-key noise.
 
 Each `ProjectStore` write is atomic: the JSON goes to a temporary file in
-the same directory, which then replaces the target with `os.replace`.
+the same directory, which is flushed and `fsync`ed and then replaces the
+target with `os.replace`. The directory is not `fsync`ed, so after a power
+loss right after a write the target may still hold its previous, complete
+contents.
 Operations that create several requirements (`add_requirement`,
 `copy_requirement`, `import_csv`) go through
 `ProjectService._write_new_requirements`: all requirement files are written

@@ -1842,3 +1842,216 @@ def test_export_xlsx_row_order_matches_csv_for_reordered_nested_project(service)
 
     assert normalize(xlsx_rows) == normalize(csv_rows)
     assert [row[3] for row in csv_rows[1:]] == ["C", "A", "A2", "A2x", "A1", "B", "B2", "B1"]
+
+
+# --- R1: link configuration names ----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [
+        ("Parent", "reserved"),
+        (" id ", "reserved"),
+        ("MODULE", "reserved"),
+        ("ObjectText", "already used by attribute 'object_text'"),
+        ("priority ", "already used by attribute 'priority'"),
+        ("satisfies", "already used by attribute 'satisfies'"),
+        ("", "must not be empty"),
+        ("   ", "must not be empty"),
+    ],
+)
+def test_create_link_configuration_rejects_reserved_duplicate_and_empty_names(service, name, expected):
+    project = create_project(service)
+    mod_a = create_module(service, project.id, "Module A", "A")
+    mod_b = create_module(service, project.id, "Module B", "B")
+    service.add_attribute_definition(project.id, "priority", "Priority")
+    service.create_link_configuration(project.id, "Satisfies", mod_a.id, mod_b.id)
+    before = service.get_project(project.id).to_dict()
+
+    with pytest.raises(ValueError, match=expected) as excinfo:
+        service.create_link_configuration(project.id, name, mod_a.id, mod_b.id)
+    assert str(excinfo.value).startswith("Link name")
+    assert service.get_project(project.id).to_dict() == before
+
+
+def test_create_link_configuration_stores_stripped_name_and_export_roundtrips(service):
+    project = create_project(service)
+    mod_a = create_module(service, project.id, "Module A", "A")
+    mod_b = create_module(service, project.id, "Module B", "B")
+    config = service.create_link_configuration(project.id, "  Verifies  ", mod_a.id, mod_b.id)
+    assert config.name == "Verifies"
+    assert service.get_project(project.id).attributes[-1].name == "Verifies"
+
+    source = service.add_requirement(project.id, mod_a.id, {"object_text": "src"})
+    target = service.add_requirement(project.id, mod_b.id, {"object_text": "tgt"})
+    service.link_requirements(project.id, config.id, source.id, target.id)
+    exported = service.export_csv(project.id)
+    assert exported.splitlines()[0] == "Id,Module,Parent,ObjectText,Verifies"
+    header = exported.splitlines()[0]
+    other = create_module(service, project.id, "Module C", "C")
+    result = service.import_csv(project.id, other.id, f"{header}\n,,,copied,> {target.id}\n")
+    assert result["ignored_columns"] == ["Verifies"]
+
+
+# --- R2: attribute defaults and choices ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "kwargs, expected",
+    [
+        ({"type": "integer", "default": "5"}, "Invalid default value: Priority: '5' is not an integer"),
+        ({"type": "integer", "default": True}, "Invalid default value: Priority: 'True' is not an integer"),
+        ({"type": "boolean", "default": "true"}, "Invalid default value: Priority: 'true' is not a boolean"),
+        ({"type": "string", "default": 3}, "Invalid default value: Priority: expected a string, got int"),
+        ({"type": "text", "default": ["x"]}, "Invalid default value: Priority: expected a string, got list"),
+        (
+            {"type": "enum", "choices": ["Low", "High"], "default": "Medium"},
+            "Invalid default value: Priority: 'Medium' is not one of ['Low', 'High']",
+        ),
+        ({"type": "enum"}, "Enum attribute 'Priority' needs a non-empty list of choices"),
+        ({"type": "enum", "choices": []}, "Enum attribute 'Priority' needs a non-empty list of choices"),
+        ({"type": "enum", "choices": ["Low", 3]}, "Enum attribute 'Priority' needs a non-empty list of choices"),
+        ({"type": "string", "choices": ["a"]}, "Attribute 'Priority' of type 'string' cannot have choices"),
+        ({"type": "integer", "choices": []}, "Attribute 'Priority' of type 'integer' cannot have choices"),
+    ],
+)
+def test_add_attribute_rejects_invalid_default_and_choices(service, kwargs, expected):
+    project = create_project(service)
+    with pytest.raises(ValueError) as excinfo:
+        service.add_attribute_definition(project.id, "priority", "Priority", **kwargs)
+    assert str(excinfo.value) == expected
+    assert [a.id for a in service.get_project(project.id).attributes] == ["object_text"]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"type": "integer", "default": -2},
+        {"type": "boolean", "default": False},
+        {"type": "string", "default": ""},
+        {"type": "text", "default": "x"},
+        {"type": "enum", "choices": ["Low", "High"], "default": "High"},
+        {"type": "enum", "choices": ["Low"]},
+        {"type": "integer"},
+    ],
+)
+def test_add_attribute_accepts_valid_default_and_choices(service, kwargs):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "priority", "Priority", **kwargs)
+    module = create_module(service, project.id)
+    requirement = service.add_requirement(project.id, module.id, {"object_text": "x"})
+    assert requirement.attributes.get("priority") == kwargs.get("default")
+
+
+def test_legacy_invalid_defaults_are_skipped_not_rewritten(service, tmp_path):
+    project = create_project(service)
+    _write_legacy_attributes(
+        service,
+        project.id,
+        {"id": "priority", "name": "Priority", "type": "integer", "default": "high"},
+        {"id": "status", "name": "Status", "type": "enum", "choices": ["Draft"], "default": "Gone"},
+        {"id": "owner", "name": "Owner", "type": "string", "default": "team"},
+    )
+    project_file = tmp_path / project.id / "project.json"
+    stored_before = project_file.read_text()
+    module = create_module(service, project.id)
+
+    requirement = service.add_requirement(project.id, module.id, {"object_text": "x"})
+    service.import_csv(project.id, module.id, "ObjectText\ny\n")
+
+    expected = {"object_text": "x", "owner": "team"}
+    assert requirement.attributes == expected
+    assert _by_text(service, project.id, module.id)["y"].attributes == {"object_text": "y", "owner": "team"}
+    assert project_file.read_text().replace('"id_counters": {\n    "REQ": 2\n  }', '"id_counters": {}') == stored_before
+
+
+def test_legacy_invalid_default_of_required_attribute_counts_as_no_default(service):
+    project = create_project(service)
+    _write_legacy_attributes(
+        service, project.id, {"id": "priority", "name": "Priority", "type": "integer", "required": True, "default": "x"}
+    )
+    module = create_module(service, project.id)
+    with pytest.raises(ValueError, match="required attribute 'Priority' is empty"):
+        service.add_requirement(project.id, module.id, {"object_text": "x"})
+    assert service.add_requirement(project.id, module.id, {"object_text": "x", "priority": 1}).attributes == {
+        "object_text": "x", "priority": 1,
+    }
+
+
+# --- R4: blank values for required attributes -----------------------------------
+
+
+@pytest.mark.parametrize("value", [None, "", "   ", "\n\t"])
+def test_add_requirement_rejects_blank_required_value(service, value):
+    project = create_project(service)
+    module = create_module(service, project.id)
+    with pytest.raises(ValueError) as excinfo:
+        service.add_requirement(project.id, module.id, {"object_text": value})
+    assert str(excinfo.value) == "required attribute 'ObjectText' is empty"
+    assert service.list_requirements(project.id, module.id) == []
+
+
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_add_requirement_explicit_blank_overrides_default_of_required_attribute(service, value):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "owner", "Owner", required=True, default="team")
+    module = create_module(service, project.id)
+
+    with pytest.raises(ValueError, match="required attribute 'Owner' is empty"):
+        service.add_requirement(project.id, module.id, {"object_text": "x", "owner": value})
+    assert service.add_requirement(project.id, module.id, {"object_text": "x"}).attributes["owner"] == "team"
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_update_requirement_rejects_blank_required_value(service, value):
+    project = create_project(service)
+    module = create_module(service, project.id)
+    requirement = service.add_requirement(project.id, module.id, {"object_text": "keep"})
+
+    with pytest.raises(ValueError) as excinfo:
+        service.update_requirement(project.id, module.id, requirement.id, {"object_text": value})
+    assert str(excinfo.value) == "required attribute 'ObjectText' is empty"
+    assert service.get_requirement(project.id, module.id, requirement.id).attributes == {"object_text": "keep"}
+
+
+def test_update_requirement_ignores_required_attributes_not_being_written(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+    requirement = service.add_requirement(project.id, module.id, {"object_text": "keep"})
+    service.add_attribute_definition(project.id, "owner", "Owner", required=True)
+    service.add_attribute_definition(project.id, "notes", "Notes")
+
+    updated = service.update_requirement(project.id, module.id, requirement.id, {"notes": ""})
+    assert updated.attributes == {"object_text": "keep", "notes": ""}
+
+
+def test_required_enum_with_invalid_value_reports_only_the_value_problem(service):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "status", "Status", type="enum", required=True, choices=["Draft"])
+    module = create_module(service, project.id)
+    with pytest.raises(ValueError) as excinfo:
+        service.add_requirement(project.id, module.id, {"object_text": "x", "status": ""})
+    assert str(excinfo.value) == "Status: '' is not one of ['Draft']"
+
+
+# --- R5: durable writes ----------------------------------------------------------
+
+
+def test_store_fsyncs_temporary_file_before_replace(service, monkeypatch):
+    import os
+
+    events: list[str] = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def fsync(fd):
+        events.append("fsync")
+        real_fsync(fd)
+
+    def replace(src, dst):
+        events.append("replace")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    monkeypatch.setattr(os, "replace", replace)
+    create_project(service)
+    assert events == ["fsync", "replace"]
