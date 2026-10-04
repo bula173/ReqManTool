@@ -15,7 +15,15 @@ crash or I/O error never leaves a half-written JSON file behind.
 rewriting the file, and ``save_project`` writes the current version. Every
 read or write of a project's files first checks the version stored in its
 ``project.json`` (``_check_project_format``), so the files of a project
-written by a newer ReqManTool are never misread or overwritten.
+written by a newer ReqManTool are never misread or overwritten. A
+``project.json`` that cannot be read as a JSON object is reported as a
+``ValueError`` by both, never treated as version 1. The check fails exactly
+when ``load_project`` would, so a project that cannot be loaded (listed as
+a stub) is fully read-only.
+
+Every data file is read as ``utf-8-sig`` (a leading UTF-8 byte order mark,
+as some editors save files, is ignored) and written as plain UTF-8 without
+one.
 """
 
 from __future__ import annotations
@@ -29,7 +37,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from .formats import PROJECT_FORMAT, check_format_version, upgrade, with_format_version
+from .formats import PROJECT_FORMAT, upgrade, with_format_version
 from .models import LinkPair, Module, Project, Requirement
 
 try:
@@ -46,6 +54,12 @@ PREFIX_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 TEMPLATES_DIR_NAME = "_templates"
 STAGING_DIR_NAME = ".reqman-staging"
 RESERVED_ROOT_NAMES = frozenset({TEMPLATES_DIR_NAME, STAGING_DIR_NAME})
+
+# A project id as ``ProjectService`` creates it (a slug of the project name). Never starts with a dot.
+PROJECT_SLUG_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+# The file name length limit assumed where the file system does not report one.
+DEFAULT_NAME_MAX = 255
 
 
 def validate_prefix(value: str) -> None:
@@ -72,6 +86,15 @@ def _sync(fd: int) -> None:
         except OSError:
             pass
     os.fsync(fd)
+
+
+def _read_json(path: Path) -> Any:
+    """Parse a data file. ``utf-8-sig``: an optional leading UTF-8 BOM is ignored.
+
+    Raises ``ValueError`` (``UnicodeDecodeError``/``JSONDecodeError``) for a
+    file that is not valid UTF-8 JSON.
+    """
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def _write_json(path: Path, data: Any) -> None:
@@ -114,34 +137,37 @@ class ProjectStore:
     # --- format version guard ----------------------------------------------
 
     def _check_project_format(self, project_id: str) -> None:
-        """Raise ``NewerFormatError`` if ``project_id``'s project.json is from a newer tool.
+        """Raise unless ``project_id``'s project.json loads (``load_project`` would succeed).
 
-        Called before every read or write of a project's files. A missing
-        project.json (a project being created) or one that is not a JSON
-        object has no version to protect and is left to ``load_project`` to
-        report. An invalid ``format_version`` raises ``ValueError``. A
-        successful check is cached per project until the file's mtime, ctime,
-        size or inode changes (ctime also catches a same-size in-place edit
-        that keeps or restores the mtime).
+        Called before every read or write of a project's files, so a project
+        listed as a stub is fully read-only: none of its files are read or
+        written. A missing project.json (a project being created) has nothing
+        to protect. Otherwise this raises the same error as ``load_project``:
+        ``NewerFormatError`` for a project written by a newer ReqManTool, and
+        ``ValueError`` for a project.json that cannot be read, is not valid
+        UTF-8 JSON, not a JSON object, has an invalid ``format_version`` or
+        the wrong shape. A successful check is cached per project until the
+        file's mtime, ctime, size or inode changes (ctime also catches a
+        same-size in-place edit that keeps or restores the mtime).
         """
         if not self._is_project_id(project_id):
             return
         path = self._project_file(project_id)
         try:
             stat = path.stat()
+        except PermissionError as exc:  # e.g. a project folder this process cannot search
+            raise self._unreadable_error(project_id, exc) from exc
         except OSError:
-            return
+            return  # absent, as for ``_project_file_present``
         key = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_ino)
         if self._format_cache.get(project_id) == key:
             return
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return
-        if not isinstance(data, dict):
-            return
-        check_format_version(data, PROJECT_FORMAT, f"Project '{project_id}'")
-        # Only a supported version is cached; a newer one raises every time.
+            data = self._read_project_data(project_id)
+        except FileNotFoundError:
+            return  # removed since the stat: nothing to protect
+        self._project_from_data(project_id, data)
+        # Only a loadable project.json is cached; any other one raises every time.
         self._format_cache[project_id] = key
 
     # --- paths -----------------------------------------------------------
@@ -198,7 +224,15 @@ class ProjectStore:
     def project_exists(self, project_id: str) -> bool:
         if not self._is_project_id(project_id):
             return False
-        return self._project_file(project_id).exists()
+        return self._project_file_present(project_id)
+
+    def max_name_length(self) -> int:
+        """The longest file or folder name (in bytes) the data directory's file system allows."""
+        try:
+            limit = os.pathconf(self.root, "PC_NAME_MAX")
+        except (AttributeError, OSError, ValueError):  # no pathconf (Windows) or no answer
+            limit = -1
+        return limit if limit > 0 else DEFAULT_NAME_MAX
 
     def project_path_exists(self, project_id: str) -> bool:
         """True if anything (a project or any other file/directory) occupies the project's path."""
@@ -211,26 +245,111 @@ class ProjectStore:
         self._project_dir(project.id).mkdir(parents=True, exist_ok=True)
         _write_json(self._project_file(project.id), with_format_version(project.to_dict(), PROJECT_FORMAT))
 
+    def read_project_text(self, project_id: str) -> str:
+        """The raw text of project.json (``utf-8-sig``), with no checks; used for error reporting."""
+        if not self._is_project_id(project_id):
+            raise FileNotFoundError(f"Project '{project_id}' not found")
+        return self._project_file(project_id).read_text(encoding="utf-8-sig")
+
+    def _read_project_data(self, project_id: str) -> dict:
+        """project.json as a JSON object (``utf-8-sig``), before any version check.
+
+        Raises ``ValueError`` naming the project for a file that is not valid
+        UTF-8, not valid JSON (including JSON nested too deeply to parse) or
+        not a JSON object, and for one that cannot be read (no permission, a
+        directory: any ``OSError`` but a missing file). ``FileNotFoundError``
+        (the project was removed) is passed on.
+        """
+        what = f"Project '{project_id}' has an invalid project.json"
+        try:
+            data = _read_json(self._project_file(project_id))
+        except FileNotFoundError:
+            raise
+        except OSError as exc:
+            raise self._unreadable_error(project_id, exc) from exc
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"{what}: not valid UTF-8 ({exc})") from exc
+        except ValueError as exc:
+            raise ValueError(f"{what}: not valid JSON ({exc})") from exc
+        except RecursionError as exc:
+            raise ValueError(f"{what}: not valid JSON (nested too deeply)") from exc
+        if not isinstance(data, dict):
+            raise ValueError(f"{what}: expected a JSON object, got {type(data).__name__}")
+        return data
+
     def load_project(self, project_id: str) -> Project:
         """Read project.json, upgrading older format versions in memory (the file is not rewritten).
 
-        Raises ``NewerFormatError`` for a project written by a newer ReqManTool.
+        Raises ``NewerFormatError`` for a project written by a newer
+        ReqManTool, and ``ValueError`` for a project.json that is not valid
+        UTF-8 JSON, not a JSON object, has an invalid ``format_version``, lacks
+        a required key (such as ``id`` or ``name``) or holds a value of the
+        wrong shape.
         """
-        if not self._is_project_id(project_id) or not self._project_file(project_id).exists():
+        if not self._is_project_id(project_id) or not self._project_file_present(project_id):
             raise FileNotFoundError(f"Project '{project_id}' not found")
-        data = json.loads(self._project_file(project_id).read_text())
-        if isinstance(data, dict):
-            data = upgrade(data, PROJECT_FORMAT, f"Project '{project_id}'")
-        return Project.from_dict(data)
+        return self._project_from_data(project_id, self._read_project_data(project_id))
+
+    def _project_file_present(self, project_id: str) -> bool:
+        """True if project.json exists, or may exist but cannot be reached.
+
+        A ``PermissionError`` (a project folder this process cannot search)
+        counts as present, so the project is reported as unreadable rather
+        than hidden. Any other ``OSError`` (missing, ``ENOTDIR``, a name too
+        long for the file system, ...) means absent.
+        """
+        try:
+            os.stat(self._project_file(project_id))
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
+
+    @staticmethod
+    def _unreadable_error(project_id: str, exc: OSError) -> ValueError:
+        """A ``ValueError`` for an unreadable project.json, naming the project, not its absolute path."""
+        reason = exc.strerror or type(exc).__name__
+        return ValueError(f"Project '{project_id}' has an unreadable project.json: {reason}")
+
+    @staticmethod
+    def _project_from_data(project_id: str, raw: dict) -> Project:
+        """``raw`` (a project.json object) upgraded and validated as a ``Project``.
+
+        Raises ``NewerFormatError``/``ValueError`` exactly as ``load_project`` does.
+        """
+        data = upgrade(raw, PROJECT_FORMAT, f"Project '{project_id}'")
+        try:
+            return Project.from_dict(data)
+        except KeyError as exc:
+            raise ValueError(
+                f"Project '{project_id}' has an invalid project.json: missing key {exc}"
+            ) from exc
+        except (TypeError, AttributeError) as exc:
+            raise ValueError(f"Project '{project_id}' has an invalid project.json: {exc}") from exc
 
     def list_project_ids(self) -> list[str]:
+        """Ids of the data directory's folders holding a project.json.
+
+        A folder this process cannot search is listed too (as a stub, see
+        ``_project_file_present``), but only if its name is a project slug, so
+        system folders such as ``lost+found`` or ``.Spotlight-V100`` are not.
+        """
         if not self.root.exists():
             return []
-        return sorted(
-            p.name
-            for p in self.root.iterdir()
-            if self._is_project_id(p.name) and p.is_dir() and (p / "project.json").exists()
-        )
+        ids = []
+        for path in self.root.iterdir():
+            if not (self._is_project_id(path.name) and path.is_dir()):
+                continue
+            try:
+                os.stat(self._project_file(path.name))
+            except PermissionError:
+                if not PROJECT_SLUG_PATTERN.fullmatch(path.name):
+                    continue
+            except OSError:
+                continue
+            ids.append(path.name)
+        return sorted(ids)
 
     @contextmanager
     def staging_store(self) -> Iterator["ProjectStore"]:
@@ -277,13 +396,14 @@ class ProjectStore:
         _write_json(self._module_file(project_id, module.id), module.to_dict())
 
     def load_module(self, project_id: str, module_id: str) -> Module:
+        self._check_project_format(project_id)
         path = self._module_file(project_id, module_id)
         if not path.exists():
             raise FileNotFoundError(f"Module '{module_id}' not found in project '{project_id}'")
-        self._check_project_format(project_id)
-        return Module.from_dict(json.loads(path.read_text()))
+        return Module.from_dict(_read_json(path))
 
     def list_module_ids(self, project_id: str) -> list[str]:
+        self._check_project_format(project_id)
         modules_dir = self._modules_dir(project_id)
         if not modules_dir.exists():
             return []
@@ -302,24 +422,25 @@ class ProjectStore:
         _write_json(path, requirement.to_dict())
 
     def load_requirement(self, project_id: str, module_id: str, requirement_id: str) -> Requirement:
+        self._check_project_format(project_id)
         path = self._requirement_file(project_id, module_id, requirement_id)
         if not path.exists():
             raise FileNotFoundError(
                 f"Requirement '{requirement_id}' not found in module '{module_id}'"
             )
-        self._check_project_format(project_id)
-        return Requirement.from_dict(json.loads(path.read_text()))
+        return Requirement.from_dict(_read_json(path))
 
     def delete_requirement(self, project_id: str, module_id: str, requirement_id: str) -> None:
+        self._check_project_format(project_id)
         path = self._requirement_file(project_id, module_id, requirement_id)
         if not path.exists():
             raise FileNotFoundError(
                 f"Requirement '{requirement_id}' not found in module '{module_id}'"
             )
-        self._check_project_format(project_id)
         path.unlink()
 
     def list_requirement_ids(self, project_id: str, module_id: str) -> list[str]:
+        self._check_project_format(project_id)
         req_dir = self._requirements_dir(project_id, module_id)
         if not req_dir.exists():
             return []
@@ -380,7 +501,7 @@ class ProjectStore:
         path = self._link_pairs_file(project_id, config_id)
         if not path.exists():
             return []
-        data = json.loads(path.read_text())
+        data = _read_json(path)
         return [LinkPair.from_dict(p) for p in data.get("pairs", [])]
 
     def save_link_pairs(self, project_id: str, config_id: str, pairs: list[LinkPair]) -> None:

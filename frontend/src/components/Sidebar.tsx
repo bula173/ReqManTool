@@ -1,12 +1,98 @@
 import { Loader, NavLink, ScrollArea, Stack, Text, Tooltip } from '@mantine/core';
-import { IconFolderPlus, IconFolders, IconFileText, IconPlus } from '@tabler/icons-react';
+import { IconAlertTriangle, IconFolderPlus, IconFolders, IconFileText, IconPlus } from '@tabler/icons-react';
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAppActions } from '../actions/context';
 import { useModules, useProjects } from '../api/queries';
-import type { Project } from '../api/types';
+import { isProjectStub, type Project, type ProjectListEntry, type ProjectStub } from '../api/types';
 import { NewModuleModal } from './NewModuleModal';
 import { ancestorIds, buildProjectForest, type ProjectForest } from './projectTree';
+
+interface NodeContext {
+  forest: ProjectForest;
+  activeProjectId: string | undefined;
+  activeModuleId: string | undefined;
+  /** Ancestors of the active project: start expanded so the active project is visible. */
+  activeAncestorIds: string[];
+  onRequestNewModule: (projectId: string) => void;
+}
+
+/** A project, or a read-only stub for a project that cannot be loaded. */
+function ProjectTreeNode({ project, ...context }: NodeContext & { project: ProjectListEntry }) {
+  return isProjectStub(project) ? (
+    <StubProjectNode project={project} {...context} />
+  ) : (
+    <ProjectNode project={project} {...context} />
+  );
+}
+
+/**
+ * A project whose project.json cannot be loaded (written by a newer ReqManTool,
+ * not valid JSON, …): greyed, with a warning icon and the reason shown inline
+ * (and in a tooltip on hover, focus or touch). Activating it opens the project
+ * page, which shows the load error; it has no modules and no "New module"
+ * entry, and only expands to show its readable subprojects, if any.
+ */
+function StubProjectNode({
+  project,
+  forest,
+  activeProjectId,
+  activeAncestorIds,
+  ...context
+}: NodeContext & { project: ProjectStub }) {
+  const navigate = useNavigate();
+  const [opened, setOpened] = useState(activeAncestorIds.includes(project.id));
+  // Nested only if it has subprojects: otherwise there is nothing to expand.
+  const subprojects = forest.childrenOf.get(project.id) ?? [];
+
+  return (
+    <Tooltip
+      label={`Read-only, cannot be opened: ${project.error}`}
+      multiline
+      w={360}
+      position="right"
+      withArrow
+      openDelay={300}
+      events={{ hover: true, focus: true, touch: true }}
+    >
+      <NavLink
+        // A button, so keyboard users can focus it (showing the tooltip) and activate it.
+        component="button"
+        type="button"
+        label={project.name}
+        description={
+          <Text component="span" size="xs" c="dimmed" lineClamp={2}>
+            Cannot be opened: {project.error}
+          </Text>
+        }
+        leftSection={<IconAlertTriangle size={16} />}
+        c="dimmed"
+        style={{ opacity: 0.6 }}
+        onClick={() => navigate(`/projects/${project.id}`)}
+        active={activeProjectId === project.id}
+        opened={opened}
+        onChange={setOpened}
+        childrenOffset={20}
+      >
+        {subprojects.length > 0 ? (
+          <>
+            {opened &&
+              subprojects.map((child) => (
+                <ProjectTreeNode
+                  key={child.id}
+                  project={child}
+                  forest={forest}
+                  activeProjectId={activeProjectId}
+                  activeAncestorIds={activeAncestorIds}
+                  {...context}
+                />
+              ))}
+          </>
+        ) : undefined}
+      </NavLink>
+    </Tooltip>
+  );
+}
 
 function ProjectNode({
   project,
@@ -15,15 +101,7 @@ function ProjectNode({
   activeModuleId,
   activeAncestorIds,
   onRequestNewModule,
-}: {
-  project: Project;
-  forest: ProjectForest;
-  activeProjectId: string | undefined;
-  activeModuleId: string | undefined;
-  /** Ancestors of the active project: start expanded so the active project is visible. */
-  activeAncestorIds: string[];
-  onRequestNewModule: (projectId: string) => void;
-}) {
+}: NodeContext & { project: Project }) {
   const navigate = useNavigate();
   const projectId = project.id;
   const isActiveProject = activeProjectId === projectId;
@@ -43,7 +121,7 @@ function ProjectNode({
     >
       {opened &&
         subprojects.map((child) => (
-          <ProjectNode
+          <ProjectTreeNode
             key={child.id}
             project={child}
             forest={forest}
@@ -125,7 +203,7 @@ export function Sidebar() {
           </Text>
         )}
         {forest.roots.map((project) => (
-          <ProjectNode
+          <ProjectTreeNode
             key={project.id}
             project={project}
             forest={forest}

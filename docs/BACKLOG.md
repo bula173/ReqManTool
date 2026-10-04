@@ -279,6 +279,60 @@
       not registry actions yet; no detail-panel (collapsible-panels item),
       Delete or F10/Alt shortcut; no user-template management; no frontend
       unit tests (no test runner in the repo).
+- [x] Project list with unloadable projects + `utf-8-sig` data files.
+      (1) Stubs: `GET /projects` and WebSocket `project.list` no longer
+      fail as a whole. A project whose `project.json` cannot be loaded
+      (newer `format_version`, invalid UTF-8 or JSON, not an object,
+      invalid `format_version`, missing key or wrong shape, unreadable
+      file, `project.json` that is a directory) is listed as a read-only
+      stub `{id, name, error}` (`ProjectStub` in `service.py`); `name` is
+      the stored name if usable, else the id; its stored parent is
+      ignored, so it is always top-level, but readable subprojects stay
+      under it; a folder removed mid-listing is skipped; a data-root
+      folder the process cannot search is listed as a stub only if its
+      name is a server slug (`PROJECT_SLUG_PATTERN`, no dot-names, so
+      `lost+found`/`.Spotlight-V100` stay hidden). Stubs are fully
+      read-only: every read/write of the project's module, requirement
+      and link-pair files runs the format check first; it shares
+      `_project_from_data` (upgrade + `Project.from_dict`) with loading,
+      so it fails exactly when loading would, and is cached only on
+      success. Opening a stub, or any call on it (modules, requirements,
+      links, views, attributes, purge, missing modules/requirements),
+      fails with the stub error: newer → REST 409, otherwise REST 400;
+      WebSocket -32602; no broadcast. An unreadable file reports "Project
+      '<id>' has an unreadable project.json: <strerror>" with no absolute
+      path. `purge_project`/`purge_module` load the project first
+      (missing project → 404 / -32001; a missing module in a valid
+      project is still `{"purged": 0}`). Frontend: `ProjectStub`/
+      `ProjectListEntry`/`isProjectStub` types, `useProjects()` returns
+      list entries; the sidebar `StubProjectNode` (greyed, warning icon,
+      error inline plus a tooltip on hover/focus/touch) is a button to
+      `/projects/{id}`, where `ProjectPage` shows "Failed to load
+      project: …", with no modules and no New module entry; parent
+      pickers list stubs disabled ("(cannot be opened)"); `HomePage`
+      opens the first loadable project, or shows an alert when every
+      project is a stub; `ProjectPage` shows a stub parent without a
+      link. (2) Encoding: project, module, requirement and link-pair
+      files are read as `utf-8-sig` via `_read_json` (config, templates
+      and template import already were); writes stay plain UTF-8 without
+      BOM in the unchanged format, `config.py` writes with explicit
+      utf-8; `_check_project_format` no longer swallows JSON errors, so a
+      malformed `project.json` is never treated as version 1. (3) Found
+      in review: an over-long project or module name (id longer than the
+      filesystem name limit, `os.pathconf` `PC_NAME_MAX`, fallback 255)
+      hung the server in `_unique_slug` or gave a 500; now REST 400 /
+      WebSocket -32602 with nothing written, ids are never truncated, and
+      the slug collision search is bounded at 10 000 candidates.
+      `docs/ARCHITECTURE.md` updated. Backend tests 692 → 756 (new
+      `backend/tests/test_project_stubs_and_encoding.py`). Not covered
+      (see backlog): the server still accepts an invalid-JSON (non-newer)
+      stub as the parent when creating or moving a project, while the UI
+      pickers disable all stubs (open decision); over-long link
+      configuration, user template and template module names still give
+      a 500; Windows MAX_PATH (260) is not covered by the per-name length
+      check; sidebar entries for normal projects and modules are `<a>`
+      without href, so they cannot be reached with Tab (pre-existing); no
+      frontend unit tests (no test runner in the repo).
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -758,18 +812,20 @@ to the categories above.
       or two attributes sharing a name, breaks re-import of a project's own
       CSV export — product decision needed: reject such names in
       `add_attribute_definition`, or match those columns by attribute id.
-- [ ] Project list with a project written by a newer ReqManTool. Follow-up
-      of the format-version item (2026-10-04). Decided 2026-10-04: list it
-      as a greyed, read-only stub entry carrying the error (like broken
-      user templates) instead of failing `GET /projects` / `project.list`
-      as a whole (409 today); opening it shows the "newer ReqManTool"
-      error.
-- [ ] Read all data files as `utf-8-sig` with an explicit encoding.
-      Follow-up of the format-version item (2026-10-04). `project.json`,
-      module, requirement and link-pair files are read with the locale
-      default encoding (`load_project`) and reject a UTF-8 BOM (templates
-      already accept one); `_check_project_format` also swallows JSON
-      errors (pre-existing).
+- [ ] Unloadable project as a parent: open decision. Follow-up of the
+      project-list stub item (2026-10-04). The server still accepts a
+      stub whose `project.json` is invalid (not newer) as the parent when
+      creating or moving a project (only a newer parent is rejected),
+      while the UI parent pickers disable every stub. Decide: should the
+      server refuse any unloadable parent (REST 400 / WebSocket -32602)?
+- [ ] Over-long link configuration and template names. Follow-up of the
+      project-list stub item (2026-10-04). Project and module names are
+      checked against the filesystem name limit, these are not: a link
+      configuration name gives a 500 with a partial write (`project.json`
+      is saved before the link-pair file fails); a user template name
+      (save as template, template import) gives a 500; a template module
+      name gives a 500 while staging (nothing published). Reject them
+      with REST 400 / WebSocket -32602 and write nothing.
 - [ ] Menu bar product decisions + template list loading. Follow-up of the
       menu bar item (2026-10-04). Decided 2026-10-04: (1) Ctrl/Cmd+V with
       the copied requirement itself selected pastes it as a sibling right

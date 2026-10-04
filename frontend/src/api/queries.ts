@@ -6,6 +6,7 @@ import type {
   LinkConfiguration,
   Module,
   Project,
+  ProjectListEntry,
   Requirement,
   TemplateSummary,
   VersionInfo,
@@ -103,10 +104,11 @@ export function useBrowseFolders(path: string | undefined, enabled: boolean): Us
 
 // --- projects -----------------------------------------------------------
 
-export function useProjects(): UseQueryResult<Project[]> {
+/** Every project; one that cannot be loaded is a read-only stub carrying `error` (see `isProjectStub`). */
+export function useProjects(): UseQueryResult<ProjectListEntry[]> {
   return useQuery({
     queryKey: queryKeys.projects,
-    queryFn: () => api.get<Project[]>('/projects'),
+    queryFn: () => api.get<ProjectListEntry[]>('/projects'),
   });
 }
 

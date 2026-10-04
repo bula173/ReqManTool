@@ -44,7 +44,7 @@ import { LinkConfigurationModal } from '../components/LinkConfigurationModal';
 import { NewModuleModal } from '../components/NewModuleModal';
 import { ProjectParentModal } from '../components/ProjectParentModal';
 import { ViewModal } from '../components/ViewModal';
-import type { LinkConfiguration, Module, View } from '../api/types';
+import { isProjectStub, type LinkConfiguration, type Module, type View } from '../api/types';
 
 export function ProjectPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -156,9 +156,18 @@ export function ProjectPage() {
           {parent && (
             <Text size="sm">
               Subproject of{' '}
-              <Anchor component={Link} to={`/projects/${parent.id}`}>
-                {parent.name}
-              </Anchor>
+              {isProjectStub(parent) ? (
+                // A parent that cannot be loaded cannot be opened: no link.
+                <Tooltip label={parent.error} multiline w={360} withArrow>
+                  <Text span size="sm" c="dimmed">
+                    {parent.name} (cannot be opened)
+                  </Text>
+                </Tooltip>
+              ) : (
+                <Anchor component={Link} to={`/projects/${parent.id}`}>
+                  {parent.name}
+                </Anchor>
+              )}
             </Text>
           )}
           <Text c="dimmed">{project.description || 'No description'}</Text>

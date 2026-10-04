@@ -162,7 +162,6 @@ def test_newer_project_is_rejected_on_read(service):
     project, module, _, req, _, _ = _newer_project(service)
     for call in (
         lambda: service.get_project(project.id),
-        lambda: service.list_projects(),
         lambda: service.list_modules(project.id),
         lambda: service.get_module(project.id, module.id),
         lambda: service.list_requirements(project.id, module.id),
@@ -171,6 +170,9 @@ def test_newer_project_is_rejected_on_read(service):
     ):
         with pytest.raises(NewerFormatError, match="written by a newer ReqManTool"):
             call()
+    # The list does not fail as a whole: the project is a read-only stub carrying the error.
+    [stub] = service.list_projects()
+    assert stub.id == project.id and "written by a newer ReqManTool" in stub.error
 
 
 def test_newer_project_files_are_never_written(service):
@@ -208,17 +210,23 @@ def test_newer_project_is_409_on_rest_and_error_on_ws(client, tmp_path):
 
     for resp in (
         client.get(f"/projects/{project_id}"),
-        client.get("/projects"),
         client.get(f"/projects/{project_id}/modules"),
         client.post(f"/projects/{project_id}/modules/{module_id}/requirements", json={"attributes": {"object_text": "x"}}),
     ):
         assert resp.status_code == 409, resp.text
         assert "written by a newer ReqManTool" in resp.json()["detail"]
 
+    resp = client.get("/projects")
+    assert resp.status_code == 200, resp.text
+    [stub] = resp.json()
+    assert stub["id"] == project_id and stub["name"] == "P"
+    assert "written by a newer ReqManTool" in stub["error"]
+
     with client.websocket_connect("/ws") as ws:
         response = _rpc(ws, "module.create", {"project_id": project_id, "name": "N", "prefix": "N"})
         assert response["error"]["code"] == -32602
         assert "written by a newer ReqManTool" in response["error"]["message"]
+        assert _rpc(ws, "project.list", {}, 2)["result"] == [stub]
     assert _snapshot(tmp_path / project_id) == before
 
 

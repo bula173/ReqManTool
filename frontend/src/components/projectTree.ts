@@ -1,10 +1,10 @@
-import type { Project } from '../api/types';
+import { isProjectStub, type ProjectListEntry } from '../api/types';
 
 export interface ProjectForest {
   /** Top-level projects, in the order received. */
-  roots: Project[];
+  roots: ProjectListEntry[];
   /** Child projects by parent id, in the order received. */
-  childrenOf: Map<string, Project[]>;
+  childrenOf: Map<string, ProjectListEntry[]>;
 }
 
 /**
@@ -14,10 +14,13 @@ export interface ProjectForest {
  * `GET /projects`; the same guard is repeated here so stale or hand-edited
  * data can never make the sidebar recurse forever: a project whose parent
  * is unknown, or whose ancestor chain loops, is shown at the top level.
+ * A stub (a project that cannot be loaded) is always top level too: its
+ * stored parent cannot be trusted. Its readable subprojects stay under it.
  */
-export function buildProjectForest(projects: Project[]): ProjectForest {
+export function buildProjectForest(projects: ProjectListEntry[]): ProjectForest {
   const byId = new Map(projects.map((p) => [p.id, p]));
-  const effectiveParent = (project: Project): string | null => {
+  const effectiveParent = (project: ProjectListEntry): string | null => {
+    if (isProjectStub(project)) return null;
     const parentId = project.parent_project_id ?? null;
     if (parentId === null || !byId.has(parentId)) return null;
     const seen = new Set<string>([project.id]);
@@ -31,8 +34,8 @@ export function buildProjectForest(projects: Project[]): ProjectForest {
     return parentId;
   };
 
-  const roots: Project[] = [];
-  const childrenOf = new Map<string, Project[]>();
+  const roots: ProjectListEntry[] = [];
+  const childrenOf = new Map<string, ProjectListEntry[]>();
   for (const project of projects) {
     const parentId = effectiveParent(project);
     if (parentId === null) {
@@ -47,9 +50,9 @@ export function buildProjectForest(projects: Project[]): ProjectForest {
 }
 
 /** Depth-first (pre-order) list of every project with its tree depth. */
-export function flattenProjectForest(forest: ProjectForest): { project: Project; depth: number }[] {
-  const result: { project: Project; depth: number }[] = [];
-  const visit = (project: Project, depth: number) => {
+export function flattenProjectForest(forest: ProjectForest): { project: ProjectListEntry; depth: number }[] {
+  const result: { project: ProjectListEntry; depth: number }[] = [];
+  const visit = (project: ProjectListEntry, depth: number) => {
     result.push({ project, depth });
     for (const child of forest.childrenOf.get(project.id) ?? []) visit(child, depth + 1);
   };
@@ -71,7 +74,7 @@ export function descendantIds(forest: ProjectForest, projectId: string): Set<str
 }
 
 /** Ids of every ancestor of `projectId` (nearest first). */
-export function ancestorIds(projects: Project[], projectId: string): string[] {
+export function ancestorIds(projects: ProjectListEntry[], projectId: string): string[] {
   const forest = buildProjectForest(projects);
   const parentOf = new Map<string, string>();
   for (const [parentId, children] of forest.childrenOf) {
@@ -86,15 +89,24 @@ export function ancestorIds(projects: Project[], projectId: string): string[] {
   return result;
 }
 
-/** Select options for picking a project, indented by tree depth. */
+/**
+ * Select options for picking a parent project, indented by tree depth.
+ *
+ * A stub (a project that cannot be loaded) is listed disabled so the tree
+ * stays readable, but it can never be picked: it cannot be a parent.
+ */
 export function projectOptions(
   forest: ProjectForest,
   exclude: Set<string> = new Set(),
-): { value: string; label: string }[] {
+): { value: string; label: string; disabled: boolean }[] {
   return flattenProjectForest(forest)
     .filter(({ project }) => !exclude.has(project.id))
-    .map(({ project, depth }) => ({
-      value: project.id,
-      label: `${'   '.repeat(depth)}${project.name}`,
-    }));
+    .map(({ project, depth }) => {
+      const stub = isProjectStub(project);
+      return {
+        value: project.id,
+        label: `${'   '.repeat(depth)}${project.name}${stub ? ' (cannot be opened)' : ''}`,
+        disabled: stub,
+      };
+    });
 }

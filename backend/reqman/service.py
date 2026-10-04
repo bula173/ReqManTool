@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -53,6 +54,9 @@ ATTRIBUTE_TYPES = ("string", "text", "integer", "boolean", "enum")
 
 _SLUG_NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
+# Upper bound on the candidates ``_unique_slug`` tries (``<slug>``, ``<slug>-2``, ...).
+_MAX_SLUG_ATTEMPTS = 10_000
+
 # Project id used while dry-running a template build to validate it; never written.
 _TEMPLATE_CHECK_PROJECT_ID = "template-check"
 
@@ -61,14 +65,70 @@ class ConflictError(ValueError):
     """The request clashes with existing data (REST 409; WebSocket treats it like any ValueError)."""
 
 
-def _unique_slug(name: str, exists_fn: Callable[[str], bool], fallback: str = "item") -> str:
+@dataclass
+class ProjectStub:
+    """A project listed by ``list_projects`` whose project.json cannot be loaded.
+
+    For example one written by a newer ReqManTool, or not valid JSON. It is
+    listed read-only, with the reason in ``error``, so one such project never
+    breaks the whole list; opening it (``get_project`` and every other
+    operation) fails with the same error and its files are never written.
+    Its stored parent cannot be trusted, so it is always listed top level.
+    Never persisted.
+    """
+
+    id: str
+    name: str
+    error: str
+    parent_project_id: None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        # ``parent_project_id`` is omitted like a top-level Project's.
+        return {"id": self.id, "name": self.name, "error": self.error}
+
+
+def _display_name(text: str | None, fallback: str) -> str:
+    """The ``name`` string of a JSON object in ``text``, stripped, if usable; else ``fallback``.
+
+    Best effort, for listing a file that cannot otherwise be loaded.
+    """
+    try:
+        name = json.loads(text)["name"] if text is not None else None
+    except (ValueError, TypeError, KeyError, IndexError, RecursionError):
+        name = None
+    if isinstance(name, str):
+        try:
+            name.encode("utf-8")
+        except UnicodeEncodeError:  # e.g. a lone surrogate escape: unlistable
+            name = None
+    return name.strip() if isinstance(name, str) and name.strip() else fallback
+
+
+def _unique_slug(
+    name: str,
+    exists_fn: Callable[[str], bool],
+    fallback: str = "item",
+    max_length: int | None = None,
+) -> str:
+    """A slug of ``name`` not taken per ``exists_fn``: the slug itself, else ``<slug>-2``, ``-3``, ...
+
+    With ``max_length`` (for an id used as a file or folder name), a
+    candidate longer than that raises ``ValueError``; ids are never
+    truncated. At most ``_MAX_SLUG_ATTEMPTS`` candidates are tried, so
+    this always ends.
+    """
     base = _SLUG_NON_ALNUM.sub("-", name.strip().lower()).strip("-") or fallback
     candidate = base
-    suffix = 2
-    while exists_fn(candidate):
+    for suffix in range(2, _MAX_SLUG_ATTEMPTS + 2):
+        if max_length is not None and len(candidate.encode("utf-8")) > max_length:
+            raise ValueError(
+                f"{fallback.capitalize()} name is too long: its id would be {len(candidate)} "
+                f"characters, but the file system allows at most {max_length}"
+            )
+        if not exists_fn(candidate):
+            return candidate
         candidate = f"{base}-{suffix}"
-        suffix += 1
-    return candidate
+    raise ValueError(f"Cannot find a free id for {fallback} '{base}': too many are taken")
 
 
 class ProjectService:
@@ -99,7 +159,9 @@ class ProjectService:
         """
         self._check_parent(None, parent_project_id)
         if template_id is None:
-            project_id = _unique_slug(name, self.store.project_exists, fallback="project")
+            project_id = _unique_slug(
+                name, self.store.project_exists, fallback="project", max_length=self.store.max_name_length()
+            )
             project = Project(
                 id=project_id,
                 name=name,
@@ -114,7 +176,9 @@ class ProjectService:
         # Skip any path that is taken, even by a non-project directory: the
         # staged project is moved there by a rename, which must not merge
         # into (or clobber) existing files.
-        project_id = _unique_slug(name, self.store.project_path_exists, fallback="project")
+        project_id = _unique_slug(
+            name, self.store.project_path_exists, fallback="project", max_length=self.store.max_name_length()
+        )
         try:
             project, modules = self._build_from_template(
                 template, project_id, name, description, parent_project_id
@@ -137,23 +201,45 @@ class ProjectService:
     def get_project(self, project_id: str) -> Project:
         return self.store.load_project(project_id)
 
-    def list_projects(self) -> list[Project]:
+    def list_projects(self) -> list[Project | ProjectStub]:
         """Every project, with ``parent_project_id`` as the effective subproject tree.
 
         Hand-edited data can hold a parent that does not exist, or a cycle;
         both are shown as top level here (only in the returned objects, the
         files are not rewritten), so the tree always terminates.
         ``get_project`` returns the stored value unchanged.
+
+        A project whose project.json cannot be loaded (written by a newer
+        ReqManTool, not valid UTF-8 JSON, wrong shape, invalid
+        ``format_version``, unreadable) is listed as a ``ProjectStub``
+        carrying the error, at the top level, instead of failing the whole
+        list. Its subprojects stay under it. Nothing is written.
         """
-        projects = [self.store.load_project(pid) for pid in self.store.list_project_ids()]
+        projects: list[Project | ProjectStub] = []
+        for project_id in self.store.list_project_ids():
+            try:
+                projects.append(self.store.load_project(project_id))
+            except FileNotFoundError:
+                continue  # removed since it was listed
+            except (OSError, ValueError) as exc:
+                logger.debug("Project %s cannot be loaded: %s", project_id, exc)
+                projects.append(ProjectStub(id=project_id, name=self._stub_name(project_id), error=str(exc)))
         broken = self._broken_parent_ids(projects)
         for project in projects:
             if project.id in broken:
                 project.parent_project_id = None
         return projects
 
+    def _stub_name(self, project_id: str) -> str:
+        """The ``name`` stored in an unloadable project.json, if it has a usable one; else the id."""
+        try:
+            text: str | None = self.store.read_project_text(project_id)
+        except (OSError, ValueError):
+            text = None
+        return _display_name(text, project_id)
+
     @staticmethod
-    def _broken_parent_ids(projects: list[Project]) -> set[str]:
+    def _broken_parent_ids(projects: list[Project | ProjectStub]) -> set[str]:
         """Ids of projects whose stored parent is dangling, themselves, or part of a cycle."""
         ids = {p.id for p in projects}
         parent_of: dict[str, str | None] = {}
@@ -338,7 +424,10 @@ class ProjectService:
         project = self.store.load_project(project_id)
         validate_prefix(prefix)
         module_id = _unique_slug(
-            name, lambda c: self.store.module_exists(project_id, c), fallback="module"
+            name,
+            lambda c: self.store.module_exists(project_id, c),
+            fallback="module",
+            max_length=self.store.max_name_length(),
         )
         module = Module(id=module_id, name=name, prefix=prefix, description=description)
         order = self._module_order(project)
@@ -707,6 +796,16 @@ class ProjectService:
         self.store.delete_requirement(project_id, module_id, requirement_id)
 
     def purge_module(self, project_id: str, module_id: str) -> int:
+        """Delete every requirement of a module (and its links); the number deleted.
+
+        A missing project is not found and a stub (unloadable project) is
+        refused, even when there is nothing to delete. A module that does not
+        exist in a loadable project has nothing to purge: 0.
+        """
+        self.store.load_project(project_id)
+        return self._purge_module(project_id, module_id)
+
+    def _purge_module(self, project_id: str, module_id: str) -> int:
         ids = set(self.store.list_requirement_ids(project_id, module_id))
         for requirement_id in ids:
             self._cleanup_links_for_requirement(project_id, requirement_id)
@@ -714,9 +813,12 @@ class ProjectService:
         return len(ids)
 
     def purge_project(self, project_id: str) -> int:
+        # A missing project is not found and a stub (unloadable project) is
+        # refused, even when there is nothing to delete.
+        self.store.load_project(project_id)
         total = 0
         for module_id in self.store.list_module_ids(project_id):
-            total += self.purge_module(project_id, module_id)
+            total += self._purge_module(project_id, module_id)
         return total
 
     # --- link configurations ("link modules") ----------------------------------
@@ -1036,16 +1138,7 @@ class ProjectService:
 
     @staticmethod
     def _fallback_template_name(text: str | None, local_id: str) -> str:
-        try:
-            name = json.loads(text)["name"] if text is not None else None
-        except (ValueError, TypeError, KeyError, IndexError, RecursionError):
-            name = None
-        if isinstance(name, str):
-            try:
-                name.encode("utf-8")
-            except UnicodeEncodeError:  # e.g. a lone surrogate escape: unlistable
-                name = None
-        return name.strip() if isinstance(name, str) and name.strip() else local_id
+        return _display_name(text, local_id)
 
     def list_templates(self) -> list[dict[str, Any]]:
         """Built-in templates, then user templates, each sorted by name.

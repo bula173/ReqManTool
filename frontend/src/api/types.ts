@@ -43,6 +43,30 @@ export interface Project {
   module_order?: string[];
 }
 
+/**
+ * An entry of GET /projects (WS `project.list`) for a project whose
+ * `project.json` cannot be loaded: written by a newer ReqManTool, not valid
+ * JSON, wrong shape, … It is read-only: opening it (GET /projects/{id} and
+ * every other call) fails with the same error, and it can never be a parent.
+ * Always listed top level (its stored parent cannot be trusted); its readable
+ * subprojects stay under it.
+ */
+export interface ProjectStub {
+  id: string;
+  /** The name stored in the file if it has a usable one, else the id. */
+  name: string;
+  parent_project_id?: null;
+  /** Why the project cannot be loaded. */
+  error: string;
+}
+
+/** One entry of GET /projects (WS `project.list`): a project, or a stub carrying `error`. */
+export type ProjectListEntry = (Project & { error?: undefined }) | ProjectStub;
+
+export function isProjectStub(entry: ProjectListEntry): entry is ProjectStub {
+  return typeof entry.error === 'string';
+}
+
 export interface Module {
   id: string;
   name: string;

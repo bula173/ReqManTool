@@ -3,6 +3,7 @@ import { IconFolderPlus, IconInfoCircle } from '@tabler/icons-react';
 import { Navigate } from 'react-router-dom';
 import { useAppActions } from '../actions/context';
 import { useProjects } from '../api/queries';
+import { isProjectStub } from '../api/types';
 
 export function HomePage() {
   const projectsQuery = useProjects();
@@ -24,8 +25,35 @@ export function HomePage() {
     );
   }
 
-  if (projectsQuery.data && projectsQuery.data.length > 0) {
-    return <Navigate to={`/projects/${projectsQuery.data[0].id}`} replace />;
+  const projects = projectsQuery.data ?? [];
+  // A stub (a project that cannot be loaded) cannot be opened: start on the first real project.
+  const firstOpenable = projects.find((p) => !isProjectStub(p));
+  if (firstOpenable) {
+    return <Navigate to={`/projects/${firstOpenable.id}`} replace />;
+  }
+
+  if (projects.length > 0) {
+    return (
+      <Alert icon={<IconInfoCircle size={16} />} color="orange" title="No project can be opened">
+        <Stack gap="xs">
+          <Text size="sm">
+            Every project in this data directory failed to load. Their files were not changed.
+          </Text>
+          {projects.filter(isProjectStub).map((stub) => (
+            <Text key={stub.id} size="sm">
+              {stub.name}: {stub.error}
+            </Text>
+          ))}
+          <Button
+            leftSection={<IconFolderPlus size={16} />}
+            onClick={() => run('file.newProject')}
+            w="fit-content"
+          >
+            Create a project
+          </Button>
+        </Stack>
+      </Alert>
+    );
   }
 
   return (

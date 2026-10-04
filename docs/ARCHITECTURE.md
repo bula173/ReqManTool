@@ -184,6 +184,10 @@ Nothing in ReqManTool asks the user to type an id:
 - **Project/module ids** are slugs derived from the name
   (`_unique_slug` in `service.py`): lowercase, non-alphanumeric runs
   collapsed to `-`, and a `-2`, `-3`, … suffix appended on collision.
+  Ids are never truncated: a name whose id (with any suffix) would be
+  longer than the file system allows for a folder name is rejected
+  (`ValueError`: REST 400, WebSocket -32602, nothing written), and the
+  collision search gives up with the same error after 10 000 candidates.
 - **Requirement ids** are `<module.prefix>-<sequence>`, zero-padded to 4
   digits (`REQ-0001`). The sequence is tracked in
   `Project.id_counters[prefix]` — **per prefix, project-wide**, not per
@@ -356,6 +360,38 @@ version. Templates keep their own, separate `format_version`.
   misread or overwritten. A newer config file stops the server at start
   (unless `REQMAN_DATA_DIR`/`--dir` is given) rather than silently using
   another data directory.
+- A `project.json` that cannot be loaded for any other reason (not valid
+  UTF-8 JSON, not a JSON object, an invalid `format_version`, a missing
+  required key or a value of the wrong shape, or a file this process cannot
+  read: no permission, a directory) raises `ValueError` (REST 400, WebSocket
+  -32602) on every read or write of that project's files, never treated as
+  version 1. The per-file check runs the same upgrade and validation as
+  loading the project, so it fails exactly when loading does. An unreadable
+  file is reported as "Project '<id>' has an unreadable project.json:
+  <reason>", without its absolute path.
+- **Project list stubs**: `GET /projects` (WS `project.list`) never fails as
+  a whole because of one project. A project whose `project.json` cannot be
+  loaded (newer version, invalid JSON, wrong shape, invalid
+  `format_version`, unreadable, or a project folder this process cannot
+  search) is listed as `{id, name, error}`
+  (`ProjectStub`; `name` is the stored name if usable, else the id), always
+  top level since its stored parent cannot be trusted; its readable
+  subprojects stay under it. A folder this process cannot search is listed
+  only if its name is a project slug, so system folders such as
+  `lost+found` or `.Spotlight-V100` are not. A stub is fully read-only:
+  opening it, reading, listing or changing any of its modules, requirements
+  or links (including ones that do not exist), and purging it or one of its
+  modules fail with the same error (no write, no broadcast). Purging a
+  project, or a module of a project, that does not exist is 404 (WebSocket
+  -32001); purging a module that does not exist in a loadable project
+  purges nothing (`{"purged": 0}`). The sidebar shows it greyed,
+  with a warning icon and the error inline (and in a tooltip on hover,
+  focus or touch), and no modules or "New module" entry; clicking or
+  activating it opens the project page, which shows the load error. Parent
+  pickers list it disabled.
+- Every data file (`project.json`, module, requirement, link-pair, template
+  and config files) is read as `utf-8-sig` (an optional UTF-8 BOM is
+  ignored) and written as plain UTF-8 without a BOM.
 - Bump a version for a change an older reader would misinterpret, and for
   any new persisted key that must survive a round-trip through an older
   tool: `Project.from_dict`/`to_dict` drop unknown keys, so a versioned
@@ -482,7 +518,7 @@ resource:
 
 | Resource | Routes |
 |---|---|
-| Projects | `POST/GET /projects` (`POST` body: `name`, `description`, optional `template_id`, optional `parent_project_id`), `GET /projects/{id}`, `PUT /projects/{id}/parent` (`{"parent_project_id": id or null}`) |
+| Projects | `POST/GET /projects` (`GET` lists unloadable projects as `{id, name, error}` stubs; `POST` body: `name`, `description`, optional `template_id`, optional `parent_project_id`), `GET /projects/{id}`, `PUT /projects/{id}/parent` (`{"parent_project_id": id or null}`) |
 | Templates | `GET /templates` → `[{id, source, name, description, modules: [{key, name, prefix}], error}]`, `POST /projects/{id}/save-as-template` (`{name, description}`; 409 on a name clash; broadcasts `templates_changed`), `POST /templates/import` (raw template JSON request body, `Content-Type: application/json` required (415 otherwise), UTF-8 with optional BOM, at most 1 MiB (413); invalid → 400, name clash → 409; returns the template summary; broadcasts `templates_changed`; WS: `template.import` `{text}`) |
 | Attributes | `POST /projects/{id}/attributes` |
 | Link configurations | `POST/GET /projects/{id}/link-configurations`, `DELETE .../link-configurations/{config_id}` |

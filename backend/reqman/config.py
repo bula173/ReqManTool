@@ -75,4 +75,4 @@ def save_data_dir(data_dir: str) -> None:
     config_file = _config_file()
     config_file.parent.mkdir(parents=True, exist_ok=True)
     data = with_format_version({"data_dir": data_dir}, CONFIG_FORMAT)
-    config_file.write_text(json.dumps(data, indent=2) + "\n")
+    config_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")

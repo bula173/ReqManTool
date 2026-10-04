@@ -223,7 +223,6 @@ def test_invalid_project_format_version_is_400_on_rest_and_32602_on_ws(client, t
 
     for resp in (
         client.get(f"/projects/{project_id}"),
-        client.get("/projects"),
         client.get(f"/projects/{project_id}/modules"),
         client.get(f"/projects/{project_id}/modules/{module_id}"),
         client.get(f"/projects/{project_id}/modules/{module_id}/requirements/{req_id}"),
@@ -233,6 +232,9 @@ def test_invalid_project_format_version_is_400_on_rest_and_32602_on_ws(client, t
     ):
         assert resp.status_code == 400, resp.text
         assert "invalid format_version" in resp.json()["detail"]
+    # The list shows the project as a read-only stub carrying the same error.
+    [stub] = client.get("/projects").json()
+    assert stub["id"] == project_id and "invalid format_version" in stub["error"]
 
     with client.websocket_connect("/ws") as ws, client.websocket_connect("/ws") as observer:
         for index, (method, params) in enumerate(
@@ -445,7 +447,6 @@ def test_newer_project_ws_writes_are_rejected_without_broadcast(client, tmp_path
                                        "source_module_id": other_id, "target_module_id": module_id}),
         ("view.create", {"project_id": project_id, "name": "V"}),
         ("project.save_as_template", {"id": project_id, "name": "From newer"}),
-        ("project.list", {}),
     ]
     with client.websocket_connect("/ws") as ws, client.websocket_connect("/ws") as observer:
         for index, (method, params) in enumerate(calls, start=1):
@@ -472,9 +473,10 @@ def test_other_projects_stay_usable_next_to_a_newer_project(service):
     assert [m.name for m in reloaded.list_modules(from_template.id)][0] == "StRS"
     summary = reloaded.save_project_as_template(blank.id, "From blank")
     assert reloaded.create_project("Copy", template_id=summary["id"]).id
-    # The listing as a whole refuses to misread the newer project.
-    with pytest.raises(NewerFormatError):
-        reloaded.list_projects()
+    # The listing shows the newer project as a read-only stub instead of failing.
+    listed = {p.id: p for p in reloaded.list_projects()}
+    assert NEWER_MESSAGE in listed[newer.id].error
+    assert not hasattr(listed[blank.id], "error")
     assert _snapshot(root / newer.id) == newer_before
 
 
