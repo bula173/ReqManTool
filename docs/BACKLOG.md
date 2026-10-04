@@ -238,6 +238,22 @@ to the categories above.
       RBC_NCBIR; a subproject is typically created from the same template.
       Sidebar shows the tree; cycles and dangling parents rejected
       server-side.
+- [ ] Application menu bar. Requested 2026-10-04. A desktop-style menu bar
+      in the app shell (`frontend/src/layout/`), built on the existing
+      features rather than duplicating their logic: **File** — New project
+      (from template, with parent project), Open project folder (the
+      existing data-directory switcher / folder picker), Load template
+      (create from a template; import a template JSON file, validated
+      server-side), Save as template, Import CSV, Export ▸ ReqIF/CSV/XLSX/
+      DOCX; **Edit** — Cut, Copy, Paste (as child / at root), Move Up, Move
+      Down, Delete on the selected requirement (same actions as the row
+      context menu), enabled/disabled by selection and clipboard state,
+      with keyboard shortcuts (Ctrl/Cmd+X/C/V, Alt+↑/↓) that stay inactive
+      while a text field or inline cell editor has focus; **View** —
+      attribute view selector, detail panel toggle, light/dark mode;
+      **Help** — keyboard shortcuts, documentation links, About (tool
+      version + build, from the version item). Depends on the version and
+      template items above.
 - [ ] Cross-project traceability in a subproject tree (follows the item
       above). A link configuration may target a module in the project's
       parent (or any ancestor) project, e.g. RBC_SA_NCBIR SyRS → RBC_GA_NCBIR
