@@ -364,15 +364,35 @@ to the categories above.
       Framework results import into a test_execution module, matched to
       test cases on a test-id attribute, plus a computed read-only
       "Verification status" system attribute on requirements.
-- [ ] Cross-project traceability in a subproject tree (follows the item
-      above). A link configuration may target a module in the project's
-      parent (or any ancestor) project, e.g. RBC_SA_NCBIR SyRS → RBC_GA_NCBIR
-      SyRS. Requirement ids are only unique per project, so cross-project
-      link ends are shown project-qualified (`RBC_GP:SYRS-0001`); link
-      pairs stay in the source (child) project; removing a requirement in
-      a parent cleans up child link pairs and mirrors; navigation, tooltip
-      and exports (ReqIF/CSV/XLSX/DOCX) handle qualified ends. Requested
-      2026-10-04 (chosen over a links-free tree).
+- [ ] Project references + cross-project traceability. Requested
+      2026-10-04 (chosen over a links-free tree; widened the same day from
+      "ancestors only" to explicit references). (1) Project references: a
+      project declares which other projects it references
+      (`Project.references`, list of project ids; the parent project is
+      referenced implicitly), managed from the project page, REST +
+      WebSocket; self-references and dangling ids rejected; a referenced
+      project can be anything — an ancestor, a sibling, or a shared
+      project such as a UNISIG subset library. (2) Cross-project links: a
+      link configuration's target module may live in any referenced
+      project (e.g. RBC_SA_NCBIR SyRS → RBC_GA_NCBIR SyRS, or SyRS → a
+      shared SUBSET-026 project), direction still enforced server-side.
+      Requirement ids are only unique per project, so cross-project link
+      ends are shown project-qualified (`RBC_GP:SYRS-0001`); link pairs stay
+      in the source (referencing) project; removing a requirement or
+      dropping a reference cleans up dependent link pairs and mirrors (or
+      is refused while links exist — to be decided at implementation);
+      navigation, tooltip, drag-and-drop linking and exports
+      (ReqIF/CSV/XLSX/DOCX) handle qualified ends.
+- [ ] Module folders. Requested 2026-10-04. Modules inside a project can be
+      organised into nested folders (create, rename, delete-empty, move a
+      module or folder into another folder, ordering within a folder),
+      shown as a tree in the sidebar and in module pickers (link
+      configuration dialogs, drag-and-drop, reports). Folders are purely
+      organisational: module ids, requirement ids and links are
+      unaffected. Persisted in `project.json` as an extension of the
+      persisted module order (from the format-version item), with a format
+      migration; templates may declare folders (e.g. `RBC_Template`:
+      Requirements/ StRS SyRS SwRS, Tests/ SysTest SwTest).
 - [ ] Distribution package + user-space install. Requested 2026-10-04.
       (1) Packaging: a `pyproject.toml` for the backend with a `reqman`
       console script; the built frontend (`npm run build` → `dist/`) is
