@@ -154,7 +154,10 @@ custom attribute schema per project ✅, object types beyond plain text
 rich/formatted requirement text (bold/lists/images, not just plain text) ❌,
 attribute types beyond string/text/integer/boolean/enum — notably **date**
 and **user** (who) ❌, requirement templates (pre-filled attribute sets for
-a new requirement) ❌.
+a new requirement) ❌, attribute schema evolution (rename/retire enum
+choices with migration, delete attributes, rename/delete modules/projects)
+and a multi-valued enum ❌, requirement reuse from an ancestor project with
+origin/drift tracking ❌.
 
 **Traceability** — links between modules ✅, link direction enforced by a
 configured link type per module pair ✅, **suspect links** (a link is
@@ -162,7 +165,11 @@ flagged when either endpoint's content changes after the link was made, so
 reviewers know to re-verify it) ❌, **traceability matrix** view (grid of
 source × target requirements showing which cells are linked) ❌,
 **coverage analysis** (% of a module's requirements with at least one
-outgoing/incoming link of a given type — finds orphaned requirements) ❌.
+outgoing/incoming link of a given type — finds orphaned requirements) ❌,
+**impact analysis** (transitive upstream/downstream walk) ❌, source/test-
+code tag traceability ❌, versioned reference-document citations (e.g.
+UNISIG subsets) ❌, safety registers — hazard log with closure status, SRAC
+register propagated down the project tree ❌.
 
 **History & baselines** — per-object change history (who/when/what changed)
 ❌ — deliberately left to the user's own git history per their explicit
@@ -177,7 +184,8 @@ attribute value ❌, saved/named views (a stored filter + column set) ✅,
 full-text search across a module or project ❌, global find-and-replace ❌.
 
 **Import / export** — ReqIF export ✅ (see limitations noted above), CSV
-export ✅, Excel export ✅, Word export ✅, CSV import ✅, ReqIF import ❌.
+export ✅, Excel export ✅, Word export ✅, CSV import ✅, ReqIF import ❌,
+test-result import (JUnit XML / Robot Framework) ❌.
 
 **Collaboration & review** — comments/discussion thread per requirement ❌,
 formal review/approval workflow (reviewer sign-off, review sets) ❌,
@@ -186,19 +194,24 @@ distinct from being "just another enum attribute") — arguably already
 achievable today via a user-defined enum attribute, so likely not a
 separate feature, just worth a default-attribute-template nudge ❌,
 change notifications beyond live table refresh (e.g. "notify me when a
-requirement linked to mine changes") ❌.
+requirement linked to mine changes") ❌, rule-based consistency/quality
+checks (conditional-required attributes, link counts, weak words) ❌.
 
 **Bulk operations & editing ergonomics** — copy/paste and cut/paste a
 requirement (subtree) ✅, multi-select + bulk attribute edit
-❌, sibling reordering (drag or move up/down) ✅.
+❌, sibling reordering (drag or move up/down) ✅, soft delete with a
+"Show deleted" toggle and undelete ❌.
 
 **Administration** — user accounts / permissions (who can edit vs. view) ❌
 — out of scope so far (single-user local tool, see Notes); user handling
 requested 2026-10-04, see backlog, concurrent-edit protection (two people editing the same requirement at once
-— currently last-write-wins, no lock/conflict warning) ❌.
+— currently last-write-wins, no lock/conflict warning) ❌, role sign-off
+records with an independence check (EN 50128 roles) ❌, tool qualification
+evidence (EN 50128 §6.7) ❌.
 
 **Reporting / publishing** — printable/publishable formatted document view
-of a module (the classic "generate a spec document" DOORS output) ❌.
+of a module (the classic "generate a spec document" DOORS output) ❌,
+custom report templates ❌.
 
 ## Backlog (not started)
 
@@ -303,6 +316,10 @@ to the categories above.
       affect, version/build under test, executor and date. Reports render
       in the UI and export to DOCX/XLSX (reusing the existing exporters'
       patterns); computed by `ProjectService` (read-only, REST + WebSocket).
+      (6) Result import (feature scout, 2026-10-04): JUnit XML / Robot
+      Framework results import into a test_execution module, matched to
+      test cases on a test-id attribute, plus a computed read-only
+      "Verification status" system attribute on requirements.
 - [ ] Cross-project traceability in a subproject tree (follows the item
       above). A link configuration may target a module in the project's
       parent (or any ancestor) project, e.g. RBC_SA_NCBIR SyRS → RBC_GA_NCBIR
@@ -340,6 +357,94 @@ to the categories above.
       same file (stable key order, two-space indent, trailing newline).
       Running from a git checkout (`etc/start*.sh`) keeps working. Default
       bind stays `localhost`.
+- [ ] Consistency/quality checks ("req lint"). Declarative rules in
+      `project.json`: conditional-required (Safety Related ⇒ SIL, Hazard
+      Ref, Verification Method), link counts per link configuration (every
+      SwRS ≥1 → SyRS unless Derived + Rationale), child SIL ≥ parent SIL,
+      and a weak-word list (TBD, should, may, and/or, "as appropriate").
+      `GET /projects/{id}/checks` + WebSocket `checks.run` return findings
+      with severity; a Checks panel jumps to each requirement; usable as a
+      CI / git pre-commit gate; `RBC_Template` ships a CENELEC rule set.
+      Suggested 2026-10-04 (feature scout, seen in Sphinx-Needs, DOORS Next
+      RQA, Jama Advisor, StrictDoc, Doorstop). Not yet requested.
+- [ ] Impact analysis. From the selected requirements, walk upstream/
+      downstream links transitively to a chosen depth, across modules (and
+      the project tree once cross-project links exist); the result lists
+      each reached requirement with distance, SIL, Safety Related and
+      linked tests. Computed, not stored. Export CSV/XLSX/DOCX with a
+      change-reference field, as the EN 50128 §6.6 modification/change-
+      control record. Suggested 2026-10-04 (feature scout, seen in Jama
+      impact analysis, ReqView multi-level traceability). Not yet requested.
+- [ ] SRAC register + propagation through the generic→specific project
+      tree (EN 50129). An SRAC module in a GP/GA project; descendants get
+      an "Inherited SRACs" view where each SRAC gets a per-child
+      disposition: Fulfilled (requires a cross-project link), Transferred
+      (re-exported) or Not applicable (requires a justification), stored in
+      `<project>/srac_closure.json`. A closure report; open SRACs become
+      check findings. Depends on templates/subprojects and cross-project
+      links. Suggested 2026-10-04 (feature scout, seen in no tool built-in;
+      closest ReqView Linked Projects; EN 50129 safety-case practice). Not
+      yet requested.
+- [ ] Hazard log module + closure status. `RBC_Template` gains a HAZ
+      module (cause, consequence, severity/frequency, risk class, THR/SIL,
+      status Open/Mitigated/Closed/Transferred) and a "Mitigates" link
+      configuration SyRS→HAZ, replacing the free-text Hazard Ref. A
+      computed closure-evidence attribute (are all mitigating requirements
+      verified?) and a check rule for "Closed with unverified
+      mitigations". Suggested 2026-10-04 (feature scout, seen in
+      Codebeamer risk management, ReqView FMEA template). Not yet requested.
+- [ ] Reference specifications with versions (UNISIG subsets). A
+      per-project registry of reference documents (e.g. SUBSET-026 v3.6.0,
+      SUBSET-037 v3.2.0, SUBSET-039, SUBSET-098) and a `reference`
+      attribute type holding (document, clause), shown as
+      `SUBSET-026 3.6.0 §3.5.3.7`. Bumping a document's version flags every
+      citing requirement for re-review via the suspect-link mechanism; a
+      "references by document" report; optionally a read-only external
+      module of imported clauses. Suggested 2026-10-04 (feature scout, seen
+      in Sphinx-Needs needimport/external needs, ReqView Linked Projects;
+      ERA B3R2/B4R1 spec lists). Not yet requested.
+- [ ] Role sign-off records + independence check (EN 50128 roles). A
+      record = subject (requirement/module/baseline), content hash, role
+      (Designer/Verifier/Validator/Assessor…), signer, timestamp, verdict,
+      comment, stored in `<project>/signoffs/`; it goes stale automatically
+      when the content hash changes. A per-project independence matrix is
+      evaluated as check findings — reporting only, not permissions.
+      Identity typed in, or from Cloudflare Access once user handling
+      exists. Suggested 2026-10-04 (feature scout, seen in Doorstop reviewed
+      fingerprints, Codebeamer reviews, Polarion approvals). Not yet
+      requested.
+- [ ] Requirement reuse from an ancestor project (branch with origin
+      tracking). Copy a module or subtree from an ancestor into a
+      descendant project with new ids, storing `origin {project_id,
+      requirement_id, content_hash}`; a drift badge shows when the origin
+      changed, with diff / pull update / mark as intentional deviation.
+      Suggested 2026-10-04 (feature scout, seen in Polarion branched
+      documents, ReqView Linked Projects). Not yet requested.
+- [ ] Soft delete. Remove marks a requirement `deleted` (optional reason /
+      CR id) instead of deleting its file; a "Show deleted" toggle,
+      Undelete, and exports that mark or skip deleted requirements. Purge
+      stays the hard delete. Suggested 2026-10-04 (feature scout, seen in
+      DOORS soft delete, ReqView, Doorstop `active`). Not yet requested.
+- [ ] Source-code and test-code tag traceability. Scan a configured local
+      code root read-only for tags such as `@req SWRS-0012`; SwRS gets
+      "Implemented in" and "Unit tests" system attributes, with coverage
+      counts and an orphan-tag list. Suggested 2026-10-04 (feature scout,
+      seen in StrictDoc @relation, Doorstop references). Not yet requested.
+- [ ] Attribute schema evolution + multi-valued enum. Edit/rename
+      attribute definitions; add/rename/retire enum choices with migration
+      across all requirement files; delete non-system attributes after a
+      confirmation listing affected requirements; rename/delete modules and
+      projects (no such routes today); a `multi_enum` type. Pairs with the
+      `date`/`user` type item. Suggested 2026-10-04 (feature scout, seen in
+      ReqView custom attributes). Not yet requested.
+- [ ] Tool qualification evidence pack (EN 50128 §6.7, likely class T2) —
+      a process item, not a feature. If ReqManTool output (coverage,
+      verification status, check results) is used as certification
+      evidence, it needs documented tool requirements, version-pinned
+      releases, and a regression-test evidence report generated from
+      `backend/tests/`. Depends on the version footer and distribution
+      items. Suggested 2026-10-04 (feature scout, seen in no tool; EN 50128
+      §6.7 practice). Not yet requested.
 - [ ] Import ReqIF (the CSV slice is done, see Done). Reuse the CSV
       import's all-or-nothing validation (collect every error, write
       nothing on failure) and its server-allocated-id approach (the file's
@@ -384,7 +489,11 @@ to the categories above.
       the existing string/text/integer/boolean/enum. Not yet requested.
 - [ ] Printable/publishable document view of a module (formatted export to
       a readable spec document, distinct from the structured ReqIF/CSV/
-      Excel/Word exports above). Not yet requested.
+      Excel/Word exports above), generalized into custom report templates
+      (merged feature-scout candidate, 2026-10-04): a user template picks
+      modules, attributes, filters and layout, so the spec document, the
+      traceability/verification reports and project-specific deliverables
+      share one mechanism. Not yet requested.
 - [ ] Git integration: the user manages requirement history via git
       themselves today (files are diff-friendly by design, see Notes).
       Possible in-app conveniences on top of that: show `git status`/diff
