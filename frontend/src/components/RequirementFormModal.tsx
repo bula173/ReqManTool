@@ -22,7 +22,8 @@ interface FormValues {
 /**
  * Whether the attribute has a default the server applies to new
  * requirements. Mirrors the server rule: a stored default that is not valid
- * for the attribute's type (legacy data) is ignored.
+ * for the attribute's type (legacy data) is ignored. A blank string default
+ * is not usable either: it cannot fill a required attribute.
  */
 function hasUsableDefault(attr: AttributeDefinition): boolean {
   const value = attr.default;
@@ -35,7 +36,7 @@ function hasUsableDefault(attr: AttributeDefinition): boolean {
     case 'enum':
       return typeof value === 'string' && (attr.choices ?? []).includes(value);
     default:
-      return typeof value === 'string';
+      return typeof value === 'string' && value.trim() !== '';
   }
 }
 

@@ -1978,6 +1978,47 @@ def test_legacy_invalid_default_of_required_attribute_counts_as_no_default(servi
     }
 
 
+@pytest.mark.parametrize("type_", ["string", "text"])
+@pytest.mark.parametrize("default", ["", "   ", "\n\t"])
+def test_add_attribute_rejects_blank_default_of_required_attribute(service, type_, default):
+    project = create_project(service)
+    with pytest.raises(ValueError) as excinfo:
+        service.add_attribute_definition(project.id, "owner", "Owner", type=type_, required=True, default=default)
+    assert str(excinfo.value) == "Attribute 'Owner' is required, so its default must not be empty"
+    assert [a.id for a in service.get_project(project.id).attributes] == ["object_text"]
+
+
+def test_add_attribute_accepts_blank_default_of_optional_and_no_default_of_required_attribute(service):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "notes", "Notes", type="text", default="  ")
+    service.add_attribute_definition(project.id, "owner", "Owner", required=True)
+    assert [a.id for a in service.get_project(project.id).attributes] == ["object_text", "notes", "owner"]
+
+
+@pytest.mark.parametrize("type_", ["Integer", "Enum", "str", "", "date"])
+def test_add_attribute_rejects_unknown_type(service, type_):
+    project = create_project(service)
+    with pytest.raises(ValueError) as excinfo:
+        service.add_attribute_definition(project.id, "priority", "Priority", type=type_, default="x")
+    assert str(excinfo.value) == (
+        f"Unknown attribute type '{type_}'; expected one of string, text, integer, boolean, enum"
+    )
+    assert [a.id for a in service.get_project(project.id).attributes] == ["object_text"]
+
+
+def test_legacy_unknown_attribute_type_is_kept_and_not_rewritten(service, tmp_path):
+    project = create_project(service)
+    _write_legacy_attributes(service, project.id, {"id": "size", "name": "Size", "type": "Integer"})
+    project_file = tmp_path / project.id / "project.json"
+    stored_before = project_file.read_text()
+    module = create_module(service, project.id)
+
+    requirement = service.add_requirement(project.id, module.id, {"object_text": "x", "size": "big"})
+    assert requirement.attributes == {"object_text": "x", "size": "big"}
+    assert service.get_project(project.id).attributes[-1].type == "Integer"
+    assert project_file.read_text().replace('"id_counters": {\n    "REQ": 1\n  }', '"id_counters": {}') == stored_before
+
+
 # --- R4: blank values for required attributes -----------------------------------
 
 
@@ -2034,17 +2075,44 @@ def test_required_enum_with_invalid_value_reports_only_the_value_problem(service
     assert str(excinfo.value) == "Status: '' is not one of ['Draft']"
 
 
+@pytest.mark.parametrize(
+    "type_, value, cell",
+    [("boolean", False, "false"), ("integer", 0, "0")],
+)
+def test_required_false_and_zero_count_as_values(service, type_, value, cell):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "flag", "Flag", type=type_, required=True)
+    module = create_module(service, project.id)
+
+    created = service.add_requirement(project.id, module.id, {"object_text": "a", "flag": value})
+    assert created.attributes == {"object_text": "a", "flag": value}
+
+    other = service.add_requirement(
+        project.id, module.id, {"object_text": "b", "flag": True if type_ == "boolean" else 1}
+    )
+    updated = service.update_requirement(project.id, module.id, other.id, {"flag": value})
+    assert updated.attributes == {"object_text": "b", "flag": value}
+    assert type(updated.attributes["flag"]) is type(value)
+
+    service.import_csv(project.id, module.id, f"ObjectText,Flag\nc,{cell}\n")
+    imported = _by_text(service, project.id, module.id)["c"].attributes
+    assert imported == {"object_text": "c", "flag": value}
+    assert type(imported["flag"]) is type(value)
+
+
 # --- R5: durable writes ----------------------------------------------------------
 
 
-def test_store_fsyncs_temporary_file_before_replace(service, monkeypatch):
+def test_store_syncs_temporary_file_before_replace(service, monkeypatch):
     import os
+
+    from reqman import store as store_module
 
     events: list[str] = []
     real_fsync, real_replace = os.fsync, os.replace
 
     def fsync(fd):
-        events.append("fsync")
+        events.append("sync")
         real_fsync(fd)
 
     def replace(src, dst):
@@ -2053,5 +2121,48 @@ def test_store_fsyncs_temporary_file_before_replace(service, monkeypatch):
 
     monkeypatch.setattr(os, "fsync", fsync)
     monkeypatch.setattr(os, "replace", replace)
+    fcntl = store_module.fcntl
+    if fcntl is not None and hasattr(fcntl, "F_FULLFSYNC"):
+        real_fcntl = fcntl.fcntl
+
+        def full_fsync(fd, cmd, *args):
+            if cmd == fcntl.F_FULLFSYNC:
+                events.append("sync")
+            return real_fcntl(fd, cmd, *args)
+
+        monkeypatch.setattr(fcntl, "fcntl", full_fsync)
     create_project(service)
-    assert events == ["fsync", "replace"]
+    assert events == ["sync", "replace"]
+
+
+@pytest.mark.parametrize(
+    "has_full_fsync, full_fsync_fails, expected",
+    [
+        (True, False, ["F_FULLFSYNC"]),
+        (True, True, ["F_FULLFSYNC", "fsync"]),
+        (False, False, ["fsync"]),
+    ],
+)
+def test_store_sync_prefers_full_fsync_and_falls_back_to_fsync(
+    monkeypatch, has_full_fsync, full_fsync_fails, expected
+):
+    import os
+    import types
+
+    from reqman import store as store_module
+
+    calls: list[str] = []
+
+    def fake_fcntl(fd, cmd):
+        calls.append("F_FULLFSYNC")
+        if full_fsync_fails:
+            raise OSError("not supported")
+
+    fake = types.SimpleNamespace(fcntl=fake_fcntl)
+    if has_full_fsync:
+        fake.F_FULLFSYNC = 51
+    monkeypatch.setattr(store_module, "fcntl", fake)
+    monkeypatch.setattr(os, "fsync", lambda fd: calls.append("fsync"))
+
+    store_module._sync(0)
+    assert calls == expected

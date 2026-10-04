@@ -907,3 +907,37 @@ def test_required_attribute_rejects_blank_value_on_rest_and_ws_create_and_update
 
     reqs = client.get(url).json()
     assert [(r["id"], r["attributes"]) for r in reqs] == [(req_id, {"object_text": "keep"})]
+
+
+# --- M1/M2: attribute type and blank required default -----------------------------
+
+
+@pytest.mark.parametrize(
+    "body, expected",
+    [
+        (
+            {"type": "Integer", "default": "5"},
+            "Unknown attribute type 'Integer'; expected one of string, text, integer, boolean, enum",
+        ),
+        (
+            {"type": "Enum", "choices": ["Low"]},
+            "Unknown attribute type 'Enum'; expected one of string, text, integer, boolean, enum",
+        ),
+        (
+            {"type": "string", "required": True, "default": "  "},
+            "Attribute 'Priority' is required, so its default must not be empty",
+        ),
+    ],
+)
+def test_add_attribute_rejects_unknown_type_and_blank_required_default_on_rest_and_ws(client, body, expected):
+    project_id = client.post("/projects", json={"name": "Project One"}).json()["id"]
+    body = {"id": "priority", "name": "Priority", **body}
+
+    resp = client.post(f"/projects/{project_id}/attributes", json=body)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == expected
+
+    with client.websocket_connect("/ws") as ws:
+        response = _rpc(ws, "attribute.add", {"project_id": project_id, **body})
+    assert response["error"] == {"code": -32602, "message": expected}
+    assert [a["id"] for a in client.get(f"/projects/{project_id}").json()["attributes"]] == ["object_text"]

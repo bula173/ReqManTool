@@ -23,6 +23,8 @@ BUILTIN_ATTRIBUTES = [
     AttributeDefinition(id="object_text", name="ObjectText", type="text", required=True),
 ]
 
+ATTRIBUTE_TYPES = ("string", "text", "integer", "boolean", "enum")
+
 _SLUG_NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
 
@@ -72,6 +74,8 @@ class ProjectService:
         if any(a.id == attr_id for a in project.attributes):
             raise ValueError(f"Attribute '{attr_id}' already defined on project '{project_id}'")
         name = self._checked_attribute_name(project, name)
+        if type not in ATTRIBUTE_TYPES:
+            raise ValueError(f"Unknown attribute type '{type}'; expected one of {', '.join(ATTRIBUTE_TYPES)}")
         definition = AttributeDefinition(
             id=attr_id, name=name, type=type, required=required, default=default, choices=choices
         )
@@ -87,7 +91,8 @@ class ProjectService:
         An enum needs a non-empty list of string choices; other types take no
         choices (``None``). The default must be a valid value for the type
         (``None`` means no default), so it can never be merged into a new
-        requirement as an invalid value.
+        requirement as an invalid value. A required attribute's default must
+        not be blank, or no requirement could ever omit the attribute.
         """
         if attr.type == "enum":
             if (
@@ -101,6 +106,8 @@ class ProjectService:
         problem = cls._value_problem(attr, attr.default)
         if problem is not None:
             raise ValueError(f"Invalid default value: {problem}")
+        if attr.required and attr.default is not None and cls._is_blank(attr.default):
+            raise ValueError(f"Attribute '{attr.name}' is required, so its default must not be empty")
 
     @staticmethod
     def _checked_attribute_name(project: Project, name: Any, kind: str = "Attribute") -> str:

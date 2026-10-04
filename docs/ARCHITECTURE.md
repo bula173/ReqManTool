@@ -121,10 +121,16 @@ persistence" below.
   that already have such names are not rewritten; their CSV import treats
   `Id`/`Module`/`Parent` as the reserved columns and needs the attribute's
   column headed with its `id`.
-  `add_attribute_definition` also rejects (400) an `enum` without a
+  `add_attribute_definition` also rejects (400) a `type` outside
+  `string | text | integer | boolean | enum` (checked first; "Unknown
+  attribute type '<type>'; expected one of …"), an `enum` without a
   non-empty list of string `choices`, `choices` on any other type (they must
-  be `null`), and a `default` that is not a valid value for the type (same
-  check as requirement values below; `null` means no default).
+  be `null`), a `default` that is not a valid value for the type (same
+  check as requirement values below; `null` means no default), and a blank
+  default (`""` or whitespace only) on a `required` attribute ("Attribute
+  '<Name>' is required, so its default must not be empty"), which could
+  never satisfy the required check. Stored legacy definitions with an
+  unknown type are not rewritten; their values are not type-checked.
 - **Attribute values** — `ProjectService._attribute_problems` is the single
   validation path for requirement attributes, used by REST and WebSocket
   add/update and by the CSV import (per row, after cells are parsed into
@@ -223,8 +229,10 @@ diffs are minimal and readable instead of single-line blobs or
 reordered-key noise.
 
 Each `ProjectStore` write is atomic: the JSON goes to a temporary file in
-the same directory, which is flushed and `fsync`ed and then replaces the
-target with `os.replace`. The directory is not `fsync`ed, so after a power
+the same directory, which is flushed and synced and then replaces the
+target with `os.replace`. Syncing uses `fcntl(F_FULLFSYNC)` where it exists
+(macOS, where `os.fsync` only reaches the drive cache), falling back to
+`os.fsync` if that fails, and `os.fsync` everywhere else. The directory is not `fsync`ed, so after a power
 loss right after a write the target may still hold its previous, complete
 contents.
 Operations that create several requirements (`add_requirement`,

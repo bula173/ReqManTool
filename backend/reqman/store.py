@@ -22,6 +22,11 @@ from typing import Any
 
 from .models import LinkPair, Module, Project, Requirement
 
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None  # type: ignore[assignment]
+
 PREFIX_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
 
@@ -33,6 +38,24 @@ def validate_prefix(value: str) -> None:
         )
 
 
+def _sync(fd: int) -> None:
+    """Flush ``fd``'s data to stable storage.
+
+    Where ``fcntl.F_FULLFSYNC`` exists (macOS), ``os.fsync`` only reaches the
+    drive's cache, so ``F_FULLFSYNC`` is used instead; if the filesystem does
+    not support it (``OSError``), this falls back to ``os.fsync``. Everywhere
+    else it is ``os.fsync``.
+    """
+    full_fsync = getattr(fcntl, "F_FULLFSYNC", None) if fcntl is not None else None
+    if full_fsync is not None:
+        try:
+            fcntl.fcntl(fd, full_fsync)
+            return
+        except OSError:
+            pass
+    os.fsync(fd)
+
+
 def _write_json(path: Path, data: Any) -> None:
     """Write ``data`` as two-space-indented JSON with a trailing newline, atomically.
 
@@ -40,9 +63,9 @@ def _write_json(path: Path, data: Any) -> None:
     ``os.replace`` is atomic) and its name does not end in ``.json``, so it is
     never listed as a requirement. It is removed if anything fails.
 
-    The temporary file is flushed and ``fsync``ed before the replace, so the
-    target is never swapped for a file whose contents are not yet on disk.
-    The directory itself is not ``fsync``ed: after a power loss right after
+    The temporary file is flushed and synced (``_sync``) before the replace,
+    so the target is never swapped for a file whose contents are not yet on
+    disk. The directory itself is not ``fsync``ed: after a power loss right after
     the replace, the target may still hold its previous (complete) contents.
     """
     text = json.dumps(data, indent=2) + "\n"
@@ -51,7 +74,7 @@ def _write_json(path: Path, data: Any) -> None:
         with open(tmp, "x", encoding="utf-8") as handle:
             handle.write(text)
             handle.flush()
-            os.fsync(handle.fileno())
+            _sync(handle.fileno())
         os.replace(tmp, path)
     except BaseException:
         try:
