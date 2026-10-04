@@ -254,6 +254,26 @@ to the categories above.
       **Help** — keyboard shortcuts, documentation links, About (tool
       version + build, from the version item). Depends on the version and
       template items above.
+- [ ] Multiple open modules (tabs), detachable module windows, and
+      drag-and-drop linking. Requested 2026-10-04. (1) Tabs: opening a
+      module adds a tab to a tab bar listing the open modules (project ·
+      module name); switch, close, and reorder tabs; the open-tab list is
+      remembered per browser. (2) Detach: a tab can be popped out into its
+      own browser window (minimal chrome, same live sync) and re-attached;
+      an optional side-by-side split view gives the same result inside one
+      window. (3) Drag-and-drop linking: drag a requirement row (or a
+      multi-selection, once bulk selection exists) from one module onto a
+      requirement in another module — across tabs/split panes or between
+      detached windows (HTML5 drag-and-drop with a typed payload of
+      project/module/requirement ids). The link set is resolved from the
+      project's link configurations between the two modules, in either
+      drag direction, and the link is created in the configured direction;
+      several matching configurations → the user picks one; **no link
+      configuration between the two modules → a warning is shown and no
+      link is created**. The server stays the authority (the existing
+      link-creation rules reject illegal pairs); duplicates are reported,
+      not duplicated. Works across projects once cross-project
+      traceability lands.
 - [ ] Cross-project traceability in a subproject tree (follows the item
       above). A link configuration may target a module in the project's
       parent (or any ancestor) project, e.g. RBC_SA_NCBIR SyRS → RBC_GA_NCBIR
