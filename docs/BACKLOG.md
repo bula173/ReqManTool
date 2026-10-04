@@ -409,6 +409,15 @@ to the categories above.
       widths in `project.json` (`View.column_widths`, backward compatible)
       so a shared view looks the same for everyone. "Reset column widths"
       in the View menu and the column header menu.
+- [ ] Collapsible (and resizable) side panels. Requested 2026-10-04. The
+      left panel (project/module tree) and the right panel (requirement
+      detail) can each be collapsed to a thin rail and expanded again —
+      via a chevron button on the panel edge, the View menu, and keyboard
+      shortcuts (e.g. Ctrl/Cmd+B left, Ctrl/Cmd+Alt+B right, inactive while
+      typing); dragging the panel border resizes it. Collapsed/expanded
+      state and widths are remembered per browser (not in git-tracked
+      data). On narrow screens both panels start collapsed and open as
+      overlays. The requirements table uses the freed width.
 - [ ] Multiple open modules (tabs), detachable module windows, and
       drag-and-drop linking. Requested 2026-10-04. (1) Tabs: opening a
       module adds a tab to a tab bar listing the open modules (project ·
