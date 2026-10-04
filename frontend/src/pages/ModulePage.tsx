@@ -25,6 +25,7 @@ import {
   IconCut,
   IconDownload,
   IconFileExport,
+  IconFileImport,
   IconLink,
   IconPlus,
   IconArrowsMove,
@@ -49,6 +50,7 @@ import {
 } from '../api/queries';
 import type { FindRequirementResult } from '../api/queries';
 import { EditableAttributeCell } from '../components/EditableAttributeCell';
+import { ImportCsvModal } from '../components/ImportCsvModal';
 import { LinkModal } from '../components/LinkModal';
 import { MoveRequirementModal } from '../components/MoveRequirementModal';
 import { RequirementFormModal } from '../components/RequirementFormModal';
@@ -130,6 +132,7 @@ export function ModulePage() {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [activeViewId, setActiveViewId] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
   const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map());
 
   const highlightId = searchParams.get('highlight');
@@ -381,6 +384,9 @@ export function ModulePage() {
           Export CSV
           <IconDownload size={14} style={{ marginLeft: 6 }} />
         </Button>
+        <Button variant="default" leftSection={<IconFileImport size={16} />} onClick={() => setImportOpen(true)}>
+          Import CSV
+        </Button>
         <Button
           component="a"
           href={`${API_BASE_URL}/projects/${projectId}/export/xlsx`}
@@ -619,6 +625,13 @@ export function ModulePage() {
         source={moveSource}
         allRequirements={requirements}
         onClose={() => setMoveSource(null)}
+      />
+      <ImportCsvModal
+        opened={importOpen}
+        onClose={() => setImportOpen(false)}
+        projectId={projectId}
+        moduleId={moduleId}
+        moduleName={module.name}
       />
     </Stack>
   );

@@ -3,6 +3,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import json
+
 import pytest
 
 from reqman.service import ProjectService
@@ -480,6 +482,50 @@ def test_move_requirement_appends_at_end_of_new_parent(service):
     assert moved.order == 1
 
 
+def test_add_requirement_after_removal_does_not_reuse_an_existing_order(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+    first = service.add_requirement(project.id, module.id, {"object_text": "First"})
+    second = service.add_requirement(project.id, module.id, {"object_text": "Second"})
+    third = service.add_requirement(project.id, module.id, {"object_text": "Third"})
+    service.remove_requirement(project.id, module.id, first.id)
+
+    added = service.add_requirement(project.id, module.id, {"object_text": "Added"})
+
+    # Existing orders are not renumbered; the new one goes after the last.
+    assert service.get_requirement(project.id, module.id, second.id).order == 1
+    assert service.get_requirement(project.id, module.id, third.id).order == 2
+    assert added.order == 3
+
+
+def test_move_requirement_after_removal_does_not_reuse_an_existing_order(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+    target = service.add_requirement(project.id, module.id, {"object_text": "Target"})
+    gone = service.add_requirement(project.id, module.id, {"object_text": "Gone"}, parent_id=target.id)
+    kept = service.add_requirement(project.id, module.id, {"object_text": "Kept"}, parent_id=target.id)
+    mover = service.add_requirement(project.id, module.id, {"object_text": "Mover"})
+    service.remove_requirement(project.id, module.id, gone.id)
+
+    moved = service.move_requirement(project.id, module.id, mover.id, target.id)
+
+    assert service.get_requirement(project.id, module.id, kept.id).order == 1
+    assert moved.order == 2
+
+
+def test_copy_requirement_after_removal_does_not_reuse_an_existing_order(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+    first = service.add_requirement(project.id, module.id, {"object_text": "First"})
+    second = service.add_requirement(project.id, module.id, {"object_text": "Second"})
+    service.remove_requirement(project.id, module.id, first.id)
+
+    copy = service.copy_requirement(project.id, module.id, second.id, None)
+
+    assert service.get_requirement(project.id, module.id, second.id).order == 1
+    assert copy.order == 2
+
+
 def test_copy_requirement_duplicates_subtree_with_new_ids(service):
     project = create_project(service)
     module = create_module(service, project.id)
@@ -558,6 +604,28 @@ def test_export_csv_includes_custom_attributes(service):
 
     assert rows[0] == ["Id", "Module", "Parent", "ObjectText", "Priority"]
     assert rows[1] == [req.id, module.id, "", "Req", "High"]
+
+
+def test_export_csv_writes_rows_depth_first_with_siblings_by_order(service):
+    import csv as csv_module
+    import io
+
+    project = create_project(service)
+    mod1 = create_module(service, project.id, "Module One", "REQ")
+    mod2 = create_module(service, project.id, "Module Two", "TEST")
+    a = service.add_requirement(project.id, mod1.id, {"object_text": "A"})
+    b = service.add_requirement(project.id, mod1.id, {"object_text": "B"})
+    a1 = service.add_requirement(project.id, mod1.id, {"object_text": "A1"}, parent_id=a.id)
+    a2 = service.add_requirement(project.id, mod1.id, {"object_text": "A2"}, parent_id=a.id)
+    other = service.add_requirement(project.id, mod2.id, {"object_text": "Other"})
+    service.reorder_requirement(project.id, mod1.id, b.id, "up")
+    service.reorder_requirement(project.id, mod1.id, a2.id, "up")
+
+    rows = list(csv_module.reader(io.StringIO(service.export_csv(project.id))))
+
+    assert [row[0] for row in rows[1:]] == [b.id, a.id, a2.id, a1.id, other.id]
+    assert rows[0] == ["Id", "Module", "Parent", "ObjectText"]
+    assert rows[3] == [a2.id, mod1.id, a.id, "A2"]
 
 
 def test_create_view(service):
@@ -711,3 +779,1066 @@ def test_export_docx_skips_empty_attribute_values(service):
 
     assert any("ObjectText: Has text, no notes" in t for t in body_texts)
     assert not any(t.startswith("Notes:") for t in body_texts)
+
+
+# --- CSV import ----------------------------------------------------------------
+
+
+def test_import_csv_creates_nested_requirements_with_server_ids(service):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "priority", "Priority", type="integer")
+    service.add_attribute_definition(project.id, "safety", "Safety", type="boolean")
+    service.add_attribute_definition(
+        project.id, "status", "Status", type="enum", choices=["Draft", "Approved"]
+    )
+    module = create_module(service, project.id)
+    existing = service.add_requirement(project.id, module.id, {"object_text": "Existing"})
+
+    csv_text = (
+        "Id,Module,Parent,ObjectText,Priority,Safety,Status\n"
+        "X-1,other,X-2,Child,3,yes,Draft\n"
+        "X-2,other,,Chapter,,FALSE,\n"
+    )
+    result = service.import_csv(project.id, module.id, csv_text)
+
+    assert result == {
+        "imported": 2,
+        "requirement_ids": ["REQ-0003", "REQ-0002"],
+        "ignored_columns": [],
+    }
+    chapter = service.get_requirement(project.id, module.id, "REQ-0002")
+    child = service.get_requirement(project.id, module.id, "REQ-0003")
+    assert chapter.parent_id is None and chapter.order == 1
+    assert chapter.attributes == {"object_text": "Chapter", "safety": False}
+    assert child.parent_id == "REQ-0002" and child.order == 0
+    assert child.attributes == {"object_text": "Child", "priority": 3, "safety": True, "status": "Draft"}
+    assert service.get_requirement(project.id, module.id, existing.id).order == 0
+
+
+def test_import_csv_roundtrips_export_and_ignores_link_mirror_columns(service):
+    project = create_project(service)
+    mod_a = create_module(service, project.id, "Module A", "A")
+    mod_b = create_module(service, project.id, "Module B", "B")
+    parent = service.add_requirement(project.id, mod_a.id, {"object_text": "Parent"})
+    service.add_requirement(project.id, mod_a.id, {"object_text": "Child"}, parent_id=parent.id)
+    target = service.add_requirement(project.id, mod_b.id, {"object_text": "Target"})
+    config = service.create_link_configuration(project.id, "Satisfies", mod_a.id, mod_b.id)
+    service.link_requirements(project.id, config.id, parent.id, target.id)
+
+    exported = service.export_csv(project.id)
+    module_a_only = "\n".join(
+        line for line in exported.splitlines() if not line.split(",")[1] == mod_b.id
+    )
+    result = service.import_csv(project.id, mod_b.id, module_a_only)
+
+    assert result["imported"] == 2
+    assert result["ignored_columns"] == ["Satisfies"]
+    imported = {r.id: r for r in service.list_requirements(project.id, mod_b.id) if r.id != target.id}
+    by_text = {r.attributes["object_text"]: r for r in imported.values()}
+    assert by_text["Child"].parent_id == by_text["Parent"].id
+    assert all(config.id not in r.attributes for r in imported.values())
+
+
+def test_import_csv_is_all_or_nothing_with_row_numbered_errors(service):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "priority", "Priority", type="integer")
+    module = create_module(service, project.id)
+
+    csv_text = "Id,Parent,ObjectText,Priority\nA,,Fine,1\nB,,,2\nC,Z,Orphan,high\n"
+    with pytest.raises(ValueError) as excinfo:
+        service.import_csv(project.id, module.id, csv_text)
+
+    message = str(excinfo.value)
+    assert "Row 3: required attribute 'ObjectText' is empty" in message
+    assert "Row 4: Priority: 'high' is not an integer" in message
+    assert "Row 4: Parent 'Z' does not match" in message
+    assert service.list_requirements(project.id, module.id) == []
+    assert service.get_project(project.id).id_counters == {}
+
+
+@pytest.mark.parametrize(
+    "csv_text, expected",
+    [
+        ("Id,ObjectText,Bogus\n1,x,y\n", "Unknown column(s) ['Bogus']"),
+        ("Id,Parent,ObjectText\nA,B,x\nB,A,y\n", "form a cycle"),
+        ("Id,Parent,ObjectText\nA,A,x\n", "cannot be its own parent"),
+        ("Id,ObjectText\nA,x\nA,y\n", "Id 'A' is already used by row 2"),
+        ("Id,Module,ObjectText\n1,m1,x\n2,m2,y\n", "contains several modules"),
+        ("Id,ObjectText\n", "no requirement rows"),
+        ("", "empty"),
+    ],
+)
+def test_import_csv_rejects_invalid_files(service, csv_text, expected):
+    project = create_project(service)
+    module = create_module(service, project.id)
+    with pytest.raises(ValueError) as excinfo:
+        service.import_csv(project.id, module.id, csv_text)
+    assert expected in str(excinfo.value)
+    assert service.list_requirements(project.id, module.id) == []
+
+
+def test_import_csv_missing_module_raises_not_found(service):
+    project = create_project(service)
+    with pytest.raises(FileNotFoundError):
+        service.import_csv(project.id, "missing", "ObjectText\nx\n")
+
+
+def _import_error(service, project_id, module_id, csv_text):
+    with pytest.raises(ValueError) as excinfo:
+        service.import_csv(project_id, module_id, csv_text)
+    assert service.list_requirements(project_id, module_id) == []
+    return str(excinfo.value)
+
+
+def _by_text(service, project_id, module_id):
+    return {r.attributes.get("object_text"): r for r in service.list_requirements(project_id, module_id)}
+
+
+def test_import_csv_keeps_quoted_multiline_commas_and_quotes_verbatim(service):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "notes", "Notes")
+    module = create_module(service, project.id)
+
+    csv_text = (
+        'Id,ObjectText,Notes\r\n'
+        '1,"Line one\nLine two, with comma","He said ""hi"", then left"\r\n'
+        '2,"CRLF\r\ninside","  padded  "\r\n'
+        '3,"""quoted"" start",\r\n'
+    )
+    result = service.import_csv(project.id, module.id, csv_text)
+
+    assert result["imported"] == 3
+    reqs = {r.id: r.attributes for r in service.list_requirements(project.id, module.id)}
+    assert reqs["REQ-0001"] == {"object_text": "Line one\nLine two, with comma", "notes": 'He said "hi", then left'}
+    assert reqs["REQ-0002"] == {"object_text": "CRLF\r\ninside", "notes": "  padded  "}
+    assert reqs["REQ-0003"] == {"object_text": '"quoted" start'}
+
+
+def test_import_csv_accepts_bare_cr_line_endings(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+
+    # Excel for Mac's "CSV (Macintosh)" format ends lines with a bare CR.
+    csv_text = 'Id,Parent,ObjectText\r1,,hello\r2,1,"multi\r\nline"\r'
+    result = service.import_csv(project.id, module.id, csv_text)
+
+    assert result["imported"] == 2
+    reqs = _by_text(service, project.id, module.id)
+    assert reqs["multi\r\nline"].parent_id == reqs["hello"].id
+
+
+def test_import_csv_row_numbers_count_records_not_physical_lines(service):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "priority", "Priority", type="integer")
+    module = create_module(service, project.id)
+
+    message = _import_error(service, project.id, module.id, 'ObjectText,Priority\n"a\nb\nc",1\nd,x\n')
+    assert "Row 3: Priority: 'x' is not an integer" in message
+
+
+def test_import_csv_allows_empty_header_columns_while_their_cells_are_empty(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+
+    csv_text = "Id,,ObjectText,,\n1,,First,,\n2, ,Second\n3,,Third,,,\n"
+    result = service.import_csv(project.id, module.id, csv_text)
+
+    assert result["imported"] == 3
+    assert set(_by_text(service, project.id, module.id)) == {"First", "Second", "Third"}
+
+
+@pytest.mark.parametrize(
+    "csv_text, expected",
+    [
+        ("Id,ObjectText,,\n1,x,,oops\n", "Row 2: column(s) [4] have a value but no header"),
+        ("Id,,ObjectText\n1,oops,x\n", "Row 2: column(s) [2] have a value but no header"),
+        ("Id,ObjectText\n1,x,extra\n", "Row 2: has 3 cells but the header has 2 columns"),
+    ],
+)
+def test_import_csv_rejects_values_without_a_header(service, csv_text, expected):
+    project = create_project(service)
+    module = create_module(service, project.id)
+    assert expected in _import_error(service, project.id, module.id, csv_text)
+
+
+def test_import_csv_multi_level_parents_declared_after_children(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+    existing = service.add_requirement(project.id, module.id, {"object_text": "Existing"})
+
+    csv_text = (
+        "Id,Parent,ObjectText\n"
+        "C,B,Grandchild\n"
+        "B2,A,Second child\n"
+        ",A,Keyless child\n"
+        "B,A,Third child\n"
+        "A,,Root\n"
+    )
+    result = service.import_csv(project.id, module.id, csv_text)
+
+    # Parents are created first; ids are returned in file order.
+    assert result["requirement_ids"] == ["REQ-0006", "REQ-0003", "REQ-0004", "REQ-0005", "REQ-0002"]
+    reqs = _by_text(service, project.id, module.id)
+    root, grandchild = reqs["Root"], reqs["Grandchild"]
+    assert (root.id, root.parent_id, root.order) == ("REQ-0002", None, 1)
+    assert [(reqs[t].parent_id, reqs[t].order) for t in ("Second child", "Keyless child", "Third child")] == [
+        (root.id, 0),
+        (root.id, 1),
+        (root.id, 2),
+    ]
+    assert (grandchild.parent_id, grandchild.order) == (reqs["Third child"].id, 0)
+    assert reqs["Existing"].id == existing.id and reqs["Existing"].order == 0
+
+
+def test_import_csv_rejects_longer_cycles_and_rows_hanging_off_them(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+
+    csv_text = "Id,Parent,ObjectText\nA,C,a\nB,A,b\nC,B,c\nD,A,d\nE,,fine\n"
+    message = _import_error(service, project.id, module.id, csv_text)
+    for row in (2, 3, 4, 5):
+        assert f"Row {row}: the Parent references form a cycle" in message
+    assert "Row 6" not in message
+    assert service.get_project(project.id).id_counters == {}
+
+
+def test_import_csv_rejects_self_parent_inside_otherwise_valid_tree(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+
+    message = _import_error(
+        service, project.id, module.id, "Id,Parent,ObjectText\nA,,root\nB,A,child\nC,C,self\n"
+    )
+    assert "Row 4: a requirement cannot be its own parent" in message
+    assert "Row 2" not in message and "Row 3" not in message
+
+
+def test_import_csv_parent_must_be_in_file_not_an_existing_requirement(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+    existing = service.add_requirement(project.id, module.id, {"object_text": "Existing"})
+
+    with pytest.raises(ValueError) as excinfo:
+        service.import_csv(project.id, module.id, f"Parent,ObjectText\n{existing.id},child\n")
+    assert f"Row 2: Parent '{existing.id}' does not match the Id of any row in this file" in str(excinfo.value)
+    assert [r.id for r in service.list_requirements(project.id, module.id)] == [existing.id]
+
+
+def test_import_csv_duplicate_ids_are_trimmed_and_case_sensitive(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+
+    message = _import_error(service, project.id, module.id, "Id,ObjectText\nA,x\n A ,y\nb,z\nA,w\n")
+    assert "Row 3: Id 'A' is already used by row 2" in message
+    assert "Row 5: Id 'A' is already used by row 2" in message
+
+    result = service.import_csv(project.id, module.id, "Id,ObjectText\na,x\nA,y\n")
+    assert result["imported"] == 2
+
+
+def test_import_csv_module_column_single_value_allowed_multiple_rejected(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+
+    result = service.import_csv(
+        project.id, module.id, "Module,ObjectText\nsome-other-module,x\n,y\n some-other-module ,z\n"
+    )
+    assert result["imported"] == 3
+
+    other = create_module(service, project.id, "Module Two", "REQ")
+    message = _import_error(service, project.id, other.id, "Module,ObjectText\nm1,x\nM1,y\n")
+    assert "contains several modules ['M1', 'm1']" in message
+
+
+def test_import_csv_matches_columns_by_attribute_id_and_name(service):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "priority", "Priority", type="integer")
+    module = create_module(service, project.id)
+
+    result = service.import_csv(project.id, module.id, "object_text, priority \nBy id,7\n")
+    assert result["imported"] == 1
+    assert service.get_requirement(project.id, module.id, "REQ-0001").attributes == {
+        "object_text": "By id",
+        "priority": 7,
+    }
+
+
+def test_import_csv_name_match_takes_precedence_over_id_match(service):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "x", "y")
+    service.add_attribute_definition(project.id, "y", "z")
+    module = create_module(service, project.id)
+
+    service.import_csv(project.id, module.id, "ObjectText,y\nrow,value\n")
+
+    assert service.get_requirement(project.id, module.id, "REQ-0001").attributes == {
+        "object_text": "row",
+        "x": "value",
+    }
+
+
+def test_import_csv_rejects_name_and_id_columns_for_same_attribute(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+
+    message = _import_error(service, project.id, module.id, "ObjectText,object_text\nx,y\n")
+    assert "Column 'object_text' maps to attribute 'object_text', which another column already uses" in message
+
+    message = _import_error(service, project.id, module.id, "ObjectText,ObjectText\nx,y\n")
+    assert "Duplicate column 'ObjectText'" in message
+
+
+@pytest.mark.parametrize(
+    "cell, expected",
+    [
+        ("true", True), ("TRUE", True), ("True", True), ("yes", True), ("Yes", True),
+        ("y", True), ("Y", True), ("1", True), (" yes ", True),
+        ("false", False), ("FALSE", False), ("no", False), ("NO", False),
+        ("n", False), ("N", False), ("0", False), (" 0 ", False),
+    ],
+)
+def test_import_csv_boolean_variants(service, cell, expected):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "safety", "Safety", type="boolean")
+    module = create_module(service, project.id)
+
+    service.import_csv(project.id, module.id, f"ObjectText,Safety\nx,{cell}\n")
+
+    assert service.get_requirement(project.id, module.id, "REQ-0001").attributes["safety"] is expected
+
+
+@pytest.mark.parametrize("cell", ["on", "off", "2", "t", "nope", "-1"])
+def test_import_csv_rejects_invalid_booleans(service, cell):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "safety", "Safety", type="boolean")
+    module = create_module(service, project.id)
+
+    message = _import_error(service, project.id, module.id, f"ObjectText,Safety\nx,{cell}\n")
+    assert f"Row 2: Safety: '{cell}' is not a boolean" in message
+
+
+@pytest.mark.parametrize(
+    "cell, expected",
+    [("5", 5), ("+5", 5), ("-3", -3), (" 5", 5), ("5 ", 5), ("0", 0), ("007", 7), ("-0", 0)],
+)
+def test_import_csv_integer_variants(service, cell, expected):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "priority", "Priority", type="integer")
+    module = create_module(service, project.id)
+
+    service.import_csv(project.id, module.id, f'ObjectText,Priority\nx,"{cell}"\n')
+
+    value = service.get_requirement(project.id, module.id, "REQ-0001").attributes["priority"]
+    assert value == expected and type(value) is int
+
+
+@pytest.mark.parametrize("cell", ["1.0", "1e3", "1_000", "- 3", "++5", "0x10", "five", "٣", "１２"])
+def test_import_csv_rejects_invalid_integers(service, cell):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "priority", "Priority", type="integer")
+    module = create_module(service, project.id)
+
+    message = _import_error(service, project.id, module.id, f'ObjectText,Priority\nx,"{cell}"\n')
+    assert f"Row 2: Priority: '{cell}' is not an integer" in message
+
+
+def test_import_csv_enum_requires_exact_match(service):
+    project = create_project(service)
+    service.add_attribute_definition(
+        project.id, "status", "Status", type="enum", choices=["Draft", "In review"]
+    )
+    module = create_module(service, project.id)
+
+    message = _import_error(
+        service, project.id, module.id, 'ObjectText,Status\na," Draft"\nb,"Draft "\nc,draft\nd,In  review\n'
+    )
+    for row, value in ((2, " Draft"), (3, "Draft "), (4, "draft"), (5, "In  review")):
+        assert f"Row {row}: Status: '{value}' is not one of ['Draft', 'In review']" in message
+
+    service.import_csv(project.id, module.id, "ObjectText,Status\na,In review\nb,   \n")
+    reqs = _by_text(service, project.id, module.id)
+    assert reqs["a"].attributes["status"] == "In review"
+    assert "status" not in reqs["b"].attributes
+
+
+def test_import_csv_required_attribute_without_default_must_be_filled(service):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "owner", "Owner", required=True)
+    module = create_module(service, project.id)
+
+    message = _import_error(service, project.id, module.id, 'ObjectText,Owner\na,alice\nb,\nc,"   "\n')
+    assert "Row 3: required attribute 'Owner' is empty" in message
+    assert "Row 4: required attribute 'Owner' is empty" in message
+    assert "Row 2" not in message
+
+    message = _import_error(service, project.id, module.id, "ObjectText\na\nb\n")
+    assert "Row 2: required attribute 'Owner' is empty" in message
+    assert "Row 3: required attribute 'Owner' is empty" in message
+
+
+def test_import_csv_applies_attribute_defaults_to_empty_cells(service):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "priority", "Priority", type="integer", default=5)
+    service.add_attribute_definition(project.id, "owner", "Owner", required=True, default="team")
+    service.add_attribute_definition(
+        project.id, "status", "Status", type="enum", choices=["Draft", "Done"], default="Draft"
+    )
+    module = create_module(service, project.id)
+
+    service.import_csv(project.id, module.id, "ObjectText,Priority,Owner\nempty,,\nfilled,9,alice\n")
+    service.import_csv(project.id, module.id, "ObjectText,Status\nno columns,\nexplicit,Done\n")
+
+    reqs = _by_text(service, project.id, module.id)
+    assert reqs["empty"].attributes == {"object_text": "empty", "priority": 5, "owner": "team", "status": "Draft"}
+    assert reqs["filled"].attributes == {"object_text": "filled", "priority": 9, "owner": "alice", "status": "Draft"}
+    assert reqs["no columns"].attributes == {
+        "object_text": "no columns", "priority": 5, "owner": "team", "status": "Draft",
+    }
+    assert reqs["explicit"].attributes["status"] == "Done"
+
+
+def test_import_csv_skips_rows_where_every_cell_is_empty(service):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "priority", "Priority", type="integer")
+    module = create_module(service, project.id)
+
+    result = service.import_csv(project.id, module.id, "ObjectText,Priority\nfirst,1\n,\n  ,  \n\n\"\",\nsecond,2\n\n")
+    assert result == {"imported": 2, "requirement_ids": ["REQ-0001", "REQ-0002"], "ignored_columns": []}
+    assert [(r.attributes["object_text"], r.order) for r in service.list_requirements(project.id, module.id)] == [
+        ("first", 0),
+        ("second", 1),
+    ]
+
+    other = create_module(service, project.id, "Module Two", "OTH")
+    message = _import_error(service, project.id, other.id, "ObjectText,Priority\nfirst,1\n,\n\nsecond,x\n")
+    assert "Row 5: Priority: 'x' is not an integer" in message
+
+
+def test_import_csv_whitespace_only_cell_means_not_set(service):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "notes", "Notes")
+    module = create_module(service, project.id)
+
+    service.import_csv(project.id, module.id, 'ObjectText,Notes\nx,"   "\n')
+
+    assert service.get_requirement(project.id, module.id, "REQ-0001").attributes == {"object_text": "x"}
+
+
+def test_import_csv_appends_roots_after_existing_roots(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+    first = service.add_requirement(project.id, module.id, {"object_text": "First"})
+    service.add_requirement(project.id, module.id, {"object_text": "Nested"}, parent_id=first.id)
+    service.add_requirement(project.id, module.id, {"object_text": "Second"})
+
+    service.import_csv(project.id, module.id, "Id,Parent,ObjectText\nA,,Imported A\n,A,Imported child\n,,Imported B\n")
+
+    reqs = _by_text(service, project.id, module.id)
+    roots = sorted((r for r in reqs.values() if r.parent_id is None), key=lambda r: r.order)
+    assert [r.attributes["object_text"] for r in roots] == ["First", "Second", "Imported A", "Imported B"]
+    assert [r.order for r in roots] == [0, 1, 2, 3]
+    assert reqs["Imported child"].order == 0
+
+
+def test_import_csv_roots_follow_existing_roots_after_a_removal(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+    first = service.add_requirement(project.id, module.id, {"object_text": "First"})
+    service.add_requirement(project.id, module.id, {"object_text": "Second"})
+    service.add_requirement(project.id, module.id, {"object_text": "Third"})
+    service.remove_requirement(project.id, module.id, first.id)
+
+    service.import_csv(project.id, module.id, "ObjectText\nImported\n")
+
+    reqs = _by_text(service, project.id, module.id)
+    existing_orders = [reqs["Second"].order, reqs["Third"].order]
+    assert reqs["Imported"].order > max(existing_orders)
+
+
+def test_import_csv_persists_in_json_format_after_reload(service, tmp_path):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "safety", "Safety", type="boolean")
+    module = create_module(service, project.id)
+    reference = service.add_requirement(project.id, module.id, {"object_text": "Reference"})
+
+    service.import_csv(project.id, module.id, "Id,Parent,ObjectText,Safety\nP,,Zażółć 🚀,yes\nC,P,Child,no\n")
+
+    reloaded = ProjectService(ProjectStore(tmp_path))
+    reqs = {r.id: r for r in reloaded.list_requirements(project.id, module.id)}
+    assert reqs["REQ-0002"].attributes == {"object_text": "Zażółć 🚀", "safety": True}
+    assert (reqs["REQ-0003"].parent_id, reqs["REQ-0003"].attributes["safety"]) == ("REQ-0002", False)
+    assert reloaded.get_project(project.id).id_counters == {"REQ": 3}
+
+    req_dir = tmp_path / project.id / "modules" / module.id / "requirements"
+    reference_keys = list(json.loads((req_dir / f"{reference.id}.json").read_text()))
+    for requirement_id in ("REQ-0002", "REQ-0003"):
+        text = (req_dir / f"{requirement_id}.json").read_text()
+        data = json.loads(text)
+        assert text == json.dumps(data, indent=2) + "\n"
+        assert list(data) == reference_keys == ["id", "attributes", "parent_id", "order"]
+    project_text = (tmp_path / project.id / "project.json").read_text()
+    assert project_text == json.dumps(json.loads(project_text), indent=2) + "\n"
+
+
+def test_import_csv_never_reuses_ids_after_failure_and_removal(service, tmp_path):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "priority", "Priority", type="integer")
+    module = create_module(service, project.id)
+
+    assert service.import_csv(project.id, module.id, "ObjectText\na\nb\n")["requirement_ids"] == ["REQ-0001", "REQ-0002"]
+    service.remove_requirement(project.id, module.id, "REQ-0002")
+
+    with pytest.raises(ValueError):
+        service.import_csv(project.id, module.id, "ObjectText,Priority\nc,1\nd,bad\n")
+    assert service.get_project(project.id).id_counters == {"REQ": 2}
+
+    reloaded = ProjectService(ProjectStore(tmp_path))
+    result = reloaded.import_csv(project.id, module.id, "ObjectText\ne\n")
+    assert result["requirement_ids"] == ["REQ-0003"]
+    assert sorted(r.id for r in reloaded.list_requirements(project.id, module.id)) == ["REQ-0001", "REQ-0003"]
+
+
+def test_import_csv_shares_id_counter_with_other_modules_using_same_prefix(service):
+    project = create_project(service)
+    mod_a = create_module(service, project.id, "Module A", "REQ")
+    mod_b = create_module(service, project.id, "Module B", "REQ")
+    service.add_requirement(project.id, mod_a.id, {"object_text": "In A"})
+
+    assert service.import_csv(project.id, mod_b.id, "ObjectText\nIn B\n")["requirement_ids"] == ["REQ-0002"]
+
+
+def test_import_csv_strips_leading_bom(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+
+    result = service.import_csv(project.id, module.id, "﻿Id,Parent,ObjectText\nA,,root\nB,A,child\n")
+
+    assert result["imported"] == 2
+    assert _by_text(service, project.id, module.id)["child"].parent_id == "REQ-0001"
+
+
+def test_import_csv_reports_at_most_twenty_errors(service):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "priority", "Priority", type="integer")
+    module = create_module(service, project.id)
+
+    csv_text = "ObjectText,Priority\n" + "".join(f"r{i},bad\n" for i in range(25))
+    with pytest.raises(ValueError) as excinfo:
+        service.import_csv(project.id, module.id, csv_text)
+
+    assert len(excinfo.value.errors) == 25
+    message = str(excinfo.value)
+    assert message.startswith("CSV import failed; nothing was imported.\n")
+    assert "Row 21:" in message and "Row 22:" not in message
+    assert message.endswith("... and 5 more error(s)")
+
+
+def test_import_csv_rejects_unterminated_quoted_cell(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+
+    # The closing quote is missing, so the rest of the file would silently end
+    # up in one cell. The file is malformed and must be rejected.
+    message = _import_error(service, project.id, module.id, 'Id,ObjectText\n1,"open\n2,next\n')
+    assert "Malformed CSV" in message
+
+
+def test_import_csv_rejects_non_string_content(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+    with pytest.raises(ValueError, match="must be a string"):
+        service.import_csv(project.id, module.id, b"ObjectText\nx\n")
+
+
+def _build_roundtrip_project(service):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "priority", "Priority", type="integer")
+    service.add_attribute_definition(project.id, "safety", "Safety", type="boolean")
+    service.add_attribute_definition(
+        project.id, "status", "Status", type="enum", choices=["Draft", "Approved — final, \"v2\""]
+    )
+    service.add_attribute_definition(project.id, "notes", "Notes, \"internal\"")
+    source = create_module(service, project.id, "Source", "SRC")
+    root = service.add_requirement(
+        project.id,
+        source.id,
+        {
+            "object_text": 'Zażółć gęślą jaźń — "quoted", comma; 日本語 🚀',
+            "priority": -3,
+            "safety": True,
+            "status": "Approved — final, \"v2\"",
+            "notes": "  padded  ",
+        },
+    )
+    child = service.add_requirement(
+        project.id,
+        source.id,
+        {"object_text": "Line 1\nLine 2\r\nLine 3", "priority": 0, "safety": False},
+        parent_id=root.id,
+    )
+    service.add_requirement(
+        project.id, source.id, {"object_text": "=SUM(A1)", "notes": "'leading quote"}, parent_id=child.id
+    )
+    service.add_requirement(project.id, source.id, {"object_text": "Back\\slash\ttab", "status": "Draft"})
+    return project, source
+
+
+def test_import_csv_roundtrips_export_with_special_and_unicode_characters(service):
+    project, source = _build_roundtrip_project(service)
+    exported = service.export_csv(project.id)
+    target = create_module(service, project.id, "Target", "TGT")
+
+    result = service.import_csv(project.id, target.id, exported)
+
+    assert result["imported"] == 4 and result["ignored_columns"] == []
+    originals = {r.id: r for r in service.list_requirements(project.id, source.id)}
+    copies = {r.attributes["object_text"]: r for r in service.list_requirements(project.id, target.id)}
+    copy_id_of = {orig_id: copies[o.attributes["object_text"]].id for orig_id, o in originals.items()}
+    for original in originals.values():
+        copy = copies[original.attributes["object_text"]]
+        assert copy.attributes == original.attributes
+        assert copy.parent_id == (copy_id_of[original.parent_id] if original.parent_id else None)
+        assert copy.order == original.order
+        assert copy.id.startswith("TGT-")
+
+
+def test_import_csv_roundtrips_export_with_large_text_cell(service):
+    project = create_project(service)
+    source = create_module(service, project.id, "Source", "SRC")
+    big_text = "x" * 200_000
+    service.add_requirement(project.id, source.id, {"object_text": big_text})
+    exported = service.export_csv(project.id)
+    target = create_module(service, project.id, "Target", "TGT")
+
+    service.import_csv(project.id, target.id, exported)
+
+    assert [r.attributes["object_text"] for r in service.list_requirements(project.id, target.id)] == [big_text]
+
+
+def test_import_csv_rejects_text_over_the_size_cap(service):
+    from reqman.csv_import import MAX_CSV_IMPORT_BYTES
+
+    project = create_project(service)
+    module = create_module(service, project.id)
+    header = "ObjectText\n"
+    at_cap = header + "x" * (MAX_CSV_IMPORT_BYTES - len(header))
+
+    with pytest.raises(ValueError, match="too large"):
+        service.import_csv(project.id, module.id, at_cap + "x")
+    assert service.list_requirements(project.id, module.id) == []
+
+    service.import_csv(project.id, module.id, at_cap)
+    assert len(service.list_requirements(project.id, module.id)) == 1
+
+
+def test_import_csv_roundtrip_preserves_manual_sibling_order(service):
+    project = create_project(service)
+    source = create_module(service, project.id, "Source", "SRC")
+    a = service.add_requirement(project.id, source.id, {"object_text": "A"})
+    service.add_requirement(project.id, source.id, {"object_text": "B"})
+    c = service.add_requirement(project.id, source.id, {"object_text": "C"})
+    service.add_requirement(project.id, source.id, {"object_text": "A1"}, parent_id=a.id)
+    a2 = service.add_requirement(project.id, source.id, {"object_text": "A2"}, parent_id=a.id)
+    service.reorder_requirement(project.id, source.id, c.id, "up")
+    service.reorder_requirement(project.id, source.id, c.id, "up")
+    service.reorder_requirement(project.id, source.id, a2.id, "up")
+    exported = service.export_csv(project.id)
+    target = create_module(service, project.id, "Target", "TGT")
+
+    service.import_csv(project.id, target.id, exported)
+
+    def tree(module_id):
+        reqs = service.list_requirements(project.id, module_id)
+        text_of = {r.id: r.attributes["object_text"] for r in reqs}
+
+        def children(parent_id):
+            return [
+                (text_of[r.id], children(r.id))
+                for r in sorted((r for r in reqs if r.parent_id == parent_id), key=lambda r: r.order)
+            ]
+
+        return children(None)
+
+    expected = [("C", []), ("A", [("A2", []), ("A1", [])]), ("B", [])]
+    assert tree(source.id) == expected
+    assert tree(target.id) == expected
+
+
+# --- F1: attribute names -------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["Id", "Module", "Parent", "id", " PARENT ", "module"])
+def test_add_attribute_rejects_reserved_export_column_names(service, name):
+    project = create_project(service)
+    with pytest.raises(ValueError, match="reserved"):
+        service.add_attribute_definition(project.id, "custom", name)
+    assert [a.id for a in service.get_project(project.id).attributes] == ["object_text"]
+
+
+@pytest.mark.parametrize("name", ["ObjectText", "objecttext", "  OBJECTTEXT  ", "Satisfies", "satisfies "])
+def test_add_attribute_rejects_duplicate_names_case_insensitively(service, name):
+    project = create_project(service)
+    mod_a = create_module(service, project.id, "Module A", "A")
+    mod_b = create_module(service, project.id, "Module B", "B")
+    service.create_link_configuration(project.id, "Satisfies", mod_a.id, mod_b.id)
+    with pytest.raises(ValueError, match="already used"):
+        service.add_attribute_definition(project.id, "custom", name)
+
+
+@pytest.mark.parametrize("name", ["", "   ", "\t"])
+def test_add_attribute_rejects_empty_names(service, name):
+    project = create_project(service)
+    with pytest.raises(ValueError, match="must not be empty"):
+        service.add_attribute_definition(project.id, "custom", name)
+
+
+def test_add_attribute_stores_stripped_name(service, tmp_path):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "priority", "  Priority  ")
+    reloaded = ProjectService(ProjectStore(tmp_path)).get_project(project.id)
+    assert reloaded.attributes[-1].name == "Priority"
+
+
+def test_add_attribute_does_not_rewrite_legacy_colliding_names(service, tmp_path):
+    project = create_project(service)
+    legacy = service.get_project(project.id)
+    from reqman.models import AttributeDefinition
+
+    legacy.attributes.append(AttributeDefinition(id="parent_attr", name="Parent"))
+    service.store.save_project(legacy)
+
+    service.add_attribute_definition(project.id, "priority", "Priority")
+
+    names = [a.name for a in service.get_project(project.id).attributes]
+    assert names == ["ObjectText", "Parent", "Priority"]
+
+
+def _write_legacy_attributes(service, project_id, *definitions):
+    from reqman.models import AttributeDefinition
+
+    project = service.get_project(project_id)
+    project.attributes.extend(AttributeDefinition(**d) for d in definitions)
+    service.store.save_project(project)
+
+
+def test_import_csv_legacy_attribute_named_like_reserved_column(service):
+    project = create_project(service)
+    _write_legacy_attributes(service, project.id, {"id": "parent_attr", "name": "Parent"})
+    module = create_module(service, project.id)
+
+    # A single "Parent" column is the reserved column, not the attribute.
+    service.import_csv(project.id, module.id, "Id,Parent,ObjectText\nA,,root\nB,A,child\n")
+    reqs = _by_text(service, project.id, module.id)
+    assert reqs["child"].parent_id == reqs["root"].id
+    assert "parent_attr" not in reqs["child"].attributes
+
+    # The project's own export has the header twice: explain how to fix it.
+    exported = service.export_csv(project.id)
+    other = create_module(service, project.id, "Module Two", "OTH")
+    message = _import_error(service, project.id, other.id, exported)
+    assert "Duplicate column 'Parent'" in message
+    assert "Attribute 'parent_attr' is also named 'Parent'" in message
+    assert "parent_attr" in message
+
+    # Heading the attribute's column with its id imports it.
+    service.import_csv(project.id, other.id, "Id,Parent,ObjectText,parent_attr\nA,,root,value\n")
+    assert _by_text(service, project.id, other.id)["root"].attributes["parent_attr"] == "value"
+
+
+def test_import_csv_legacy_attributes_sharing_a_name(service):
+    project = create_project(service)
+    _write_legacy_attributes(
+        service, project.id, {"id": "owner_a", "name": "Owner"}, {"id": "owner_b", "name": "Owner"}
+    )
+    module = create_module(service, project.id)
+
+    message = _import_error(service, project.id, module.id, "ObjectText,Owner\nx,alice\n")
+    assert "Column 'Owner' matches several attributes named 'Owner': ['owner_a', 'owner_b']" in message
+
+    exported_header = service.export_csv(project.id).splitlines()[0]
+    message = _import_error(service, project.id, module.id, exported_header + "\n,,,x,a,b\n")
+    assert "Duplicate column 'Owner'" in message
+    assert "['owner_a', 'owner_b']" in message
+
+    service.import_csv(project.id, module.id, "ObjectText,owner_a,owner_b\nx,alice,bob\n")
+    assert _by_text(service, project.id, module.id)["x"].attributes == {
+        "object_text": "x", "owner_a": "alice", "owner_b": "bob",
+    }
+
+
+# --- F2: write atomicity -------------------------------------------------------
+
+
+def _requirement_files(tmp_path, project_id, module_id):
+    req_dir = tmp_path / project_id / "modules" / module_id / "requirements"
+    return sorted(p.name for p in req_dir.iterdir())
+
+
+def _fail_on_nth_save(monkeypatch, store, n):
+    original = store.save_requirement
+    calls = {"count": 0}
+
+    def flaky(project_id, module_id, requirement):
+        calls["count"] += 1
+        if calls["count"] == n:
+            raise OSError("disk full")
+        original(project_id, module_id, requirement)
+
+    monkeypatch.setattr(store, "save_requirement", flaky)
+    return lambda: monkeypatch.setattr(store, "save_requirement", original)
+
+
+@pytest.mark.parametrize("fail_on", [1, 2, 3])
+def test_import_csv_rolls_back_when_a_write_fails(service, tmp_path, monkeypatch, fail_on):
+    project = create_project(service)
+    module = create_module(service, project.id)
+    existing = service.add_requirement(project.id, module.id, {"object_text": "Existing"})
+    files_before = _requirement_files(tmp_path, project.id, module.id)
+    counters_before = service.get_project(project.id).id_counters
+
+    restore = _fail_on_nth_save(monkeypatch, service.store, fail_on)
+    with pytest.raises(OSError, match="disk full"):
+        service.import_csv(project.id, module.id, "Id,Parent,ObjectText\nA,,a\nB,A,b\nC,,c\n")
+    restore()
+
+    assert _requirement_files(tmp_path, project.id, module.id) == files_before
+    assert service.get_project(project.id).id_counters == counters_before
+
+    result = service.import_csv(project.id, module.id, "ObjectText\nd\ne\n")
+    assert existing.id not in result["requirement_ids"]
+    assert len(set(result["requirement_ids"])) == 2
+    assert len(service.list_requirements(project.id, module.id)) == 3
+
+
+def test_import_csv_rolls_back_when_saving_the_project_fails(service, tmp_path, monkeypatch):
+    project = create_project(service)
+    module = create_module(service, project.id)
+    files_before = _requirement_files(tmp_path, project.id, module.id)
+
+    def broken(_project):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(service.store, "save_project", broken)
+    with pytest.raises(OSError, match="read-only"):
+        service.import_csv(project.id, module.id, "ObjectText\na\nb\n")
+    monkeypatch.undo()
+
+    assert _requirement_files(tmp_path, project.id, module.id) == files_before
+    assert service.get_project(project.id).id_counters == {}
+
+
+@pytest.mark.parametrize("fail_on", [1, 2, 3])
+def test_copy_requirement_rolls_back_when_a_write_fails(service, tmp_path, monkeypatch, fail_on):
+    project = create_project(service)
+    module = create_module(service, project.id)
+    root = service.add_requirement(project.id, module.id, {"object_text": "Root"})
+    child = service.add_requirement(project.id, module.id, {"object_text": "Child"}, parent_id=root.id)
+    service.add_requirement(project.id, module.id, {"object_text": "Grandchild"}, parent_id=child.id)
+    files_before = _requirement_files(tmp_path, project.id, module.id)
+    counters_before = service.get_project(project.id).id_counters
+
+    restore = _fail_on_nth_save(monkeypatch, service.store, fail_on)
+    with pytest.raises(OSError, match="disk full"):
+        service.copy_requirement(project.id, module.id, root.id, None)
+    restore()
+
+    assert _requirement_files(tmp_path, project.id, module.id) == files_before
+    assert service.get_project(project.id).id_counters == counters_before
+
+    copy = service.copy_requirement(project.id, module.id, root.id, None)
+    assert copy.id == "REQ-0004"
+    assert len(service.list_requirements(project.id, module.id)) == 6
+
+
+def test_allocation_skips_ids_already_on_disk_after_a_crash(service, tmp_path):
+    from reqman.models import Requirement
+
+    project = create_project(service)
+    module = create_module(service, project.id)
+    other = create_module(service, project.id, "Module Two", "REQ")
+    service.add_requirement(project.id, module.id, {"object_text": "First"})
+    # Simulate a crash after a requirement file was written but before the
+    # project (with its advanced counter) was saved.
+    service.store.save_requirement(project.id, other.id, Requirement(id="REQ-0002", attributes={"object_text": "x"}))
+    assert service.get_project(project.id).id_counters == {"REQ": 1}
+
+    assert service.add_requirement(project.id, module.id, {"object_text": "Next"}).id == "REQ-0003"
+    assert service.import_csv(project.id, module.id, "ObjectText\ny\n")["requirement_ids"] == ["REQ-0004"]
+
+
+def test_store_writes_atomically_and_keeps_json_format(service, tmp_path, monkeypatch):
+    import os
+
+    project = create_project(service)
+    module = create_module(service, project.id)
+    requirement = service.add_requirement(project.id, module.id, {"object_text": "Original"})
+    path = tmp_path / project.id / "modules" / module.id / "requirements" / f"{requirement.id}.json"
+    original_text = path.read_text()
+    assert original_text == json.dumps(json.loads(original_text), indent=2) + "\n"
+    assert list(json.loads(original_text)) == ["id", "attributes", "parent_id", "order"]
+
+    def failing_replace(src, dst):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        service.update_requirement(project.id, module.id, requirement.id, {"object_text": "Changed"})
+    monkeypatch.undo()
+
+    assert path.read_text() == original_text
+    assert sorted(p.name for p in path.parent.iterdir()) == [path.name]
+
+
+# --- F3: one defaults/validation path ------------------------------------------
+
+
+def _typed_project(service):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "priority", "Priority", type="integer")
+    service.add_attribute_definition(project.id, "safety", "Safety", type="boolean")
+    service.add_attribute_definition(project.id, "status", "Status", type="enum", choices=["Draft", "Done"])
+    service.add_attribute_definition(project.id, "notes", "Notes", type="string")
+    module = create_module(service, project.id)
+    return project, module
+
+
+@pytest.mark.parametrize(
+    "attributes, expected",
+    [
+        ({"priority": "5"}, "Priority: '5' is not an integer"),
+        ({"priority": 1.5}, "Priority: '1.5' is not an integer"),
+        ({"priority": True}, "Priority: 'True' is not an integer"),
+        ({"safety": "true"}, "Safety: 'true' is not a boolean"),
+        ({"safety": 1}, "Safety: '1' is not a boolean"),
+        ({"status": "draft"}, "Status: 'draft' is not one of ['Draft', 'Done']"),
+        ({"status": ""}, "Status: '' is not one of ['Draft', 'Done']"),
+        ({"notes": 5}, "Notes: expected a string, got int"),
+        ({"object_text": ["x"]}, "ObjectText: expected a string, got list"),
+    ],
+)
+def test_add_and_update_requirement_reject_wrong_value_types(service, attributes, expected):
+    project, module = _typed_project(service)
+    with pytest.raises(ValueError) as excinfo:
+        service.add_requirement(project.id, module.id, {"object_text": "x", **attributes})
+    assert expected in str(excinfo.value)
+    assert service.list_requirements(project.id, module.id) == []
+
+    requirement = service.add_requirement(project.id, module.id, {"object_text": "ok"})
+    with pytest.raises(ValueError) as excinfo:
+        service.update_requirement(project.id, module.id, requirement.id, attributes)
+    assert expected in str(excinfo.value)
+    assert service.get_requirement(project.id, module.id, requirement.id).attributes == {"object_text": "ok"}
+
+
+def test_add_and_update_requirement_accept_valid_typed_values_and_null(service):
+    project, module = _typed_project(service)
+    requirement = service.add_requirement(
+        project.id,
+        module.id,
+        {"object_text": "x", "priority": -3, "safety": False, "status": "Done", "notes": ""},
+    )
+    assert requirement.attributes["priority"] == -3
+
+    updated = service.update_requirement(
+        project.id, module.id, requirement.id, {"priority": None, "safety": None, "status": None, "notes": None}
+    )
+    assert updated.attributes["priority"] is None and updated.attributes["status"] is None
+
+
+def test_add_requirement_excludes_system_attribute_defaults(service):
+    from reqman.models import AttributeDefinition
+
+    project = create_project(service)
+    mod_a = create_module(service, project.id, "Module A", "A")
+    mod_b = create_module(service, project.id, "Module B", "B")
+    config = service.create_link_configuration(project.id, "Satisfies", mod_a.id, mod_b.id)
+    stored = service.get_project(project.id)
+    stored.attributes = [
+        AttributeDefinition(**{**a.to_dict(), "default": "> stale"}) if a.id == config.id else a
+        for a in stored.attributes
+    ]
+    service.store.save_project(stored)
+
+    requirement = service.add_requirement(project.id, mod_a.id, {"object_text": "x"})
+    service.import_csv(project.id, mod_a.id, "ObjectText\ny\n")
+
+    assert requirement.attributes == {"object_text": "x"}
+    assert all(config.id not in r.attributes for r in service.list_requirements(project.id, mod_a.id))
+
+
+def test_add_requirement_required_message_uses_attribute_name(service):
+    project = create_project(service)
+    module = create_module(service, project.id)
+    with pytest.raises(ValueError, match="required attribute 'ObjectText' is empty"):
+        service.add_requirement(project.id, module.id, {})
+
+
+def test_import_csv_reports_enum_and_required_errors_for_every_row(service):
+    project, module = _typed_project(service)
+    service.add_attribute_definition(project.id, "owner", "Owner", required=True)
+
+    message = _import_error(
+        service, project.id, module.id, "ObjectText,Status,Owner\na,bad,\nb,Draft,\nc,worse,bob\n"
+    )
+    assert "Row 2: Status: 'bad' is not one of ['Draft', 'Done']" in message
+    assert "Row 2: required attribute 'Owner' is empty" in message
+    assert "Row 3: required attribute 'Owner' is empty" in message
+    assert "Row 4: Status: 'worse' is not one of ['Draft', 'Done']" in message
+
+
+# --- F4/F5: XLSX export ---------------------------------------------------------
+
+
+def _xlsx_rows(service, project_id):
+    import io
+
+    from openpyxl import load_workbook
+
+    sheet = load_workbook(io.BytesIO(service.export_xlsx(project_id))).active
+    return sheet
+
+
+def test_export_xlsx_never_writes_formulas(service):
+    project = create_project(service)
+    service.add_attribute_definition(project.id, "priority", "Priority", type="integer")
+    service.add_attribute_definition(project.id, "safety", "Safety", type="boolean")
+    module = create_module(service, project.id)
+    service.add_requirement(project.id, module.id, {"object_text": "=1+1", "priority": 7, "safety": True})
+    service.add_requirement(project.id, module.id, {"object_text": '=HYPERLINK("http://x")'})
+
+    sheet = _xlsx_rows(service, project.id)
+    texts = [sheet.cell(row=r, column=4) for r in (2, 3)]
+    assert [(c.value, c.data_type) for c in texts] == [("=1+1", "s"), ('=HYPERLINK("http://x")', "s")]
+    assert (sheet.cell(row=2, column=5).value, sheet.cell(row=2, column=5).data_type) == (7, "n")
+    assert (sheet.cell(row=2, column=6).value, sheet.cell(row=2, column=6).data_type) == (True, "b")
+    assert all(cell.data_type != "f" for row in sheet.iter_rows() for cell in row)
+
+
+def test_export_xlsx_row_order_matches_csv_for_reordered_nested_project(service):
+    import csv as csv_module
+    import io
+
+    project = create_project(service)
+    mod_a = create_module(service, project.id, "Module A", "A")
+    mod_b = create_module(service, project.id, "Module B", "B")
+    a = service.add_requirement(project.id, mod_a.id, {"object_text": "A"})
+    service.add_requirement(project.id, mod_a.id, {"object_text": "B"})
+    c = service.add_requirement(project.id, mod_a.id, {"object_text": "C"})
+    service.add_requirement(project.id, mod_a.id, {"object_text": "A1"}, parent_id=a.id)
+    a2 = service.add_requirement(project.id, mod_a.id, {"object_text": "A2"}, parent_id=a.id)
+    service.add_requirement(project.id, mod_a.id, {"object_text": "A2x"}, parent_id=a2.id)
+    service.reorder_requirement(project.id, mod_a.id, c.id, "up")
+    service.reorder_requirement(project.id, mod_a.id, c.id, "up")
+    service.reorder_requirement(project.id, mod_a.id, a2.id, "up")
+    b1 = service.add_requirement(project.id, mod_b.id, {"object_text": "B1"})
+    service.add_requirement(project.id, mod_b.id, {"object_text": "B2"})
+    service.reorder_requirement(project.id, mod_b.id, b1.id, "down")
+
+    csv_rows = list(csv_module.reader(io.StringIO(service.export_csv(project.id))))
+    xlsx_rows = [list(row) for row in _xlsx_rows(service, project.id).iter_rows(values_only=True)]
+
+    def normalize(rows):
+        return [["" if v is None else str(v) for v in row] for row in rows]
+
+    assert normalize(xlsx_rows) == normalize(csv_rows)
+    assert [row[3] for row in csv_rows[1:]] == ["C", "A", "A2", "A2x", "A1", "B", "B2", "B1"]

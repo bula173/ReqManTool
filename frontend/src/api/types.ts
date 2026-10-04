@@ -46,6 +46,14 @@ export interface Requirement {
   order: number;
 }
 
+export interface CsvImportResult {
+  imported: number;
+  /** New server-allocated ids, in the file's row order. */
+  requirement_ids: string[];
+  /** System/link-mirror columns that were present in the file but not imported. */
+  ignored_columns: string[];
+}
+
 export interface ApiErrorBody {
   detail: string;
 }

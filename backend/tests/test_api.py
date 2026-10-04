@@ -442,3 +442,376 @@ def test_find_requirement_missing_returns_404(client):
     project_id = client.post("/projects", json={"name": "Project One"}).json()["id"]
     resp = client.get(f"/projects/{project_id}/requirements/REQ-9999")
     assert resp.status_code == 404
+
+
+def test_import_csv_rest_and_broadcast(client):
+    project_id = client.post("/projects", json={"name": "Project One"}).json()["id"]
+    module_id = client.post(f"/projects/{project_id}/modules", json={"name": "Module One", "prefix": "REQ"}).json()["id"]
+
+    with client.websocket_connect("/ws") as ws:
+        resp = client.post(
+            f"/projects/{project_id}/modules/{module_id}/import/csv",
+            content="﻿Id,Parent,ObjectText\n1,,Chapter\n2,1,Child\n".encode("utf-8"),
+            headers={"Content-Type": "text/csv"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"imported": 2, "requirement_ids": ["REQ-0001", "REQ-0002"], "ignored_columns": []}
+        assert json.loads(ws.receive_text()) == {"event": "changed", "project_id": project_id}
+
+    requirements = client.get(f"/projects/{project_id}/modules/{module_id}/requirements").json()
+    assert {r["id"]: r["parent_id"] for r in requirements} == {"REQ-0001": None, "REQ-0002": "REQ-0001"}
+
+
+def test_import_csv_rest_errors(client):
+    project_id = client.post("/projects", json={"name": "Project One"}).json()["id"]
+    module_id = client.post(f"/projects/{project_id}/modules", json={"name": "Module One", "prefix": "REQ"}).json()["id"]
+    url = f"/projects/{project_id}/modules/{module_id}/import/csv"
+
+    resp = client.post(url, content=b"ObjectText,Nope\nx,y\n", headers={"Content-Type": "text/csv"})
+    assert resp.status_code == 400
+    assert "Unknown column(s) ['Nope']" in resp.json()["detail"]
+
+    resp = client.post(url, content="ObjectText\nZażółć\n".encode("cp1250"), headers={"Content-Type": "text/csv"})
+    assert resp.status_code == 400
+    assert "UTF-8" in resp.json()["detail"]
+
+    resp = client.post(
+        f"/projects/{project_id}/modules/missing/import/csv", content=b"ObjectText\nx\n", headers=CSV_HEADERS
+    )
+    assert resp.status_code == 404
+
+
+def test_import_csv_websocket_rpc(client):
+    project_id = client.post("/projects", json={"name": "Project One"}).json()["id"]
+    module_id = client.post(f"/projects/{project_id}/modules", json={"name": "Module One", "prefix": "REQ"}).json()["id"]
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_text(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "requirement.import_csv",
+            "params": {"project_id": project_id, "module_id": module_id, "csv": "ObjectText\nFirst\n"},
+        }))
+        response = json.loads(ws.receive_text())
+        assert response["result"] == {"imported": 1, "requirement_ids": ["REQ-0001"], "ignored_columns": []}
+
+        ws.send_text(json.dumps({
+            "jsonrpc": "2.0", "id": 2, "method": "requirement.import_csv",
+            "params": {"project_id": project_id, "module_id": module_id, "csv": "ObjectText\n\"\"\n,\n"},
+        }))
+        response = json.loads(ws.receive_text())
+        assert response["error"]["code"] == -32602
+
+
+CSV_HEADERS = {"Content-Type": "text/csv"}
+
+
+def _project_and_module(client, name="Project One"):
+    project_id = client.post("/projects", json={"name": name}).json()["id"]
+    module_id = client.post(f"/projects/{project_id}/modules", json={"name": "Module One", "prefix": "REQ"}).json()["id"]
+    return project_id, module_id
+
+
+def _rpc_import(ws, request_id, project_id, module_id, csv_text):
+    ws.send_text(json.dumps({
+        "jsonrpc": "2.0", "id": request_id, "method": "requirement.import_csv",
+        "params": {"project_id": project_id, "module_id": module_id, "csv": csv_text},
+    }))
+    return json.loads(ws.receive_text())
+
+
+def test_import_csv_ws_broadcasts_to_other_clients_only_on_success(client):
+    project_id, module_id = _project_and_module(client)
+
+    with client.websocket_connect("/ws") as ws1, client.websocket_connect("/ws") as ws2:
+        response = _rpc_import(ws1, 1, project_id, module_id, "ObjectText,Bogus\nx,y\n")
+        assert response["error"]["code"] == -32602
+        assert "Unknown column(s) ['Bogus']" in response["error"]["message"]
+
+        response = _rpc_import(ws1, 2, project_id, "missing", "ObjectText\nx\n")
+        assert response["error"]["code"] == -32001
+
+        # A later, distinguishable mutation is the first event ws2 sees, so the
+        # failed imports did not broadcast anything.
+        other_project = client.post("/projects", json={"name": "Other"}).json()["id"]
+        assert json.loads(ws2.receive_text()) == {"event": "changed", "project_id": other_project}
+        assert json.loads(ws1.receive_text()) == {"event": "changed", "project_id": other_project}
+
+        response = _rpc_import(ws1, 3, project_id, module_id, "ObjectText\nx\n")
+        assert response["result"]["requirement_ids"] == ["REQ-0001"]
+        assert json.loads(ws2.receive_text()) == {"event": "changed", "project_id": project_id}
+
+        # The sender gets no broadcast for its own import: its next message is
+        # the event from this REST call.
+        client.post("/projects", json={"name": "Third"})
+        assert json.loads(ws1.receive_text()) == {"event": "changed", "project_id": "third"}
+
+
+def test_import_csv_rest_failure_does_not_broadcast(client):
+    project_id, module_id = _project_and_module(client)
+    url = f"/projects/{project_id}/modules/{module_id}/import/csv"
+
+    with client.websocket_connect("/ws") as ws:
+        assert client.post(url, content=b"Id,Parent,ObjectText\nA,A,x\n", headers=CSV_HEADERS).status_code == 400
+        assert client.post(url, content="ObjectText\nZażółć\n".encode("cp1250"), headers=CSV_HEADERS).status_code == 400
+        assert client.post(
+            f"/projects/{project_id}/modules/missing/import/csv", content=b"ObjectText\nx\n", headers=CSV_HEADERS
+        ).status_code == 404
+        assert client.post(url, content=b"ObjectText\nx\n", headers={"Content-Type": "text/plain"}).status_code == 415
+
+        other_project = client.post("/projects", json={"name": "Other"}).json()["id"]
+        assert json.loads(ws.receive_text()) == {"event": "changed", "project_id": other_project}
+
+    assert client.get(f"/projects/{project_id}/modules/{module_id}/requirements").json() == []
+    assert client.get(f"/projects/{project_id}").json()["id_counters"] == {}
+
+
+def test_import_csv_rest_missing_project_and_empty_body(client):
+    project_id, module_id = _project_and_module(client)
+
+    resp = client.post(f"/projects/missing/modules/{module_id}/import/csv", content=b"ObjectText\nx\n", headers=CSV_HEADERS)
+    assert resp.status_code == 404
+
+    resp = client.post(f"/projects/{project_id}/modules/{module_id}/import/csv", content=b"", headers=CSV_HEADERS)
+    assert resp.status_code == 400
+    assert "empty" in resp.json()["detail"]
+
+
+def test_import_csv_rest_reports_every_row_error_in_detail(client):
+    project_id, module_id = _project_and_module(client)
+
+    resp = client.post(
+        f"/projects/{project_id}/modules/{module_id}/import/csv",
+        content=b"Id,Parent,ObjectText\nA,,ok\nB,Z,orphan\nC,,\n",
+        headers={"Content-Type": "text/csv"},
+    )
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert detail.startswith("CSV import failed; nothing was imported.")
+    assert "Row 3: Parent 'Z' does not match" in detail
+    assert "Row 4: required attribute 'ObjectText' is empty" in detail
+
+
+def test_import_csv_ws_rejects_missing_or_non_string_csv_param(client):
+    project_id, module_id = _project_and_module(client)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_text(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "requirement.import_csv",
+            "params": {"project_id": project_id, "module_id": module_id},
+        }))
+        assert json.loads(ws.receive_text())["error"]["code"] == -32602
+
+        response = _rpc_import(ws, 2, project_id, module_id, ["ObjectText", "x"])
+        assert response["error"]["code"] == -32602
+        assert "must be a string" in response["error"]["message"]
+
+    assert client.get(f"/projects/{project_id}/modules/{module_id}/requirements").json() == []
+
+
+def test_import_csv_rest_and_ws_parity(client):
+    rest_project, rest_module = _project_and_module(client, "Rest Project")
+    ws_project, ws_module = _project_and_module(client, "Ws Project")
+    client.post(f"/projects/{rest_project}/attributes", json={"id": "safety", "name": "Safety", "type": "boolean"})
+    client.post(f"/projects/{ws_project}/attributes", json={"id": "safety", "name": "Safety", "type": "boolean"})
+    csv_text = "Id,Parent,ObjectText,Safety\nC,P,Child,no\nP,,\"Parent, \"\"quoted\"\"\",yes\n"
+
+    rest = client.post(
+        f"/projects/{rest_project}/modules/{rest_module}/import/csv",
+        content=csv_text.encode("utf-8"),
+        headers={"Content-Type": "text/csv"},
+    )
+    assert rest.status_code == 200, rest.text
+    with client.websocket_connect("/ws") as ws:
+        ws_result = _rpc_import(ws, 1, ws_project, ws_module, csv_text)["result"]
+
+    assert rest.json() == ws_result == {
+        "imported": 2, "requirement_ids": ["REQ-0002", "REQ-0001"], "ignored_columns": [],
+    }
+
+    def tree(project_id, module_id):
+        reqs = client.get(f"/projects/{project_id}/modules/{module_id}/requirements").json()
+        return sorted((r["id"], r["parent_id"], r["order"], r["attributes"]) for r in reqs)
+
+    assert tree(rest_project, rest_module) == tree(ws_project, ws_module) == [
+        ("REQ-0001", None, 0, {"object_text": 'Parent, "quoted"', "safety": True}),
+        ("REQ-0002", "REQ-0001", 0, {"object_text": "Child", "safety": False}),
+    ]
+
+
+def test_import_csv_rest_roundtrips_rest_export(client):
+    project_id, module_id = _project_and_module(client)
+    client.post(f"/projects/{project_id}/attributes", json={"id": "priority", "name": "Priority", "type": "integer"})
+    base = f"/projects/{project_id}/modules/{module_id}/requirements"
+    parent_id = client.post(base, json={"attributes": {"object_text": "Zażółć — \"q\", 🚀", "priority": -2}}).json()["id"]
+    client.post(base, json={"attributes": {"object_text": "Line 1\nLine 2"}, "parent_id": parent_id})
+    exported = client.get(f"/projects/{project_id}/export/csv")
+    assert exported.status_code == 200
+    target_id = client.post(f"/projects/{project_id}/modules", json={"name": "Target", "prefix": "TGT"}).json()["id"]
+
+    resp = client.post(
+        f"/projects/{project_id}/modules/{target_id}/import/csv",
+        content=exported.content,
+        headers={"Content-Type": "text/csv"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    copies = {
+        r["attributes"]["object_text"]: r
+        for r in client.get(f"/projects/{project_id}/modules/{target_id}/requirements").json()
+    }
+    parent = copies["Zażółć — \"q\", 🚀"]
+    assert parent["attributes"]["priority"] == -2 and parent["parent_id"] is None
+    assert copies["Line 1\nLine 2"]["parent_id"] == parent["id"]
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"Content-Type": "text/plain"},
+        {"Content-Type": "application/x-www-form-urlencoded"},
+        {"Content-Type": "multipart/form-data; boundary=x"},
+        {"Content-Type": "application/json"},
+        {"Content-Type": "text/csvx"},
+    ],
+)
+def test_import_csv_rest_requires_text_csv_content_type(client, headers):
+    project_id, module_id = _project_and_module(client)
+
+    resp = client.post(
+        f"/projects/{project_id}/modules/{module_id}/import/csv", content=b"ObjectText\nx\n", headers=headers
+    )
+
+    assert resp.status_code == 415
+    assert "text/csv" in resp.json()["detail"]
+    assert client.get(f"/projects/{project_id}/modules/{module_id}/requirements").json() == []
+
+
+@pytest.mark.parametrize("content_type", ["text/csv; charset=utf-8", "Text/CSV", " text/csv ;charset=UTF-8"])
+def test_import_csv_rest_accepts_text_csv_with_parameters(client, content_type):
+    project_id, module_id = _project_and_module(client)
+
+    resp = client.post(
+        f"/projects/{project_id}/modules/{module_id}/import/csv",
+        content=b"ObjectText\nx\n",
+        headers={"Content-Type": content_type},
+    )
+
+    assert resp.status_code == 200, resp.text
+
+
+def test_import_csv_rest_rejects_body_over_the_size_cap(client):
+    from reqman.csv_import import MAX_CSV_IMPORT_BYTES
+
+    project_id, module_id = _project_and_module(client)
+    url = f"/projects/{project_id}/modules/{module_id}/import/csv"
+    header = b"ObjectText\n"
+    at_cap = header + b"x" * (MAX_CSV_IMPORT_BYTES - len(header))
+
+    with client.websocket_connect("/ws") as ws:
+        resp = client.post(url, content=at_cap + b"x", headers=CSV_HEADERS)
+        assert resp.status_code == 413
+        assert "too large" in resp.json()["detail"]
+
+        # Without a Content-Length header the body is still capped while reading.
+        def chunks():
+            yield at_cap
+            yield b"x"
+
+        resp = client.post(url, content=chunks(), headers=CSV_HEADERS)
+        assert resp.status_code == 413
+
+        other_project = client.post("/projects", json={"name": "Other"}).json()["id"]
+        assert json.loads(ws.receive_text()) == {"event": "changed", "project_id": other_project}
+
+    assert client.get(f"/projects/{project_id}/modules/{module_id}/requirements").json() == []
+    assert client.post(url, content=at_cap, headers=CSV_HEADERS).status_code == 200
+
+
+def test_import_csv_ws_rejects_text_over_the_size_cap(client):
+    from reqman.csv_import import MAX_CSV_IMPORT_BYTES
+
+    project_id, module_id = _project_and_module(client)
+
+    with client.websocket_connect("/ws") as ws:
+        response = _rpc_import(ws, 1, project_id, module_id, "ObjectText\n" + "x" * MAX_CSV_IMPORT_BYTES)
+
+    assert response["error"]["code"] == -32602
+    assert "too large" in response["error"]["message"]
+    assert client.get(f"/projects/{project_id}/modules/{module_id}/requirements").json() == []
+
+
+# --- attribute names and value validation -------------------------------------
+
+
+@pytest.mark.parametrize("name", ["Id", "module", " Parent ", "ObjectText", "objecttext", "  "])
+def test_add_attribute_rejects_reserved_duplicate_and_empty_names(client, name):
+    project_id = client.post("/projects", json={"name": "Project One"}).json()["id"]
+    resp = client.post(f"/projects/{project_id}/attributes", json={"id": "custom", "name": name})
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"]
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_text(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "attribute.add",
+            "params": {"project_id": project_id, "id": "custom", "name": name},
+        }))
+        response = json.loads(ws.receive_text())
+    assert response["error"]["message"] == resp.json()["detail"]
+
+
+def _typed_project_and_module(client):
+    project_id, module_id = _project_and_module(client)
+    for body in (
+        {"id": "priority", "name": "Priority", "type": "integer"},
+        {"id": "safety", "name": "Safety", "type": "boolean"},
+        {"id": "status", "name": "Status", "type": "enum", "choices": ["Draft", "Done"]},
+    ):
+        assert client.post(f"/projects/{project_id}/attributes", json=body).status_code == 200
+    return project_id, module_id
+
+
+@pytest.mark.parametrize(
+    "attributes, expected",
+    [
+        ({"status": "Nope"}, "Status: 'Nope' is not one of ['Draft', 'Done']"),
+        ({"priority": "3"}, "Priority: '3' is not an integer"),
+        ({"priority": 2.5}, "Priority: '2.5' is not an integer"),
+        ({"safety": "yes"}, "Safety: 'yes' is not a boolean"),
+        ({"safety": 0}, "Safety: '0' is not a boolean"),
+    ],
+)
+def test_add_and_update_requirement_reject_invalid_values_with_400(client, attributes, expected):
+    project_id, module_id = _typed_project_and_module(client)
+    url = f"/projects/{project_id}/modules/{module_id}/requirements"
+
+    resp = client.post(url, json={"attributes": {"object_text": "x", **attributes}})
+    assert resp.status_code == 400, resp.text
+    assert expected in resp.json()["detail"]
+
+    req_id = client.post(url, json={"attributes": {"object_text": "ok"}}).json()["id"]
+    resp = client.put(f"{url}/{req_id}", json={"attributes": attributes})
+    assert resp.status_code == 400, resp.text
+    assert expected in resp.json()["detail"]
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_text(json.dumps({
+            "jsonrpc": "2.0", "id": 1, "method": "requirement.update",
+            "params": {"project_id": project_id, "module_id": module_id, "id": req_id, "attributes": attributes},
+        }))
+        response = json.loads(ws.receive_text())
+    assert expected in response["error"]["message"]
+    assert client.get(f"{url}/{req_id}").json()["attributes"] == {"object_text": "ok"}
+
+
+def test_add_and_update_requirement_accept_typed_values_and_null(client):
+    project_id, module_id = _typed_project_and_module(client)
+    url = f"/projects/{project_id}/modules/{module_id}/requirements"
+
+    resp = client.post(url, json={"attributes": {"object_text": "x", "priority": 4, "safety": True, "status": "Done"}})
+    assert resp.status_code == 200, resp.text
+    req_id = resp.json()["id"]
+
+    resp = client.put(f"{url}/{req_id}", json={"attributes": {"priority": None, "status": None, "safety": False}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["attributes"] == {"object_text": "x", "priority": None, "safety": False, "status": None}

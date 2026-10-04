@@ -112,7 +112,8 @@ function DisplayValue({
 function coerceValue(attr: AttributeDefinition, raw: unknown): unknown {
   if (attr.type === 'integer') {
     if (raw === '' || raw === null || raw === undefined) return null;
-    const n = Number(raw);
+    // NumberInput reports a partial entry such as "-" as a string; send numbers only.
+    const n = typeof raw === 'number' ? raw : Number(raw);
     return Number.isNaN(n) ? null : n;
   }
   return raw;
@@ -185,6 +186,7 @@ export function EditableAttributeCell({
           ref={inputRef as Ref<HTMLInputElement>}
           value={draft === null || draft === undefined ? '' : (draft as number | string)}
           onChange={setDraft}
+          allowDecimal={false}
           onBlur={commit}
           onKeyDown={commonKeyDown}
         />

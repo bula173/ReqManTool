@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
+from .csv_import import RESERVED_COLUMNS
 from .models import AttributeDefinition, LinkConfiguration, LinkPair, Module, Project, Requirement, View
 from .store import ProjectStore, validate_prefix
 
@@ -70,6 +71,7 @@ class ProjectService:
         project = self.store.load_project(project_id)
         if any(a.id == attr_id for a in project.attributes):
             raise ValueError(f"Attribute '{attr_id}' already defined on project '{project_id}'")
+        name = self._checked_attribute_name(project, name)
         project.attributes.append(
             AttributeDefinition(
                 id=attr_id, name=name, type=type, required=required, default=default, choices=choices
@@ -77,6 +79,30 @@ class ProjectService:
         )
         self.store.save_project(project)
         return project
+
+    @staticmethod
+    def _checked_attribute_name(project: Project, name: Any) -> str:
+        """Return ``name`` stripped, or raise if it cannot head its own export column.
+
+        CSV/XLSX exports head each attribute column with the attribute's name,
+        after the reserved ``Id``/``Module``/``Parent`` columns, and the CSV
+        import matches columns by name. A reserved or duplicate name (compared
+        case-insensitively) would make a project's own export impossible to
+        re-import. Existing project data is never rewritten by this check.
+        """
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Attribute name must not be empty")
+        stripped = name.strip()
+        folded = stripped.casefold()
+        if folded in {column.casefold() for column in RESERVED_COLUMNS}:
+            raise ValueError(
+                f"Attribute name '{stripped}' is reserved: {', '.join(RESERVED_COLUMNS)} are "
+                "export/import columns"
+            )
+        for attr in project.attributes:
+            if attr.name.strip().casefold() == folded:
+                raise ValueError(f"Attribute name '{stripped}' is already used by attribute '{attr.id}'")
+        return stripped
 
     # --- modules ----------------------------------------------------------------
 
@@ -99,18 +125,101 @@ class ProjectService:
 
     # --- requirements ----------------------------------------------------------------
 
-    def _validate_attributes(self, project: Project, attributes: dict[str, Any], *, is_create: bool) -> None:
-        defined_ids = {a.id for a in project.attributes}
-        unknown = set(attributes) - defined_ids
+    @staticmethod
+    def _value_problem(attr: AttributeDefinition, value: Any) -> str | None:
+        """Why ``value`` is not valid for ``attr``, or None. ``None`` (unset) is always valid."""
+        if value is None:
+            return None
+        if attr.type == "integer":
+            if isinstance(value, bool) or not isinstance(value, int):
+                return f"{attr.name}: '{value}' is not an integer"
+        elif attr.type == "boolean":
+            if not isinstance(value, bool):
+                return f"{attr.name}: '{value}' is not a boolean"
+        elif attr.type == "enum":
+            choices = list(attr.choices or [])
+            if not isinstance(value, str) or value not in choices:
+                return f"{attr.name}: '{value}' is not one of {choices}"
+        elif attr.type in ("string", "text"):
+            if not isinstance(value, str):
+                return f"{attr.name}: expected a string, got {type(value).__name__}"
+        return None
+
+    def _attribute_problems(
+        self, project: Project, attributes: dict[str, Any], *, is_create: bool
+    ) -> list[str]:
+        """Every reason ``attributes`` cannot be written, in a stable order.
+
+        The one validation path for requirement attributes: REST/WebSocket
+        add and update (via ``_validate_attributes``) and the CSV import (one
+        call per row) all use it. ``attributes`` must hold typed values; the
+        CSV import parses text cells before calling this.
+        """
+        defined = {a.id: a for a in project.attributes}
+        unknown = set(attributes) - set(defined)
         if unknown:
-            raise ValueError(f"Unknown attribute(s) for project '{project.id}': {sorted(unknown)}")
+            return [f"Unknown attribute(s) for project '{project.id}': {sorted(unknown)}"]
         system_ids = {a.id for a in project.attributes if a.system} & set(attributes)
         if system_ids:
-            raise ValueError(f"Attribute(s) are system-managed and cannot be set directly: {sorted(system_ids)}")
+            return [f"Attribute(s) are system-managed and cannot be set directly: {sorted(system_ids)}"]
+        problems = [
+            problem
+            for attr_id, value in attributes.items()
+            if (problem := self._value_problem(defined[attr_id], value)) is not None
+        ]
         if is_create:
             for attr in project.attributes:
-                if attr.required and attr.id not in attributes and attr.default is None:
-                    raise ValueError(f"Missing required attribute '{attr.id}'")
+                if attr.required and not attr.system and attr.id not in attributes and attr.default is None:
+                    problems.append(f"required attribute '{attr.name}' is empty")
+        return problems
+
+    def _validate_attributes(self, project: Project, attributes: dict[str, Any], *, is_create: bool) -> None:
+        if not isinstance(attributes, dict):
+            raise ValueError("Attributes must be an object")
+        problems = self._attribute_problems(project, attributes, is_create=is_create)
+        if problems:
+            raise ValueError("; ".join(problems))
+
+    @staticmethod
+    def _merged_attributes(project: Project, attributes: dict[str, Any]) -> dict[str, Any]:
+        """Attribute defaults (never for system attributes) overlaid with ``attributes``."""
+        merged = {a.id: a.default for a in project.attributes if a.default is not None and not a.system}
+        merged.update(attributes)
+        return merged
+
+    def _write_new_requirements(
+        self, project: Project, module_id: str, requirements: list[Requirement]
+    ) -> None:
+        """Write new requirement files, then the project (with its advanced id counters).
+
+        If any write fails, the requirement files written so far are deleted
+        (best effort) and the error is re-raised, so the module and the
+        counters stay as they were. Should the process die between the two
+        steps, ``_allocate_requirement_id`` skips ids already on disk, so an
+        id is never reused.
+        """
+        written: list[str] = []
+        try:
+            for requirement in requirements:
+                self.store.save_requirement(project.id, module_id, requirement)
+                written.append(requirement.id)
+            self.store.save_project(project)
+        except BaseException:
+            for requirement_id in written:
+                try:
+                    self.store.delete_requirement(project.id, module_id, requirement_id)
+                except OSError:
+                    pass
+            raise
+
+    @staticmethod
+    def _next_sibling_order(requirements: list[Requirement], parent_id: str | None) -> int:
+        """Order for a requirement appended after the last sibling under ``parent_id``.
+
+        Orders are 0-based. Removing a requirement leaves a gap, so the count of
+        siblings could collide with an existing order; use the highest one + 1.
+        """
+        return max((r.order for r in requirements if r.parent_id == parent_id), default=-1) + 1
 
     def _allocate_requirement_id(self, project: Project, module: Module) -> str:
         counter = project.id_counters.get(module.prefix, 0)
@@ -135,17 +244,14 @@ class ProjectService:
             raise FileNotFoundError(f"Requirement '{parent_id}' not found in module '{module_id}'")
 
         self._validate_attributes(project, attributes, is_create=True)
-        merged = {a.id: a.default for a in project.attributes if a.default is not None}
-        merged.update(attributes)
+        merged = self._merged_attributes(project, attributes)
 
         requirement_id = self._allocate_requirement_id(project, module)
-        self.store.save_project(project)
-
         siblings = self.store.load_all_requirements(project_id, module_id)
-        order = sum(1 for r in siblings if r.parent_id == parent_id)
+        order = self._next_sibling_order(siblings, parent_id)
 
         requirement = Requirement(id=requirement_id, attributes=merged, parent_id=parent_id, order=order)
-        self.store.save_requirement(project_id, module_id, requirement)
+        self._write_new_requirements(project, module_id, [requirement])
         return requirement
 
     def _descendant_ids(self, requirements: list[Requirement], requirement_id: str) -> set[str]:
@@ -179,8 +285,8 @@ class ProjectService:
 
         requirement = self.store.load_requirement(project_id, module_id, requirement_id)
         requirement.parent_id = parent_id
-        requirement.order = sum(
-            1 for r in requirements if r.parent_id == parent_id and r.id != requirement_id
+        requirement.order = self._next_sibling_order(
+            [r for r in requirements if r.id != requirement_id], parent_id
         )
         self.store.save_requirement(project_id, module_id, requirement)
         return requirement
@@ -232,12 +338,14 @@ class ProjectService:
         for r in requirements:
             children_of.setdefault(r.parent_id, []).append(r)
 
+        created: list[Requirement] = []
+
         def duplicate(original: Requirement, new_parent_id: str | None) -> Requirement:
             attributes = {k: v for k, v in original.attributes.items() if k not in system_ids}
             new_id = self._allocate_requirement_id(project, module)
-            order = sum(1 for r in requirements if r.parent_id == new_parent_id)
+            order = self._next_sibling_order(requirements, new_parent_id)
             copy = Requirement(id=new_id, attributes=attributes, parent_id=new_parent_id, order=order)
-            self.store.save_requirement(project_id, module_id, copy)
+            created.append(copy)
             requirements.append(copy)
             for child in sorted(children_of.get(original.id, []), key=lambda r: r.order):
                 duplicate(child, new_id)
@@ -245,7 +353,7 @@ class ProjectService:
 
         root_original = next(r for r in requirements if r.id == requirement_id)
         new_root = duplicate(root_original, target_parent_id)
-        self.store.save_project(project)
+        self._write_new_requirements(project, module_id, created)
 
         return self.store.load_requirement(project_id, module_id, new_root.id)
 
@@ -513,3 +621,58 @@ class ProjectService:
             for module in self.list_modules(project_id)
         ]
         return export_project_to_docx(project, modules)
+
+    # --- import ----------------------------------------------------------------
+
+    def import_csv(self, project_id: str, module_id: str, csv_text: str) -> dict[str, Any]:
+        """Create requirements in one module from CSV text (see ``csv_import.py``).
+
+        All-or-nothing: the whole file is validated before anything is
+        written, so an invalid file leaves the project unchanged. Rows are
+        checked with the same ``_attribute_problems`` as add-requirement. If
+        writing fails part-way, ``_write_new_requirements`` removes the files
+        already written and the id counters stay unchanged. New
+        requirements get server-allocated ids. Root rows are appended after
+        the module's existing root requirements. Nested rows keep their file
+        order under their parent.
+        """
+        from .csv_import import MAX_CSV_IMPORT_BYTES, parse_requirements_csv
+
+        if not isinstance(csv_text, str):
+            raise ValueError("CSV content must be a string")
+        if len(csv_text) > MAX_CSV_IMPORT_BYTES:
+            raise ValueError(
+                f"The CSV file is too large: the limit is {MAX_CSV_IMPORT_BYTES // (1024 * 1024)} MiB"
+            )
+        project = self.store.load_project(project_id)
+        module = self.store.load_module(project_id, module_id)
+        parsed = parse_requirements_csv(
+            project.attributes,
+            csv_text,
+            validate=lambda values: self._attribute_problems(project, values, is_create=True),
+        )
+
+        existing = self.store.load_all_requirements(project_id, module_id)
+        next_order: dict[str | None, int] = {None: self._next_sibling_order(existing, None)}
+
+        new_ids: dict[int, str] = {}
+        key_to_id: dict[str, str] = {}
+        created: list[Requirement] = []
+        for row in parsed.rows:
+            requirement_id = self._allocate_requirement_id(project, module)
+            new_ids[row.row_number] = requirement_id
+            if row.key is not None:
+                key_to_id[row.key] = requirement_id
+            parent_id = key_to_id[row.parent_key] if row.parent_key is not None else None
+            order = next_order.get(parent_id, 0)
+            next_order[parent_id] = order + 1
+            attributes = self._merged_attributes(project, row.attributes)
+            created.append(Requirement(id=requirement_id, attributes=attributes, parent_id=parent_id, order=order))
+
+        self._write_new_requirements(project, module_id, created)
+
+        return {
+            "imported": len(created),
+            "requirement_ids": [new_ids[row.row_number] for row in sorted(parsed.rows, key=lambda r: r.row_number)],
+            "ignored_columns": parsed.ignored_columns,
+        }

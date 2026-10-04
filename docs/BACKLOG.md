@@ -120,6 +120,26 @@
       (depth → heading level, capped at 9) with each requirement's non-empty
       attribute values as bold-label paragraphs underneath. "Export DOCX"
       button next to "Export XLSX" in `ModulePage.tsx`.
+- [x] Import CSV into a module: `POST
+      /projects/{project_id}/modules/{module_id}/import/csv` (raw body is
+      the CSV, `Content-Type: text/csv` required → 415 otherwise, 10 MiB cap
+      → 413; returns `{imported, requirement_ids, ignored_columns}`) and
+      WebSocket `requirement.import_csv` (`{project_id, module_id, csv}`).
+      `backend/reqman/csv_import.py` is the inverse of `csv_export.py`;
+      `ProjectService.import_csv` validates all-or-nothing with row-numbered
+      errors, allocates ids server-side (the file's Id column is only a key
+      for Parent references within the file; parents may come later in the
+      file, cycles rejected), treats Module as informational (a file with
+      several modules is rejected), ignores system/link-mirror columns so an
+      export can be re-imported, rejects unknown columns, type-checks values
+      (integer ASCII digits only, boolean variants, exact enum match),
+      applies defaults to empty cells, and appends imported roots after the
+      existing roots. "Import CSV" button next to "Export CSV" in
+      `ModulePage.tsx` opens `ImportCsvModal.tsx`. Related fixes: CSV export
+      writes rows depth-first with siblings sorted by `order`, so manual
+      ordering survives export → import; sibling `order` is now max+1 in
+      add, move, copy and import (was the sibling count, which collided
+      after a removal).
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -157,8 +177,7 @@ attribute value ❌, saved/named views (a stored filter + column set) ✅,
 full-text search across a module or project ❌, global find-and-replace ❌.
 
 **Import / export** — ReqIF export ✅ (see limitations noted above), CSV
-export ✅, Excel export ✅, Word export ✅, **any import** (ReqIF, CSV) ❌ —
-currently one-directional (export only).
+export ✅, Excel export ✅, Word export ✅, CSV import ✅, ReqIF import ❌.
 
 **Collaboration & review** — comments/discussion thread per requirement ❌,
 formal review/approval workflow (reviewer sign-off, review sets) ❌,
@@ -170,12 +189,12 @@ change notifications beyond live table refresh (e.g. "notify me when a
 requirement linked to mine changes") ❌.
 
 **Bulk operations & editing ergonomics** — copy/paste and cut/paste a
-requirement (subtree) — see below ❌, multi-select + bulk attribute edit
-❌, sibling reordering (drag or move up/down) — see below ❌.
+requirement (subtree) ✅, multi-select + bulk attribute edit
+❌, sibling reordering (drag or move up/down) ✅.
 
 **Administration** — user accounts / permissions (who can edit vs. view) ❌
-— deliberately out of scope so far (single-user local tool, see Notes),
-concurrent-edit protection (two people editing the same requirement at once
+— out of scope so far (single-user local tool, see Notes); user handling
+requested 2026-10-04, see backlog, concurrent-edit protection (two people editing the same requirement at once
 — currently last-write-wins, no lock/conflict warning) ❌.
 
 **Reporting / publishing** — printable/publishable formatted document view
@@ -186,7 +205,58 @@ of a module (the classic "generate a spec document" DOORS output) ❌.
 Ordered roughly by how directly each was requested / how foundational it is
 to the categories above.
 
-- [ ] Import (ReqIF / CSV) — not yet requested, worth asking about when export lands
+- [ ] Distribution package + user-space install. Requested 2026-10-04.
+      (1) Packaging: a `pyproject.toml` for the backend with a `reqman`
+      console script; the built frontend (`npm run build` → `dist/`) is
+      bundled inside the Python package and served by FastAPI from the
+      same origin (API under its current paths, SPA fallback to
+      `index.html`), so the frontend's API/WS base URL defaults to the page
+      origin instead of `localhost:8899` (`VITE_*` overrides kept for dev).
+      Test-only deps (`pytest`, `httpx`) move out of runtime requirements.
+      (2) GitHub Actions: CI on push/PR (backend `pytest`, frontend build +
+      lint); on a `v*` tag, build the frontend, build the wheel/sdist, and
+      attach them to a GitHub Release. Install with
+      `pipx install <release wheel URL>` (or `uv tool install`).
+      (3) User-space setup: `reqman init` creates the per-user config file
+      and data directory — no root/admin needed. Defaults follow the
+      platform: config in `~/.config/reqman/config.json` (Linux, honouring
+      `XDG_CONFIG_HOME`), `~/Library/Application Support/ReqManTool/` (macOS),
+      `%APPDATA%\ReqManTool\` (Windows); data in the matching user data dir
+      (or a path the user chooses at `init`). Optional
+      `reqman service install|uninstall` registers a per-user background
+      service (systemd `--user` unit on Linux, launchd agent on macOS).
+      (4) Own JSON config file: replaces today's repo-relative
+      `.reqman/config.json`. Keys: `data_dir` (storage root), `host`,
+      `port`, `cors_origins`; precedence CLI flag > env var
+      (`REQMAN_DATA_DIR`, `REQMAN_CONFIG_FILE`, …) > config file > platform
+      default. The in-app data-folder switcher writes `data_dir` back to the
+      same file (stable key order, two-space indent, trailing newline).
+      Running from a git checkout (`etc/start*.sh`) keeps working. Default
+      bind stays `localhost`.
+- [ ] Import ReqIF (the CSV slice is done, see Done). Reuse the CSV
+      import's all-or-nothing validation (collect every error, write
+      nothing on failure) and its server-allocated-id approach (the file's
+      identifiers are only keys for resolving parents within the file).
+      Open issue carried over from CSV: an attribute named Id/Module/Parent,
+      or two attributes sharing a name, breaks re-import of a project's own
+      CSV export — product decision needed: reject such names in
+      `add_attribute_definition`, or match those columns by attribute id.
+- [ ] User handling. Requested 2026-10-04; scope not yet narrowed down
+      with the user. Changes the project scope (today: single-user local
+      tool, no auth), so `.claude/CLAUDE.md` rule 7 must be lifted before
+      implementation. Candidate pieces, roughly in dependency order:
+      (1) identity — preferably taken from a fronting reverse proxy (e.g.
+      Cloudflare Access: verify the `Cf-Access-Jwt-Assertion` JWT, read the
+      user's email) rather than built-in accounts/passwords, with a
+      configurable "local single user" fallback; (2) attribution —
+      server-maintained `created_by`/`modified_by` (+ timestamps) system
+      attributes on requirements, and identity in live-sync events;
+      (3) roles per project (viewer / editor / admin) enforced in
+      `ProjectService`, with REST/WebSocket parity; (4) concurrent-edit
+      protection — a per-requirement version/ETag, stale writes rejected
+      with 409 and a conflict prompt in the UI instead of today's
+      last-write-wins; (5) `user` attribute type (assignee/owner), see the
+      `date`/`user` item below.
 - [ ] Sort/filter the requirements table by attribute value, plus a simple
       full-text search box (module or project scope). Table-stakes for any
       module with more than a screenful of requirements. Not yet requested.
@@ -212,10 +282,6 @@ to the categories above.
 - [ ] Printable/publishable document view of a module (formatted export to
       a readable spec document, distinct from the structured ReqIF/CSV/
       Excel/Word exports above). Not yet requested.
-- [ ] Authentication / multi-user access control, and concurrent-edit
-      protection (detect/warn when two clients edit the same requirement
-      at once — today it's last-write-wins). Not yet requested; likely
-      stays out of scope for a single-user local tool unless that changes.
 - [ ] Git integration: the user manages requirement history via git
       themselves today (files are diff-friendly by design, see Notes).
       Possible in-app conveniences on top of that: show `git status`/diff

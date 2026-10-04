@@ -111,6 +111,24 @@ persistence" below.
   configurations create (see "Link configurations" below);
   `ProjectService._validate_attributes` rejects any attempt to set a
   system attribute directly through `add_requirement`/`update_requirement`.
+  `name` heads the attribute's column in the CSV/XLSX exports and is how the
+  CSV import matches columns, so `add_attribute_definition` stores it
+  stripped and rejects (400) an empty name, `Id`/`Module`/`Parent` (the
+  reserved export columns), or a name another attribute of the project
+  already has — all compared case-insensitively. Existing projects that
+  already have such names are not rewritten; their CSV import treats
+  `Id`/`Module`/`Parent` as the reserved columns and needs the attribute's
+  column headed with its `id`.
+- **Attribute values** — `ProjectService._attribute_problems` is the single
+  validation path for requirement attributes, used by REST and WebSocket
+  add/update and by the CSV import (per row, after cells are parsed into
+  typed values). Besides unknown/system attributes and required attributes
+  without a default (on create), it checks value types: `integer` must be a
+  JSON integer (not a boolean or float, not a numeric string), `boolean` a
+  JSON boolean, `enum` one of `choices`, `string`/`text` a string. `null`
+  (unset) is accepted for every type; violations are 400 errors. Defaults
+  are merged into a new requirement by `_merged_attributes`, which never
+  applies defaults of system attributes.
 - **Module** (`module.json`) — `id`, `name`, `prefix` (e.g. `"REQ"` — the
   namespace requirement ids in this module are allocated from), `description`.
 - **Requirement** (`<id>.json`) — `id`, `attributes: dict[str, Any]` (keyed
@@ -192,6 +210,18 @@ themselves (branches, history, code review of requirement changes — see
 diffs are minimal and readable instead of single-line blobs or
 reordered-key noise.
 
+Each `ProjectStore` write is atomic: the JSON goes to a temporary file in
+the same directory, which then replaces the target with `os.replace`.
+Operations that create several requirements (`add_requirement`,
+`copy_requirement`, `import_csv`) go through
+`ProjectService._write_new_requirements`: all requirement files are written
+first, and `project.json` (with the advanced `id_counters`) last. If a write
+fails, the requirement files already written by that operation are deleted
+again and the error is re-raised, so a failed operation leaves the module
+and the counters unchanged. `_allocate_requirement_id` also skips any id that
+already exists on disk, so a crash between the two steps can never cause an
+id to be reused.
+
 ## Backend layering
 
 ```
@@ -218,6 +248,13 @@ backend/reqman/
                    isolated on purpose: it's easy to unit-test standalone
                    and can't create a circular import with service.py.
   csv_export.py    Same pattern as reqif_export.py, much smaller.
+  xlsx_export.py   Same columns and row order as csv_export.py; string
+                   values are stored as string cells, never formulas.
+  ordering.py      tree_order(): the shared row order of the CSV and XLSX
+                   exports (depth-first, siblings by order then id).
+  csv_import.py    The inverse of csv_export.py, same duck-typed pattern:
+                   validates CSV text all-or-nothing and returns rows;
+                   ProjectService.import_csv allocates ids and writes them.
   config.py        Where the *chosen data directory itself* is persisted
                    (`.reqman/config.json` next to the repo, or
                    REQMAN_DATA_DIR/--dir override) — deliberately
@@ -250,6 +287,7 @@ resource:
 | Requirements | `POST/GET .../requirements`, `GET/PUT/DELETE .../requirements/{id}`, `PUT .../requirements/{id}/parent` (move), `POST .../requirements/{id}/reorder`, `POST .../requirements/{id}/copy` |
 | Links | `POST/DELETE /projects/{id}/links` |
 | Export | `GET /projects/{id}/export/reqif`, `GET /projects/{id}/export/csv` |
+| Import | `POST /projects/{id}/modules/{module_id}/import/csv` (raw UTF-8 CSV request body, `Content-Type: text/csv` required (415 otherwise), at most 10 MiB (413); WS: `requirement.import_csv`) |
 | Purge | `POST /projects/{id}/purge` |
 | Data directory | `GET/POST /config`, `GET /fs/browse` |
 | Live sync | `WS /ws` |

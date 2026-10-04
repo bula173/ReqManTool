@@ -28,15 +28,22 @@ const TYPE_OPTIONS: { value: AttributeType; label: string }[] = [
   { value: 'enum', label: 'Enum' },
 ];
 
+function parseChoices(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0);
+}
+
 function coerceDefault(type: AttributeType, raw: string): unknown {
   if (raw.trim() === '') return null;
   switch (type) {
     case 'integer': {
-      const parsed = Number(raw);
+      const parsed = Number(raw.trim());
       return Number.isNaN(parsed) ? null : parsed;
     }
     case 'boolean':
-      return raw === 'true';
+      return raw.trim() === 'true';
     default:
       return raw;
   }
@@ -49,17 +56,21 @@ export function AddAttributeModal({ projectId, opened, onClose }: AddAttributeMo
     validate: {
       id: (value) => (value.trim().length === 0 ? 'Attribute id is required' : null),
       name: (value) => (value.trim().length === 0 ? 'Attribute name is required' : null),
+      default: (value, values) => {
+        const raw = value.trim();
+        if (raw === '') return null;
+        if (values.type === 'integer' && !/^[+-]?\d+$/.test(raw)) return 'Default must be a whole number';
+        if (values.type === 'boolean' && raw !== 'true' && raw !== 'false') return 'Default must be true or false';
+        if (values.type === 'enum' && !parseChoices(values.choices).includes(value)) {
+          return 'Default must be one of the choices';
+        }
+        return null;
+      },
     },
   });
 
   const handleSubmit = form.onSubmit((values) => {
-    const choices =
-      values.type === 'enum'
-        ? values.choices
-            .split(',')
-            .map((c) => c.trim())
-            .filter((c) => c.length > 0)
-        : null;
+    const choices = values.type === 'enum' ? parseChoices(values.choices) : null;
     addAttribute.mutate(
       {
         id: values.id,

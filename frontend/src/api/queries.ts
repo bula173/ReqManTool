@@ -1,6 +1,14 @@
 import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { api } from './client';
-import type { AttributeDefinition, LinkConfiguration, Module, Project, Requirement, View } from './types';
+import type {
+  AttributeDefinition,
+  CsvImportResult,
+  LinkConfiguration,
+  Module,
+  Project,
+  Requirement,
+  View,
+} from './types';
 
 export const queryKeys = {
   projects: ['projects'] as const,
@@ -211,6 +219,21 @@ export function usePurgeModule(projectId: string, moduleId: string) {
     mutationFn: () => api.post<{ purged: number }>(`/projects/${projectId}/modules/${moduleId}/purge`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.requirements(projectId, moduleId) });
+    },
+  });
+}
+
+export function useImportCsv(projectId: string, moduleId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    // Send the file's bytes unchanged: the server decodes UTF-8 (with or
+    // without BOM) and rejects other encodings with a 400 instead of importing
+    // replacement characters. It also requires Content-Type text/csv.
+    mutationFn: (file: Blob) =>
+      api.postBody<CsvImportResult>(`/projects/${projectId}/modules/${moduleId}/import/csv`, file, 'text/csv'),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.requirements(projectId, moduleId) });
+      qc.invalidateQueries({ queryKey: queryKeys.project(projectId), exact: true });
     },
   });
 }

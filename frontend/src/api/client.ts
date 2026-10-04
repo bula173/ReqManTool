@@ -40,6 +40,12 @@ export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'POST', body: body !== undefined ? JSON.stringify(body) : undefined }),
+  /**
+   * POST a raw body (e.g. an uploaded File/Blob) instead of JSON. The bytes are
+   * sent as-is, so the server decides how to decode them.
+   */
+  postBody: <T>(path: string, body: BodyInit, contentType: string) =>
+    request<T>(path, { method: 'POST', body, headers: { 'Content-Type': contentType } }),
   put: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'PUT', body: body !== undefined ? JSON.stringify(body) : undefined }),
   delete: <T>(path: string, body?: unknown) =>

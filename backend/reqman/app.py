@@ -18,12 +18,13 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel
 
 from .config import DEFAULT_DATA_DIR, load_saved_data_dir, save_data_dir
+from .csv_import import MAX_CSV_IMPORT_BYTES
 from .service import ProjectService
 from .store import ProjectStore
 
@@ -378,6 +379,36 @@ def get_module(project_id: str, module_id: str):
     return _wrap(service.get_module, project_id, module_id).to_dict()
 
 
+@app.post("/projects/{project_id}/modules/{module_id}/import/csv")
+async def import_csv(project_id: str, module_id: str, request: Request):
+    # The file is sent as the raw request body (Content-Type: text/csv), so
+    # no multipart parser dependency is needed. Requiring text/csv also keeps
+    # cross-origin "simple" requests (text/plain, form posts) from importing.
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type != "text/csv":
+        raise HTTPException(status_code=415, detail="The CSV file must be sent with Content-Type: text/csv")
+
+    too_large = HTTPException(
+        status_code=413,
+        detail=f"The CSV file is too large: the limit is {MAX_CSV_IMPORT_BYTES // (1024 * 1024)} MiB",
+    )
+    content_length = request.headers.get("content-length")
+    if content_length is not None and content_length.isdigit() and int(content_length) > MAX_CSV_IMPORT_BYTES:
+        raise too_large
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > MAX_CSV_IMPORT_BYTES:
+            raise too_large
+    try:
+        csv_text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="The CSV file must be UTF-8 encoded") from exc
+    result = _wrap(service.import_csv, project_id, module_id, csv_text)
+    await manager.broadcast(project_id)
+    return result
+
+
 @app.post("/projects/{project_id}/modules/{module_id}/purge")
 async def purge_module(project_id: str, module_id: str):
     purged = _wrap(service.purge_module, project_id, module_id)
@@ -525,6 +556,9 @@ RPC_METHODS = {
     "requirement.copy": lambda p: service.copy_requirement(
         p["project_id"], p["module_id"], p["id"], p.get("target_parent_id")
     ),
+    "requirement.import_csv": lambda p: service.import_csv(
+        p["project_id"], p["module_id"], p["csv"]
+    ),
     "requirement.link": lambda p: service.link_requirements(
         p["project_id"], p["config_id"], p["source_id"], p["target_id"]
     ),
@@ -553,7 +587,7 @@ MUTATING_METHODS = {
     "link_configuration.create", "link_configuration.remove",
     "view.create", "view.remove",
     "requirement.add", "requirement.update", "requirement.remove", "requirement.move",
-    "requirement.reorder", "requirement.copy",
+    "requirement.reorder", "requirement.copy", "requirement.import_csv",
     "requirement.link", "requirement.unlink",
 }
 

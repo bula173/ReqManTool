@@ -26,6 +26,39 @@ function defaultValueFor(attr: AttributeDefinition): unknown {
   return '';
 }
 
+/**
+ * Turn form values into the typed attribute values the server accepts:
+ * integers as whole numbers, booleans as booleans, enums as one of the
+ * choices. An empty integer or enum field is left out (not set).
+ */
+function toAttributePayload(
+  attributes: AttributeDefinition[],
+  values: Record<string, unknown>,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  for (const attr of attributes) {
+    const value = values[attr.id];
+    switch (attr.type) {
+      case 'integer': {
+        if (value === '' || value === null || value === undefined) break;
+        const n = typeof value === 'number' ? value : Number(value);
+        if (!Number.isNaN(n)) payload[attr.id] = n;
+        break;
+      }
+      case 'enum':
+        if (value === '' || value === null || value === undefined) break;
+        payload[attr.id] = value;
+        break;
+      case 'boolean':
+        payload[attr.id] = Boolean(value);
+        break;
+      default:
+        payload[attr.id] = value;
+    }
+  }
+  return payload;
+}
+
 function buildInitialValues(attributes: AttributeDefinition[]): FormValues {
   const attrs: Record<string, unknown> = {};
   for (const attr of attributes) {
@@ -59,7 +92,7 @@ export function RequirementFormModal({
 
   const handleSubmit = form.onSubmit((values) => {
     addRequirement.mutate(
-      { attributes: values.attrs, parent_id: parentId },
+      { attributes: toAttributePayload(editableAttributes, values.attrs), parent_id: parentId },
       {
         onSuccess: (requirement) => {
           notifications.show({ message: `Requirement "${requirement.id}" created`, color: 'green' });
@@ -92,7 +125,9 @@ export function RequirementFormModal({
               case 'text':
                 return <Textarea key={attr.id} label={label} autosize minRows={2} {...form.getInputProps(path)} />;
               case 'integer':
-                return <NumberInput key={attr.id} label={label} {...form.getInputProps(path)} />;
+                return (
+                  <NumberInput key={attr.id} label={label} allowDecimal={false} {...form.getInputProps(path)} />
+                );
               case 'boolean':
                 return (
                   <Checkbox
