@@ -357,6 +357,46 @@ custom report templates ❌.
 Ordered roughly by how directly each was requested / how foundational it is
 to the categories above.
 
+- [ ] Git integration: one git repo per project, auto-commit, baselines,
+      per-requirement history. Requested 2026-10-04 (replaces the
+      2026-09-16 "git integration" placeholder). Decisions: one repo per
+      project with modules as plain folders (no submodules); auto-commit
+      every change, squashed per editing session; baselines = merge + tag.
+      (1) Repos: each project folder is its own git repo (git CLI via
+      subprocess, no new Python dependency; the feature degrades to plain
+      files with a visible warning if `git` is missing). New projects run
+      `git init` with branch `current` and an initial commit; existing
+      projects get an explicit "Enable history (git)" action; a project
+      inside another repo's work tree (e.g. the data directory placed in
+      the ReqManTool checkout, as today with `rbc/`) is detected and the
+      user is told to move the data directory first. (2) Commits: after
+      every successful mutation the written files are staged and
+      committed on `current`; consecutive changes by the same author
+      within a configurable window (default 10 min) amend the previous
+      ReqManTool commit instead of adding one — never amending a commit
+      that is reachable from `baseline` or tagged; messages are generated
+      ("SYRS-0012: Status Draft → Reviewed; SYRS-0013 added"); author =
+      configured user name/email (git config fallback, Cloudflare Access
+      identity once user handling exists). A git failure never loses the
+      saved files: it is reported and retried on the next write.
+      (3) Branches: `current` is the working branch and always checked
+      out; `baseline` only ever holds baselined states. "Create baseline"
+      closes the squash window, fast-forwards `baseline` to `current`, and
+      creates an annotated tag `baseline/<name>` (name, description,
+      date, tool + format version). Baselines are listed from the tags;
+      a baseline is browsed read-only by reading the project at its tag
+      (`git show`/archive into a temporary read-only store); two baselines
+      (or baseline ↔ current) are compared with requirement-level
+      semantics (added / removed / modified per attribute and link).
+      (4) History: per requirement, `git log --follow` of its file gives
+      the change list (author, date, message) with per-attribute diffs
+      computed by parsing the JSON at each revision; a blame view shows,
+      per attribute, who changed it last and when (derived from the log,
+      with raw `git blame` on the JSON as a fallback). UI: History tab in
+      the detail panel, "last changed by/when" tooltips, a project Git
+      panel (branch, recent commits, pending squash, baselines with
+      create/browse/compare). No remotes/push in-app — the user pushes.
+      REST + WebSocket parity; history/baseline reads are read-only.
 - [ ] Left-click and right-click menus everywhere. Requested 2026-10-04.
       Two distinct menus, adapted to what was clicked: **left click** opens
       a navigation/view menu (open, open in new tab, detach, show links,
@@ -439,17 +479,11 @@ to the categories above.
       and attributes is rejected server-side (one guard in
       `ProjectService`, a dedicated "project is locked" error) except
       unlock; the UI shows a lock badge and disables editing, menus and
-      drag-and-drop. (3) Baselines: freeze a module (or a set of modules /
-      the whole project) as a named, immutable snapshot —
-      `<project>/baselines/<id>/` with name, description, timestamp, the
-      tool + format version, and copies of module, requirements, link
-      pairs and the attribute schema at that moment; never modified
-      afterwards. Browse a baseline read-only (same table/views/exports),
-      compare baseline ↔ current or baseline ↔ baseline with
-      requirement-level semantics (added / removed / modified, per
-      attribute and link), optional "lock after baseline". Complements
-      git history; a baseline can be referenced by sign-off records,
-      verification and test execution reports, and impact analysis.
+      drag-and-drop. (3) Baselines: delivered by the git
+      integration item (baseline branch + annotated `baseline/<name>`
+      tags); this item adds the UI glue — "lock after baseline", and
+      baseline references from sign-off records, verification and test
+      execution reports, and impact analysis.
 - [ ] Resizable table columns. Requested 2026-10-04. Drag a column header's
       right edge to resize (requirements table, detail-panel label column,
       report grids); double-click the edge to auto-fit to content; minimum
@@ -788,14 +822,6 @@ to the categories above.
       modules, attributes, filters and layout, so the spec document, the
       traceability/verification reports and project-specific deliverables
       share one mechanism. Not yet requested.
-- [ ] Git integration: the user manages requirement history via git
-      themselves today (files are diff-friendly by design, see Notes).
-      Possible in-app conveniences on top of that: show `git status`/diff
-      for the current data directory, a "commit" action with a message
-      box, or at minimum documentation of the recommended git workflow
-      (e.g. `git init` the data directory, `.gitignore` guidance). Requested
-      2026-09-16 — scope not yet narrowed down with the user.
-
 ## Notes
 
 - Attribute definitions live at the **project** level and apply to every module in it (decided 2026-09-16).
