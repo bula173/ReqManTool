@@ -274,6 +274,35 @@ to the categories above.
       link-creation rules reject illegal pairs); duplicates are reported,
       not duplicated. Works across projects once cross-project
       traceability lands.
+- [ ] Module types + traceability matrix, verification report and test
+      execution report. Requested 2026-10-04 (absorbs the former
+      "traceability matrix / coverage view" item). (1) Module types:
+      `Module.type` ∈ `requirements` | `test_cases` | `test_execution`
+      (backward-compatible default `requirements`), chosen at creation,
+      shown as an icon in the sidebar/tabs, set by templates. Attributes
+      gain an optional applicability list of module types (default: all),
+      so test fields stop appearing as columns in requirement modules and
+      vice versa. Link configurations are checked for sensible type pairs
+      (requirements→requirements, test_cases→requirements,
+      test_execution→test_cases). (2) `RBC_Template` update: StRS/SyRS/SwRS
+      = requirements, SysTest/SwTest = test_cases, new SysTestExec/SwTestExec
+      = test_execution with links "Executes SysTest" / "Executes SwTest" and
+      execution attributes (Result: Passed/Failed/Blocked/Not Run, Executed
+      By, Execution Date — needs the `date` type item, Build/SW Version
+      Under Test, Evidence/Log Ref). (3) Traceability matrix: pick a link
+      configuration (or a chain, e.g. StRS→SyRS→SwRS→SwTest→SwTestExec) and
+      get a source × target grid plus coverage stats ("N of M covered"),
+      orphan and unverified requirement lists; export XLSX/CSV.
+      (4) Verification report: for a requirements module, each
+      requirement's covering test cases, their latest execution result,
+      and a status (verified / failed / not run / not covered), with
+      totals and % — evidence-style output for EN 50128/EN 50129
+      verification. (5) Test execution report: for a test_execution module
+      (one test campaign / build), executed vs. planned test cases,
+      pass/fail/blocked counts, failed tests with the requirements they
+      affect, version/build under test, executor and date. Reports render
+      in the UI and export to DOCX/XLSX (reusing the existing exporters'
+      patterns); computed by `ProjectService` (read-only, REST + WebSocket).
 - [ ] Cross-project traceability in a subproject tree (follows the item
       above). A link configuration may target a module in the project's
       parent (or any ancestor) project, e.g. RBC_SA_NCBIR SyRS → RBC_GA_NCBIR
@@ -343,10 +372,6 @@ to the categories above.
       last-linked-at attribute value/hash against the current one), and
       surface it visually (e.g. a warning color on the `>`/`<` badge). Not
       yet requested — DOORS' core value-add over "just having links."
-- [ ] Traceability matrix / coverage view: for a given link configuration,
-      show a grid of source × target requirements, and a simple "N of M
-      source requirements have at least one link" coverage stat. Not yet
-      requested.
 - [ ] Baselines: name and snapshot a module (or project) at a point in
       time; compare two baselines to see what changed. Complements (not a
       replacement for) the user's own git history — a baseline is aware of
