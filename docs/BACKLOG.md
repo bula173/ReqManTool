@@ -311,6 +311,25 @@ to the categories above.
       attribute view selector, detail panel toggle, light/dark mode;
       **Help** — keyboard shortcuts, documentation links, About (tool
       version + build, from the version item).
+- [ ] Left-click and right-click menus everywhere. Requested 2026-10-04.
+      Two distinct menus, adapted to what was clicked: **left click** opens
+      a navigation/view menu (open, open in new tab, detach, show links,
+      go to linked requirement, show in tree, …); **right click** opens an
+      editing menu (cut/copy/paste, add child/sibling, move up/down, move
+      to folder, delete, link to…, rename, properties, …). Places and
+      their entries: requirement rows and cells (incl. `>`/`<` link
+      badges: go to / remove link), sidebar tree (project, subproject,
+      module folder, module: new module, new subproject, rename,
+      references, save as template, open in tab, detach), column headers
+      (sort, filter, hide, add to view, attribute properties), and module
+      tabs (close, close others, detach, split view). One shared menu
+      registry per element type so the menu bar, both context menus and
+      keyboard shortcuts call the same actions; entries the place does not
+      support are hidden, unavailable ones disabled. Left click still
+      selects; double-click keeps inline editing; Esc / outside click
+      closes; keyboard-accessible (Shift+F10 / menu key opens the editing
+      menu). Builds on the menu bar item; tab, folder and reference
+      entries appear as those items land.
 - [ ] Multiple open modules (tabs), detachable module windows, and
       drag-and-drop linking. Requested 2026-10-04. (1) Tabs: opening a
       module adds a tab to a tab bar listing the open modules (project ·
