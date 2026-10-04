@@ -16,9 +16,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from .models import LinkPair, Module, Project, Requirement
 
@@ -28,6 +30,14 @@ except ImportError:  # Windows
     fcntl = None  # type: ignore[assignment]
 
 PREFIX_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+
+# Directories in the data-directory root that are never projects. Project ids
+# are slugs (lowercase letters, digits and '-'), so they can never be equal
+# to these names; ``list_project_ids``/``project_exists`` also skip them
+# explicitly, so a hand-made ``project.json`` inside them is ignored.
+TEMPLATES_DIR_NAME = "_templates"
+STAGING_DIR_NAME = ".reqman-staging"
+RESERVED_ROOT_NAMES = frozenset({TEMPLATES_DIR_NAME, STAGING_DIR_NAME})
 
 
 def validate_prefix(value: str) -> None:
@@ -122,25 +132,87 @@ class ProjectStore:
 
     # --- projects ----------------------------------------------------------
 
+    @staticmethod
+    def _is_project_id(project_id: object) -> bool:
+        """True if ``project_id`` can name a project: one plain path component, not reserved.
+
+        Rejects anything that would make ``root / project_id`` point somewhere
+        other than a direct child of the data directory (``/`` or ``\\``
+        separators, ``.``/``..``, absolute paths, drives, NUL), so an id
+        coming from a request is never joined into a path outside the root.
+        """
+        return (
+            isinstance(project_id, str)
+            and project_id not in ("", ".", "..")
+            and project_id not in RESERVED_ROOT_NAMES
+            and "/" not in project_id
+            and "\\" not in project_id
+            and "\0" not in project_id
+            and not os.path.isabs(project_id)
+            and not os.path.splitdrive(project_id)[0]
+        )
+
     def project_exists(self, project_id: str) -> bool:
+        if not self._is_project_id(project_id):
+            return False
         return self._project_file(project_id).exists()
+
+    def project_path_exists(self, project_id: str) -> bool:
+        """True if anything (a project or any other file/directory) occupies the project's path."""
+        path = self._project_dir(project_id)
+        return project_id in RESERVED_ROOT_NAMES or path.exists() or path.is_symlink()
 
     def save_project(self, project: Project) -> None:
         self._project_dir(project.id).mkdir(parents=True, exist_ok=True)
         _write_json(self._project_file(project.id), project.to_dict())
 
     def load_project(self, project_id: str) -> Project:
-        path = self._project_file(project_id)
-        if not path.exists():
+        if not self._is_project_id(project_id) or not self._project_file(project_id).exists():
             raise FileNotFoundError(f"Project '{project_id}' not found")
-        return Project.from_dict(json.loads(path.read_text()))
+        return Project.from_dict(json.loads(self._project_file(project_id).read_text()))
 
     def list_project_ids(self) -> list[str]:
         if not self.root.exists():
             return []
         return sorted(
-            p.name for p in self.root.iterdir() if p.is_dir() and (p / "project.json").exists()
+            p.name
+            for p in self.root.iterdir()
+            if self._is_project_id(p.name) and p.is_dir() and (p / "project.json").exists()
         )
+
+    @contextmanager
+    def staging_store(self) -> Iterator["ProjectStore"]:
+        """Yield a store rooted in a fresh staging directory inside the data directory.
+
+        A multi-file write (a project created from a template) goes there
+        first and is moved into place by ``publish_staged_project`` in one
+        ``os.rename``, so a failure part-way never leaves a partial project
+        in the data directory. The staging directory is
+        ``<root>/.reqman-staging/<random>/``: its projects sit one level too
+        deep to be listed, and it is removed on exit whether or not the
+        project was published.
+        """
+        staging_parent = self.root / STAGING_DIR_NAME
+        staging_root = staging_parent / uuid.uuid4().hex
+        try:
+            yield ProjectStore(staging_root)
+        finally:
+            shutil.rmtree(staging_root, ignore_errors=True)
+            try:
+                staging_parent.rmdir()
+            except OSError:
+                pass  # not empty (another staging in progress) or already gone
+
+    def publish_staged_project(self, staging: "ProjectStore", project_id: str) -> None:
+        """Move a project written into ``staging`` to its final place, atomically.
+
+        Raises ``FileExistsError`` if the target path is taken; nothing is
+        overwritten.
+        """
+        target = self._project_dir(project_id)
+        if self.project_path_exists(project_id):
+            raise FileExistsError(f"Cannot create project '{project_id}': '{target}' already exists")
+        os.rename(staging._project_dir(project_id), target)
 
     # --- modules -------------------------------------------------------------
 
@@ -208,6 +280,40 @@ class ProjectStore:
             if self.requirement_exists(project_id, module_id, requirement_id):
                 return module_id
         return None
+
+    # --- user templates ----------------------------------------------------
+
+    def _templates_dir(self) -> Path:
+        return self.root / TEMPLATES_DIR_NAME
+
+    def _user_template_file(self, template_id: str) -> Path:
+        return self._templates_dir() / f"{template_id}.json"
+
+    def list_user_template_ids(self) -> list[str]:
+        """File stems of ``<root>/_templates/*.json`` (hidden/temporary files excluded)."""
+        templates_dir = self._templates_dir()
+        if not templates_dir.is_dir():
+            return []
+        return sorted(
+            p.stem for p in templates_dir.glob("*.json") if p.is_file() and not p.name.startswith(".")
+        )
+
+    def user_template_path_exists(self, template_id: str) -> bool:
+        """True if ``_templates/<template_id>.json`` is taken. ``template_id`` must be a slug."""
+        path = self._user_template_file(template_id)
+        return path.exists() or path.is_symlink()
+
+    def read_user_template_text(self, template_id: str) -> str:
+        # Looked up among the listed files rather than by joining a raw id
+        # into a path, so an id can never point outside the templates folder.
+        if template_id not in self.list_user_template_ids():
+            raise FileNotFoundError(f"Template 'user:{template_id}' not found")
+        return self._user_template_file(template_id).read_text(encoding="utf-8")
+
+    def save_user_template(self, template_id: str, data: dict) -> None:
+        """Write a new user template file; the caller has already chosen a free id."""
+        self._templates_dir().mkdir(parents=True, exist_ok=True)
+        _write_json(self._user_template_file(template_id), data)
 
     # --- link pairs ("link module") ---------------------------------------
 

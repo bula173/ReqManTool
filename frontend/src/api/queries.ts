@@ -7,6 +7,7 @@ import type {
   Module,
   Project,
   Requirement,
+  TemplateSummary,
   VersionInfo,
   View,
 } from './types';
@@ -20,6 +21,7 @@ export const queryKeys = {
     ['projects', projectId, 'modules', moduleId, 'requirements'] as const,
   config: ['config'] as const,
   version: ['version'] as const,
+  templates: ['templates'] as const,
 };
 
 // --- version -----------------------------------------------------------
@@ -99,13 +101,55 @@ export function useProject(projectId: string | undefined): UseQueryResult<Projec
   });
 }
 
+export interface CreateProjectBody {
+  name: string;
+  description?: string;
+  /** `builtin:<id>` or `user:<id>`; omit for a blank project. */
+  template_id?: string;
+  /** Omit (or null) for a top-level project. */
+  parent_project_id?: string | null;
+}
+
 export function useCreateProject() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string; description?: string }) =>
-      api.post<Project>('/projects', body),
+    mutationFn: (body: CreateProjectBody) => api.post<Project>('/projects', body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.projects });
+    },
+  });
+}
+
+/** Moves a project in the subproject tree; `null` makes it top level. */
+export function useSetProjectParent(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (parentProjectId: string | null) =>
+      api.put<Project>(`/projects/${projectId}/parent`, { parent_project_id: parentProjectId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.projects, exact: true });
+      qc.invalidateQueries({ queryKey: queryKeys.project(projectId), exact: true });
+    },
+  });
+}
+
+// --- templates -----------------------------------------------------------
+
+export function useTemplates(enabled = true): UseQueryResult<TemplateSummary[]> {
+  return useQuery({
+    queryKey: queryKeys.templates,
+    queryFn: () => api.get<TemplateSummary[]>('/templates'),
+    enabled,
+  });
+}
+
+export function useSaveProjectAsTemplate(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; description?: string }) =>
+      api.post<TemplateSummary>(`/projects/${projectId}/save-as-template`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.templates });
     },
   });
 }

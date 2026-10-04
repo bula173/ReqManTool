@@ -17,6 +17,14 @@ JSON files on disk, so history, review, and backup are just... git.
   `<` (incoming) markers
 - **Copy / cut / paste and reordering** for requirements, via a right-click
   context menu
+- **Project templates** — create a project from a template (attributes,
+  modules, link configurations and views, no requirements), including the
+  built-in `RBC_Template` for an ERTMS/ETCS RBC under EN 50126/50128/50129;
+  save any project's structure as your own template (stored in the data
+  folder's `_templates/`)
+- **Subprojects** — arrange projects as a generic → specific tree (e.g.
+  generic product → generic application → specific application), shown as
+  a tree in the sidebar
 - **Export to ReqIF** (using the [`reqif`](https://github.com/strictdoc-project/reqif)
   package) and **CSV**
 - **Live sync** — edits in one browser tab/window show up in others without

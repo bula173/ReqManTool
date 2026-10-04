@@ -7,17 +7,41 @@ and allocation, attribute validation (including rejecting direct writes to
 system-managed attributes), requirement nesting/cycle checks, directional
 link-configuration enforcement, and the cleanup cascades that keep links
 and mirrored attributes consistent when a requirement is removed, moved,
-or purged. See docs/ARCHITECTURE.md for the reasoning behind each of these.
+or purged. It also owns project templates (create a project from one, save
+a project as one) and the subproject tree (``parent_project_id``). See
+docs/ARCHITECTURE.md for the reasoning behind each of these.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import re
+from pathlib import Path
 from typing import Any, Callable
 
 from .csv_import import RESERVED_COLUMNS
 from .models import AttributeDefinition, LinkConfiguration, LinkPair, Module, Project, Requirement, View
 from .store import ProjectStore, validate_prefix
+from .templates import (
+    BUILTIN_SOURCE,
+    BUILTIN_TEMPLATES_DIR,
+    LINK_REF_PREFIX,
+    USER_SOURCE,
+    Template,
+    TemplateAttribute,
+    TemplateLinkConfiguration,
+    TemplateModule,
+    TemplateView,
+    list_builtin_template_ids,
+    make_template_id,
+    parse_template,
+    parse_template_text,
+    read_builtin_template_text,
+    split_template_id,
+)
+
+logger = logging.getLogger("reqman.service")
 
 BUILTIN_ATTRIBUTES = [
     AttributeDefinition(id="object_text", name="ObjectText", type="text", required=True),
@@ -26,6 +50,13 @@ BUILTIN_ATTRIBUTES = [
 ATTRIBUTE_TYPES = ("string", "text", "integer", "boolean", "enum")
 
 _SLUG_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+
+# Project id used while dry-running a template build to validate it; never written.
+_TEMPLATE_CHECK_PROJECT_ID = "template-check"
+
+
+class ConflictError(ValueError):
+    """The request clashes with existing data (REST 409; WebSocket treats it like any ValueError)."""
 
 
 def _unique_slug(name: str, exists_fn: Callable[[str], bool], fallback: str = "item") -> str:
@@ -41,24 +72,157 @@ def _unique_slug(name: str, exists_fn: Callable[[str], bool], fallback: str = "i
 class ProjectService:
     """Business logic shared by the REST API and the WebSocket RPC endpoint."""
 
-    def __init__(self, store: ProjectStore):
+    def __init__(self, store: ProjectStore, builtin_templates_dir: Path | None = None):
         self.store = store
+        self.builtin_templates_dir = (
+            builtin_templates_dir if builtin_templates_dir is not None else BUILTIN_TEMPLATES_DIR
+        )
 
     # --- projects ----------------------------------------------------------
 
-    def create_project(self, name: str, description: str = "") -> Project:
-        project_id = _unique_slug(name, self.store.project_exists, fallback="project")
-        project = Project(
-            id=project_id, name=name, description=description, attributes=list(BUILTIN_ATTRIBUTES)
-        )
-        self.store.save_project(project)
+    def create_project(
+        self,
+        name: str,
+        description: str = "",
+        template_id: str | None = None,
+        parent_project_id: str | None = None,
+    ) -> Project:
+        """Create a project, blank or from a template, optionally as a subproject.
+
+        From a template, the whole project (``project.json``, modules, empty
+        link-pair files) is built and validated in memory with the same
+        helpers as the individual create operations, written into a staging
+        directory, and moved into the data directory in one rename: an
+        invalid template or a failed write leaves nothing behind.
+        """
+        self._check_parent(None, parent_project_id)
+        if template_id is None:
+            project_id = _unique_slug(name, self.store.project_exists, fallback="project")
+            project = Project(
+                id=project_id,
+                name=name,
+                description=description,
+                parent_project_id=parent_project_id,
+                attributes=list(BUILTIN_ATTRIBUTES),
+            )
+            self.store.save_project(project)
+            return project
+
+        template = self._load_template(template_id)
+        # Skip any path that is taken, even by a non-project directory: the
+        # staged project is moved there by a rename, which must not merge
+        # into (or clobber) existing files.
+        project_id = _unique_slug(name, self.store.project_path_exists, fallback="project")
+        try:
+            project, modules = self._build_from_template(
+                template, project_id, name, description, parent_project_id
+            )
+        except ValueError as exc:
+            raise ValueError(f"Template '{template_id}' is invalid: {exc}") from exc
+
+        with self.store.staging_store() as staging:
+            for module in modules:
+                staging.save_module(project.id, module)
+            for config in project.link_configurations:
+                staging.save_link_pairs(project.id, config.id, [])
+            staging.save_project(project)
+            try:
+                self.store.publish_staged_project(staging, project.id)
+            except FileExistsError as exc:
+                raise ValueError(f"{exc}; try again") from exc
         return project
 
     def get_project(self, project_id: str) -> Project:
         return self.store.load_project(project_id)
 
     def list_projects(self) -> list[Project]:
-        return [self.store.load_project(pid) for pid in self.store.list_project_ids()]
+        """Every project, with ``parent_project_id`` as the effective subproject tree.
+
+        Hand-edited data can hold a parent that does not exist, or a cycle;
+        both are shown as top level here (only in the returned objects, the
+        files are not rewritten), so the tree always terminates.
+        ``get_project`` returns the stored value unchanged.
+        """
+        projects = [self.store.load_project(pid) for pid in self.store.list_project_ids()]
+        broken = self._broken_parent_ids(projects)
+        for project in projects:
+            if project.id in broken:
+                project.parent_project_id = None
+        return projects
+
+    @staticmethod
+    def _broken_parent_ids(projects: list[Project]) -> set[str]:
+        """Ids of projects whose stored parent is dangling, themselves, or part of a cycle."""
+        ids = {p.id for p in projects}
+        parent_of: dict[str, str | None] = {}
+        broken: set[str] = set()
+        for project in projects:
+            parent = project.parent_project_id
+            if parent is None:
+                parent_of[project.id] = None
+            elif not isinstance(parent, str) or parent not in ids or parent == project.id:
+                parent_of[project.id] = None
+                broken.add(project.id)
+            else:
+                parent_of[project.id] = parent
+        done: set[str] = set()
+        for start in parent_of:
+            path: list[str] = []
+            on_path: set[str] = set()
+            node: str | None = start
+            while node is not None and node not in done and node not in on_path:
+                path.append(node)
+                on_path.add(node)
+                node = parent_of[node]
+            if node is not None and node in on_path:
+                broken.update(path[path.index(node):])
+            done.update(path)
+        return broken
+
+    def _check_parent(self, project_id: str | None, parent_project_id: Any) -> None:
+        """Raise unless ``parent_project_id`` may be the parent of ``project_id``.
+
+        ``None`` (top level) is always allowed. Otherwise the parent must be
+        one of the ids ``list_project_ids`` returns (never a path such as
+        ``a/../b``), other than the project itself, and (for an existing
+        project) must not be one of its descendants. The ancestor walk only
+        follows ids of that set and stops at a missing, unreadable or
+        already-visited project, so hand-edited dangling, path-like or cyclic
+        data cannot make it loop or read outside the data directory.
+        """
+        if parent_project_id is None:
+            return
+        if not isinstance(parent_project_id, str) or not parent_project_id:
+            raise ValueError("parent_project_id must be a project id or null")
+        if parent_project_id == project_id:
+            raise ValueError("A project cannot be its own parent")
+        project_ids = set(self.store.list_project_ids())
+        if parent_project_id not in project_ids:
+            raise FileNotFoundError(f"Parent project '{parent_project_id}' not found")
+        if project_id is None:
+            return
+        seen: set[str] = set()
+        node: Any = parent_project_id
+        while isinstance(node, str) and node in project_ids and node not in seen:
+            if node == project_id:
+                raise ValueError(
+                    f"Cannot make '{parent_project_id}' the parent of '{project_id}': "
+                    f"'{parent_project_id}' is a subproject of '{project_id}'"
+                )
+            seen.add(node)
+            try:
+                node = self.store.load_project(node).parent_project_id
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                break  # missing or malformed project.json: its parent is unknown
+
+    def set_project_parent(self, project_id: str, parent_project_id: str | None) -> Project:
+        """Move a project in the subproject tree; ``None`` makes it top level."""
+        project = self.store.load_project(project_id)
+        self._check_parent(project_id, parent_project_id)
+        if project.parent_project_id != parent_project_id:
+            project.parent_project_id = parent_project_id
+            self.store.save_project(project)
+        return project
 
     def add_attribute_definition(
         self,
@@ -71,8 +235,29 @@ class ProjectService:
         choices: list[str] | None = None,
     ) -> Project:
         project = self.store.load_project(project_id)
+        project.attributes.append(
+            self._new_attribute_definition(project, attr_id, name, type, required, default, choices)
+        )
+        self.store.save_project(project)
+        return project
+
+    def _new_attribute_definition(
+        self,
+        project: Project,
+        attr_id: str,
+        name: Any,
+        type: Any,
+        required: bool,
+        default: Any,
+        choices: Any,
+    ) -> AttributeDefinition:
+        """A validated new attribute definition for ``project`` (not yet added or saved).
+
+        The one rule set for attribute definitions: ``add_attribute_definition``
+        and templates (create from / save as) both go through it.
+        """
         if any(a.id == attr_id for a in project.attributes):
-            raise ValueError(f"Attribute '{attr_id}' already defined on project '{project_id}'")
+            raise ValueError(f"Attribute '{attr_id}' already defined on project '{project.id}'")
         name = self._checked_attribute_name(project, name)
         if type not in ATTRIBUTE_TYPES:
             raise ValueError(f"Unknown attribute type '{type}'; expected one of {', '.join(ATTRIBUTE_TYPES)}")
@@ -80,9 +265,7 @@ class ProjectService:
             id=attr_id, name=name, type=type, required=required, default=default, choices=choices
         )
         self._check_choices_and_default(definition)
-        project.attributes.append(definition)
-        self.store.save_project(project)
-        return project
+        return definition
 
     @classmethod
     def _check_choices_and_default(cls, attr: AttributeDefinition) -> None:
@@ -487,6 +670,18 @@ class ProjectService:
             raise FileNotFoundError(f"Module '{source_module_id}' not found in project '{project_id}'")
         if not self.store.module_exists(project_id, target_module_id):
             raise FileNotFoundError(f"Module '{target_module_id}' not found in project '{project_id}'")
+        config = self._add_link_configuration(project, name, source_module_id, target_module_id)
+        self.store.save_project(project)
+        self.store.save_link_pairs(project_id, config.id, [])
+        return config
+
+    def _add_link_configuration(
+        self, project: Project, name: Any, source_module_id: str, target_module_id: str
+    ) -> LinkConfiguration:
+        """Add a link configuration and its system mirror attribute to ``project`` in memory.
+
+        The caller has checked that both modules exist and saves the project.
+        """
         # The link's mirror attribute heads its own export column, so the link
         # name follows the attribute name rule.
         name = self._checked_attribute_name(project, name, kind="Link")
@@ -504,8 +699,6 @@ class ProjectService:
         project.attributes.append(
             AttributeDefinition(id=config_id, name=name, type="text", required=False, system=True)
         )
-        self.store.save_project(project)
-        self.store.save_link_pairs(project_id, config_id, [])
         return config
 
     def list_link_configurations(self, project_id: str) -> list[LinkConfiguration]:
@@ -530,17 +723,23 @@ class ProjectService:
 
     def create_view(self, project_id: str, name: str, attribute_ids: list[str]) -> View:
         project = self.store.load_project(project_id)
+        view = self._add_view(project, name, attribute_ids)
+        self.store.save_project(project)
+        return view
+
+    @staticmethod
+    def _add_view(project: Project, name: str, attribute_ids: list[str]) -> View:
+        """Add a view to ``project`` in memory; every attribute id must be defined."""
         defined_ids = {a.id for a in project.attributes}
         unknown = set(attribute_ids) - defined_ids
         if unknown:
-            raise ValueError(f"Unknown attribute(s) for project '{project_id}': {sorted(unknown)}")
+            raise ValueError(f"Unknown attribute(s) for project '{project.id}': {sorted(unknown)}")
 
         taken_ids = {v.id for v in project.views}
         view_id = _unique_slug(name, lambda c: c in taken_ids, fallback="view")
 
         view = View(id=view_id, name=name, attribute_ids=list(attribute_ids))
         project.views.append(view)
-        self.store.save_project(project)
         return view
 
     def list_views(self, project_id: str) -> list[View]:
@@ -633,6 +832,264 @@ class ProjectService:
             "source": self.store.load_requirement(project_id, source_module, source_id),
             "target": self.store.load_requirement(project_id, target_module, target_id),
         }
+
+    # --- templates ------------------------------------------------------------
+
+    def _read_template_text(self, source: str, local_id: str) -> str:
+        if source == BUILTIN_SOURCE:
+            return read_builtin_template_text(local_id, self.builtin_templates_dir)
+        return self.store.read_user_template_text(local_id)
+
+    def _load_template(self, template_id: Any) -> Template:
+        """Read and shape-check a template (404 if missing, 400 if malformed)."""
+        source, local_id = split_template_id(template_id)
+        text = self._read_template_text(source, local_id)
+        try:
+            return parse_template_text(text, template_id)
+        except ValueError as exc:
+            raise ValueError(f"Template '{template_id}' is invalid: {exc}") from exc
+
+    def _build_from_template(
+        self,
+        template: Template,
+        project_id: str,
+        name: str,
+        description: str,
+        parent_project_id: str | None,
+    ) -> tuple[Project, list[Module]]:
+        """Build a project and its modules from ``template`` in memory, validating everything.
+
+        Uses the same helpers as ``add_attribute_definition``,
+        ``create_module``, ``create_link_configuration`` and ``create_view``,
+        so a template can never produce a project those operations would
+        reject. Raises ``ValueError`` naming the offending template entry.
+        Nothing is written.
+        """
+        project = Project(
+            id=project_id,
+            name=name,
+            description=description,
+            parent_project_id=parent_project_id,
+            attributes=list(BUILTIN_ATTRIBUTES),
+        )
+        builtin_ids = {a.id for a in BUILTIN_ATTRIBUTES}
+        for index, attr in enumerate(template.attributes):
+            if attr.id in builtin_ids:
+                # Checked here, not by _new_attribute_definition, whose message
+                # names the project (an internal id while listing templates).
+                raise ValueError(
+                    f"attributes[{index}]: '{attr.id}' is a built-in attribute every project already has"
+                )
+            try:
+                project.attributes.append(
+                    self._new_attribute_definition(
+                        project, attr.id, attr.name, attr.type, attr.required, attr.default, attr.choices
+                    )
+                )
+            except ValueError as exc:
+                raise ValueError(f"attributes[{index}] ('{attr.id}'): {exc}") from exc
+
+        modules: list[Module] = []
+        module_ids: dict[str, str] = {}
+        for index, tmodule in enumerate(template.modules):
+            try:
+                validate_prefix(tmodule.prefix)
+            except ValueError as exc:
+                raise ValueError(f"modules[{index}] ('{tmodule.name}'): {exc}") from exc
+            taken = set(module_ids.values())
+            module_id = _unique_slug(tmodule.name, lambda c: c in taken, fallback="module")
+            module_ids[tmodule.key] = module_id
+            modules.append(
+                Module(id=module_id, name=tmodule.name, prefix=tmodule.prefix, description=tmodule.description)
+            )
+
+        link_ids: dict[str, str] = {}
+        for index, tconfig in enumerate(template.link_configurations):
+            try:
+                config = self._add_link_configuration(
+                    project,
+                    tconfig.name,
+                    module_ids[tconfig.source_module],
+                    module_ids[tconfig.target_module],
+                )
+            except ValueError as exc:
+                raise ValueError(f"link_configurations[{index}] ('{tconfig.key}'): {exc}") from exc
+            link_ids[tconfig.key] = config.id
+
+        attribute_ids = {a.id for a in BUILTIN_ATTRIBUTES} | {a.id for a in template.attributes}
+        for index, tview in enumerate(template.views):
+            mapped: list[str] = []
+            for ref in tview.attribute_ids:
+                if ref.startswith(LINK_REF_PREFIX):
+                    key = ref[len(LINK_REF_PREFIX):]
+                    if key not in link_ids:
+                        raise ValueError(
+                            f"views[{index}] ('{tview.name}'): '{ref}' does not name a link "
+                            "configuration key of this template"
+                        )
+                    mapped.append(link_ids[key])
+                elif ref in attribute_ids:
+                    mapped.append(ref)
+                else:
+                    raise ValueError(
+                        f"views[{index}] ('{tview.name}'): unknown attribute '{ref}' (expected "
+                        f"'object_text', a template attribute id, or '{LINK_REF_PREFIX}<key>')"
+                    )
+            self._add_view(project, tview.name, mapped)
+
+        return project, modules
+
+    def _validate_template(self, template: Template) -> None:
+        self._build_from_template(template, _TEMPLATE_CHECK_PROJECT_ID, template.name, "", None)
+
+    @staticmethod
+    def _template_summary(template: Template) -> dict[str, Any]:
+        return {
+            "id": template.id,
+            "source": template.source,
+            "name": template.name,
+            "description": template.description,
+            "modules": [{"key": m.key, "name": m.name, "prefix": m.prefix} for m in template.modules],
+            "error": None,
+        }
+
+    @staticmethod
+    def _fallback_template_name(text: str | None, local_id: str) -> str:
+        try:
+            name = json.loads(text)["name"] if text is not None else None
+        except (ValueError, TypeError, KeyError, IndexError):
+            name = None
+        return name.strip() if isinstance(name, str) and name.strip() else local_id
+
+    def list_templates(self) -> list[dict[str, Any]]:
+        """Built-in templates, then user templates, each sorted by name.
+
+        Every template is fully validated. An invalid one (unreadable, bad
+        JSON, wrong shape, unsupported ``format_version``, or a rule a
+        project would reject) is still listed, with the reason in ``error``
+        and no modules, so one bad file never hides the others; creating a
+        project from it fails with the same reason.
+        """
+        sources = (
+            (BUILTIN_SOURCE, list_builtin_template_ids(self.builtin_templates_dir)),
+            (USER_SOURCE, self.store.list_user_template_ids()),
+        )
+        result: list[dict[str, Any]] = []
+        for source, local_ids in sources:
+            entries: list[dict[str, Any]] = []
+            for local_id in local_ids:
+                template_id = make_template_id(source, local_id)
+                text: str | None = None
+                try:
+                    text = self._read_template_text(source, local_id)
+                    template = parse_template_text(text, template_id)
+                    self._validate_template(template)
+                    entries.append(self._template_summary(template))
+                except (OSError, ValueError) as exc:
+                    logger.debug("Template %s is invalid: %s", template_id, exc)
+                    entries.append(
+                        {
+                            "id": template_id,
+                            "source": source,
+                            "name": self._fallback_template_name(text, local_id),
+                            "description": "",
+                            "modules": [],
+                            "error": str(exc),
+                        }
+                    )
+            entries.sort(key=lambda e: (e["name"].casefold(), e["id"]))
+            result.extend(entries)
+        return result
+
+    @staticmethod
+    def _template_from_project(
+        project: Project, modules: list[Module], template_id: str, name: str, description: str
+    ) -> Template:
+        """A project's structure as a template; no requirements, no id counters, no parent."""
+        builtin_ids = {a.id for a in BUILTIN_ATTRIBUTES}
+        link_ids = {c.id for c in project.link_configurations}
+        attributes = [
+            TemplateAttribute(
+                id=a.id,
+                name=a.name,
+                type=a.type,
+                required=a.required,
+                default=a.default,
+                choices=list(a.choices) if isinstance(a.choices, list) else a.choices,
+            )
+            for a in project.attributes
+            if not a.system and a.id not in builtin_ids
+        ]
+        kept_ids = builtin_ids | {a.id for a in attributes}
+        views = []
+        for view in project.views:
+            refs: list[str] = []
+            for attr_id in view.attribute_ids:
+                if attr_id in link_ids:
+                    refs.append(f"{LINK_REF_PREFIX}{attr_id}")
+                elif attr_id in kept_ids:
+                    refs.append(attr_id)
+                # else: a reference the project itself no longer resolves
+                # (e.g. its link configuration was removed) is dropped.
+            views.append(TemplateView(name=view.name, attribute_ids=refs))
+        return Template(
+            id=template_id,
+            source=USER_SOURCE,
+            name=name,
+            description=description,
+            attributes=attributes,
+            modules=[
+                TemplateModule(key=m.id, name=m.name, prefix=m.prefix, description=m.description)
+                for m in modules
+            ],
+            link_configurations=[
+                TemplateLinkConfiguration(
+                    key=c.id, name=c.name, source_module=c.source_module_id, target_module=c.target_module_id
+                )
+                for c in project.link_configurations
+            ],
+            views=views,
+        )
+
+    def save_project_as_template(self, project_id: str, name: Any, description: Any = "") -> dict[str, Any]:
+        """Write a project's structure as a new user template (``user:<slug>``).
+
+        Saves non-system attributes (except the built-in ``object_text``),
+        modules (key = module id), link configurations (between module keys)
+        and views (mirror attributes written as ``link:<key>``; references to
+        attributes the project no longer has are dropped). Requirements, id
+        counters and the parent are not saved. The result is validated
+        exactly like a loaded template before anything is written. A name
+        already used by any template (built-in or user, case-insensitive)
+        raises ``ConflictError``; existing files are never overwritten.
+        """
+        project = self.store.load_project(project_id)
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Template name must not be empty")
+        name = name.strip()
+        if description is None:
+            description = ""
+        if not isinstance(description, str):
+            raise ValueError("Template description must be a string")
+
+        for entry in self.list_templates():
+            if entry["name"].casefold() == name.casefold():
+                raise ConflictError(f"A template named '{entry['name']}' already exists ({entry['id']})")
+
+        local_id = _unique_slug(name, self.store.user_template_path_exists, fallback="template")
+        template_id = make_template_id(USER_SOURCE, local_id)
+        template = self._template_from_project(
+            project, self.list_modules(project_id), template_id, name, description
+        )
+        data = template.to_dict()
+        try:
+            # Round-trip through the loader so the saved file is exactly what
+            # a later "create from template" will accept.
+            self._validate_template(parse_template(data, template_id))
+        except ValueError as exc:
+            raise ValueError(f"Project '{project_id}' cannot be saved as a template: {exc}") from exc
+        self.store.save_user_template(local_id, data)
+        return self._template_summary(template)
 
     # --- export ----------------------------------------------------------------
 

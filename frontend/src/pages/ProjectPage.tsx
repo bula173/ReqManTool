@@ -1,6 +1,7 @@
 import {
   ActionIcon,
   Alert,
+  Anchor,
   Badge,
   Button,
   Card,
@@ -16,14 +17,24 @@ import {
 } from '@mantine/core';
 import { modals } from '@mantine/modals';
 import { notifications } from '@mantine/notifications';
-import { IconInfoCircle, IconPlus, IconTrash } from '@tabler/icons-react';
+import {
+  IconFolderPlus,
+  IconHierarchy2,
+  IconInfoCircle,
+  IconPlus,
+  IconTemplate,
+  IconTrash,
+} from '@tabler/icons-react';
 import { useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
-import { useModules, useProject, useRemoveLinkConfiguration, useRemoveView } from '../api/queries';
+import { useModules, useProject, useProjects, useRemoveLinkConfiguration, useRemoveView } from '../api/queries';
 import { AddAttributeModal } from '../components/AddAttributeModal';
 import { LinkConfigurationModal } from '../components/LinkConfigurationModal';
 import { NewModuleModal } from '../components/NewModuleModal';
+import { NewProjectModal } from '../components/NewProjectModal';
+import { ProjectParentModal } from '../components/ProjectParentModal';
+import { SaveAsTemplateModal } from '../components/SaveAsTemplateModal';
 import { ViewModal } from '../components/ViewModal';
 import type { LinkConfiguration, Module, View } from '../api/types';
 
@@ -31,6 +42,7 @@ export function ProjectPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const projectQuery = useProject(projectId);
+  const projectsQuery = useProjects();
   const modulesQuery = useModules(projectId);
   const removeLinkConfiguration = useRemoveLinkConfiguration(projectId ?? '');
   const removeView = useRemoveView(projectId ?? '');
@@ -38,6 +50,9 @@ export function ProjectPage() {
   const [newModuleOpened, setNewModuleOpened] = useState(false);
   const [newLinkConfigOpened, setNewLinkConfigOpened] = useState(false);
   const [newViewOpened, setNewViewOpened] = useState(false);
+  const [newSubprojectOpened, setNewSubprojectOpened] = useState(false);
+  const [parentOpened, setParentOpened] = useState(false);
+  const [saveTemplateOpened, setSaveTemplateOpened] = useState(false);
 
   if (!projectId) return null;
 
@@ -58,6 +73,11 @@ export function ProjectPage() {
   }
 
   const project = projectQuery.data;
+  // The project list reports the effective tree (a dangling/cyclic stored parent is top level).
+  const projects = projectsQuery.data ?? [];
+  const parentId = projects.find((p) => p.id === projectId)?.parent_project_id ?? null;
+  const parent = parentId ? projects.find((p) => p.id === parentId) : undefined;
+  const subprojects = projects.filter((p) => p.parent_project_id === projectId);
   const modulesById = new Map<string, Module>((modulesQuery.data ?? []).map((m) => [m.id, m]));
   const moduleLabel = (moduleId: string) => modulesById.get(moduleId)?.name ?? moduleId;
 
@@ -109,10 +129,61 @@ export function ProjectPage() {
 
   return (
     <Stack gap="lg">
-      <div>
-        <Title order={2}>{project.name}</Title>
-        <Text c="dimmed">{project.description || 'No description'}</Text>
-      </div>
+      <Group justify="space-between" align="flex-start" wrap="nowrap">
+        <div>
+          <Title order={2}>{project.name}</Title>
+          {parent && (
+            <Text size="sm">
+              Subproject of{' '}
+              <Anchor component={Link} to={`/projects/${parent.id}`}>
+                {parent.name}
+              </Anchor>
+            </Text>
+          )}
+          <Text c="dimmed">{project.description || 'No description'}</Text>
+          {subprojects.length > 0 && (
+            <Group gap={4} mt={4}>
+              <Text size="sm">Subprojects:</Text>
+              {subprojects.map((child) => (
+                <Badge
+                  key={child.id}
+                  variant="light"
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => navigate(`/projects/${child.id}`)}
+                >
+                  {child.name}
+                </Badge>
+              ))}
+            </Group>
+          )}
+        </div>
+        <Group gap="xs" wrap="nowrap">
+          <Button
+            size="xs"
+            variant="default"
+            leftSection={<IconFolderPlus size={14} />}
+            onClick={() => setNewSubprojectOpened(true)}
+          >
+            New subproject
+          </Button>
+          <Button
+            size="xs"
+            variant="default"
+            leftSection={<IconHierarchy2 size={14} />}
+            onClick={() => setParentOpened(true)}
+          >
+            Change parent
+          </Button>
+          <Button
+            size="xs"
+            variant="default"
+            leftSection={<IconTemplate size={14} />}
+            onClick={() => setSaveTemplateOpened(true)}
+          >
+            Save as template
+          </Button>
+        </Group>
+      </Group>
 
       <Card withBorder>
         <Group justify="space-between" mb="sm">
@@ -289,6 +360,17 @@ export function ProjectPage() {
         attributes={project.attributes}
         opened={newViewOpened}
         onClose={() => setNewViewOpened(false)}
+      />
+      <NewProjectModal
+        opened={newSubprojectOpened}
+        onClose={() => setNewSubprojectOpened(false)}
+        defaultParentProjectId={projectId}
+      />
+      <ProjectParentModal project={project} opened={parentOpened} onClose={() => setParentOpened(false)} />
+      <SaveAsTemplateModal
+        project={project}
+        opened={saveTemplateOpened}
+        onClose={() => setSaveTemplateOpened(false)}
       />
     </Stack>
   );

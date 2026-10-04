@@ -158,6 +158,48 @@
       WebSocket reconnect. Not covered: tying the version to the release
       tag (left to the distribution item), a `-dirty` marker on build ids,
       frontend unit tests (no test runner in the repo).
+- [x] Project templates (JSON) + CENELEC/ERTMS `RBC_Template` + subproject
+      tree. Templates are JSON files with `format_version` 1
+      (`backend/reqman/templates.py`): attribute definitions (built-in
+      `object_text` implicit), modules (`key`, `name`, `prefix`,
+      `description`), link configurations between module keys and views
+      (`link:<key>` = that link's mirror attribute) — no requirements.
+      Unknown keys are ignored, other `format_version` values rejected. A
+      template is validated on load by building the project in memory with
+      the normal service helpers, plus template rules (duplicate module
+      keys/names, link keys, view names, attribute ids; unknown module
+      keys; no `system`/`link:` attributes). Built-in
+      `backend/reqman/templates/rbc_template.json` (`RBC_Template`): modules
+      StRS/SyRS/SwRS/SysTest/SwTest, links SyRS→StRS, SwRS→SyRS,
+      SysTest→SyRS, SwTest→SwRS, CENELEC attributes, views Requirements/
+      Safety/Test Cases/Review. Template ids are `builtin:<stem>` /
+      `user:<stem>`; user templates live in `<data dir>/_templates/` (it and
+      `.reqman-staging` are never listed as projects). `GET /templates`
+      (WS `template.list`) lists both, an invalid user template with an
+      `error`. `POST /projects` (WS `project.create`) takes optional
+      `template_id` and `parent_project_id`; creation from a template is
+      all-or-nothing (built in `.reqman-staging/`, moved in with one
+      rename). `POST /projects/{id}/save-as-template` (WS
+      `project.save_as_template`) writes the structure as a user template
+      (name clash → 409, never overwrites) and broadcasts
+      `templates_changed`. Subprojects: `Project.parent_project_id`
+      (written only when set, so existing `project.json` files stay
+      byte-identical), `PUT /projects/{id}/parent` (WS
+      `project.set_parent`); unknown parents, self and cycles rejected;
+      hand-edited dangling/cyclic parents shown as top level without
+      rewriting; project ids that are not a safe single path component are
+      never listed or loaded. Frontend: template + parent pickers in
+      `NewProjectModal.tsx`, `SaveAsTemplateModal.tsx`,
+      `ProjectParentModal.tsx`, "New subproject", project tree in
+      `Sidebar.tsx` (`projectTree.ts`); the template list refreshes on
+      `templates_changed`. Not covered: duplicate view names are allowed in
+      projects but rejected in templates, and user templates with a UTF-8
+      BOM are rejected (both product decisions); blank project creation can
+      still write into an existing non-project folder of the same name
+      (pre-existing); modules are listed in id order, not template order
+      (no persisted module order); cross-project links, module types and
+      the menu bar remain separate backlog items; no frontend unit tests
+      (no test runner in the repo).
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -236,30 +278,6 @@ custom report templates ❌.
 Ordered roughly by how directly each was requested / how foundational it is
 to the categories above.
 
-- [ ] Project templates (JSON) + CENELEC/ERTMS `RBC_Template` + subproject
-      tree. Requested 2026-10-04. (1) Templates are JSON files with a
-      `format_version`: built-in ones ship in `backend/reqman/templates/`,
-      user ones live in the data directory (never listed as projects). A
-      template holds attribute definitions, modules (name, prefix), link
-      configurations between template modules, and views — no
-      requirements. `GET /templates`; creating a project accepts an
-      optional `template_id`; "Save as template" turns a project's
-      structure into a user template; WebSocket parity for all of it.
-      (2) Built-in `RBC_Template` for an ERTMS/ETCS RBC under EN 50126 /
-      EN 50128 / EN 50129: modules StRS (stakeholder requirements), SyRS
-      (system requirements), SwRS (software requirements), SysTest (system
-      test cases), SwTest (software test cases); default link
-      configurations SyRS→StRS, SwRS→SyRS, SysTest→SyRS, SwTest→SwRS;
-      CENELEC attributes (Object Type, Status, SIL, Safety Related, Hazard
-      Ref, Allocation, Verification Method, Source, Rationale, test
-      fields) and role views (Requirements, Safety, Test Cases, Review).
-      (3) Subprojects: `Project.parent_project_id` (backward-compatible,
-      `None` = top level) forms a generic→specific product-line tree per
-      EN 50129, e.g. RTE → RBC_GP (generic product) → RBC_GA_NCBIR
-      (generic application) → RBC_SA_NCBIR (specific application) →
-      RBC_NCBIR; a subproject is typically created from the same template.
-      Sidebar shows the tree; cycles and dangling parents rejected
-      server-side.
 - [ ] Application menu bar. Requested 2026-10-04. A desktop-style menu bar
       in the app shell (`frontend/src/layout/`), built on the existing
       features rather than duplicating their logic: **File** — New project

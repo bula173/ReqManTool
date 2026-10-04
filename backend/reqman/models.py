@@ -140,16 +140,29 @@ class Project:
     id: str
     name: str
     description: str = ""
+    # The generic project this one specializes (subproject tree), or None
+    # for a top-level project. Rules (parent exists, no cycles) live in
+    # ``ProjectService``.
+    parent_project_id: str | None = None
     attributes: list[AttributeDefinition] = field(default_factory=list)
     id_counters: dict[str, int] = field(default_factory=dict)
     link_configurations: list[LinkConfiguration] = field(default_factory=list)
     views: list[View] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return {
+        data: dict[str, Any] = {
             "id": self.id,
             "name": self.name,
             "description": self.description,
+        }
+        # Written only when set, so a top-level project's project.json keeps
+        # exactly the keys it had before subprojects existed (no
+        # ``"parent_project_id": null`` line appears in version-controlled
+        # data when an old project is next saved).
+        if self.parent_project_id is not None:
+            data["parent_project_id"] = self.parent_project_id
+        return {
+            **data,
             "attributes": [a.to_dict() for a in self.attributes],
             "id_counters": self.id_counters,
             "link_configurations": [c.to_dict() for c in self.link_configurations],
@@ -162,6 +175,7 @@ class Project:
             id=data["id"],
             name=data["name"],
             description=data.get("description", ""),
+            parent_project_id=data.get("parent_project_id"),
             attributes=[AttributeDefinition.from_dict(a) for a in data.get("attributes", [])],
             id_counters=data.get("id_counters", {}),
             views=[View.from_dict(v) for v in data.get("views", [])],

@@ -3,37 +3,56 @@ import { IconFolderPlus, IconFolders, IconFileText, IconPlus } from '@tabler/ico
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useModules, useProjects } from '../api/queries';
+import type { Project } from '../api/types';
 import { NewModuleModal } from './NewModuleModal';
 import { NewProjectModal } from './NewProjectModal';
+import { ancestorIds, buildProjectForest, type ProjectForest } from './projectTree';
 
 function ProjectNode({
-  projectId,
-  name,
+  project,
+  forest,
   activeProjectId,
   activeModuleId,
+  activeAncestorIds,
   onRequestNewModule,
 }: {
-  projectId: string;
-  name: string;
+  project: Project;
+  forest: ProjectForest;
   activeProjectId: string | undefined;
   activeModuleId: string | undefined;
+  /** Ancestors of the active project: start expanded so the active project is visible. */
+  activeAncestorIds: string[];
   onRequestNewModule: (projectId: string) => void;
 }) {
   const navigate = useNavigate();
+  const projectId = project.id;
   const isActiveProject = activeProjectId === projectId;
-  const [opened, setOpened] = useState(isActiveProject);
+  const [opened, setOpened] = useState(isActiveProject || activeAncestorIds.includes(projectId));
   const modulesQuery = useModules(opened ? projectId : undefined);
+  const subprojects = forest.childrenOf.get(projectId) ?? [];
 
   return (
     <NavLink
-      label={name}
+      label={project.name}
       leftSection={<IconFolders size={16} />}
       active={isActiveProject && !activeModuleId}
       opened={opened}
       onChange={setOpened}
       onClick={() => navigate(`/projects/${projectId}`)}
-      childrenOffset={28}
+      childrenOffset={20}
     >
+      {opened &&
+        subprojects.map((child) => (
+          <ProjectNode
+            key={child.id}
+            project={child}
+            forest={forest}
+            activeProjectId={activeProjectId}
+            activeModuleId={activeModuleId}
+            activeAncestorIds={activeAncestorIds}
+            onRequestNewModule={onRequestNewModule}
+          />
+        ))}
       {opened && modulesQuery.isLoading && (
         <Stack align="center" py="xs">
           <Loader size="xs" />
@@ -72,6 +91,10 @@ export function Sidebar() {
   const [newProjectOpened, setNewProjectOpened] = useState(false);
   const [newModuleProjectId, setNewModuleProjectId] = useState<string | null>(null);
 
+  const projects = projectsQuery.data ?? [];
+  const forest = buildProjectForest(projects);
+  const activeAncestorIds = params.projectId ? ancestorIds(projects, params.projectId) : [];
+
   return (
     <Stack gap="xs" h="100%">
       <Stack gap={4} px="xs" pt="xs">
@@ -100,13 +123,14 @@ export function Sidebar() {
             No projects yet
           </Text>
         )}
-        {projectsQuery.data?.map((project) => (
+        {forest.roots.map((project) => (
           <ProjectNode
             key={project.id}
-            projectId={project.id}
-            name={project.name}
+            project={project}
+            forest={forest}
             activeProjectId={params.projectId}
             activeModuleId={params.moduleId}
+            activeAncestorIds={activeAncestorIds}
             onRequestNewModule={setNewModuleProjectId}
           />
         ))}

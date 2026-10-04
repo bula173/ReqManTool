@@ -27,6 +27,12 @@ export interface Project {
   id: string;
   name: string;
   description: string;
+  /**
+   * The generic project this one specializes (subproject tree). Omitted by
+   * the backend for a top-level project. In `GET /projects` a dangling or
+   * cyclic stored parent is reported as top level.
+   */
+  parent_project_id?: string | null;
   attributes: AttributeDefinition[];
   link_configurations: LinkConfiguration[];
   views: View[];
@@ -62,4 +68,18 @@ export interface ApiErrorBody {
 export interface VersionInfo {
   version: string;
   build: string;
+}
+
+export type TemplateSource = 'builtin' | 'user';
+
+/** One entry of GET /templates (WS `template.list`). */
+export interface TemplateSummary {
+  /** Namespaced: `builtin:<id>` or `user:<id>`. */
+  id: string;
+  source: TemplateSource;
+  name: string;
+  description: string;
+  modules: { key: string; name: string; prefix: string }[];
+  /** Why the template cannot be used, or null if it is valid. */
+  error: string | null;
 }

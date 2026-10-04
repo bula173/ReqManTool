@@ -12,7 +12,11 @@ interface RootChangedEvent {
   event: 'root_changed';
 }
 
-type LiveSyncEvent = ChangedEvent | RootChangedEvent;
+interface TemplatesChangedEvent {
+  event: 'templates_changed';
+}
+
+type LiveSyncEvent = ChangedEvent | RootChangedEvent | TemplatesChangedEvent;
 
 /**
  * Opens a single app-wide WebSocket connection to the backend's live-sync
@@ -22,7 +26,8 @@ type LiveSyncEvent = ChangedEvent | RootChangedEvent;
  * A {"event":"root_changed"} broadcast (the data directory was switched)
  * clears the cache, since the whole project/module/requirement set is now a
  * different dataset; only the backend version query is kept (see
- * clearDatasetCache).
+ * clearDatasetCache). A {"event":"templates_changed"} broadcast (a template
+ * was saved) refetches the template list.
  *
  * On a reconnect (usually a backend restart, possibly as a different
  * version) the footer's version query is refetched; on the first connect it
@@ -67,6 +72,8 @@ export function useLiveSync(): void {
             });
           } else if (data.event === 'root_changed') {
             clearDatasetCache(qc);
+          } else if (data.event === 'templates_changed') {
+            qc.invalidateQueries({ queryKey: queryKeys.templates });
           }
         } catch {
           // ignore malformed messages

@@ -26,7 +26,7 @@ from pydantic import BaseModel
 
 from .config import DEFAULT_DATA_DIR, load_saved_data_dir, save_data_dir
 from .csv_import import MAX_CSV_IMPORT_BYTES
-from .service import ProjectService
+from .service import ConflictError, ProjectService
 from .store import ProjectStore
 from .version import build_id, version_info
 
@@ -86,6 +86,9 @@ class ConnectionManager:
 
     async def broadcast_root_changed(self) -> None:
         await self._send_all({"event": "root_changed"})
+
+    async def broadcast_templates_changed(self, exclude: WebSocket | None = None) -> None:
+        await self._send_all({"event": "templates_changed"}, exclude)
 
     async def _send_all(self, message: dict, exclude: WebSocket | None = None) -> None:
         for connection in list(self.connections):
@@ -179,6 +182,17 @@ def browse_folders(path: str | None = None):
 class CreateProjectBody(BaseModel):
     name: str
     description: str = ""
+    template_id: str | None = None
+    parent_project_id: str | None = None
+
+
+class SetProjectParentBody(BaseModel):
+    parent_project_id: str | None = None
+
+
+class SaveAsTemplateBody(BaseModel):
+    name: str
+    description: str = ""
 
 
 class AddAttributeBody(BaseModel):
@@ -242,6 +256,8 @@ def _wrap(fn, *args, **kwargs):
         return fn(*args, **kwargs)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -251,9 +267,33 @@ def _wrap(fn, *args, **kwargs):
 
 @app.post("/projects")
 async def create_project(body: CreateProjectBody):
-    project = _wrap(service.create_project, body.name, body.description)
+    project = _wrap(
+        service.create_project, body.name, body.description, body.template_id, body.parent_project_id
+    )
     await manager.broadcast(project.id)
     return project.to_dict()
+
+
+@app.put("/projects/{project_id}/parent")
+async def set_project_parent(project_id: str, body: SetProjectParentBody):
+    project = _wrap(service.set_project_parent, project_id, body.parent_project_id)
+    await manager.broadcast(project_id)
+    return project.to_dict()
+
+
+@app.post("/projects/{project_id}/save-as-template")
+async def save_project_as_template(project_id: str, body: SaveAsTemplateBody):
+    template = _wrap(service.save_project_as_template, project_id, body.name, body.description)
+    await manager.broadcast_templates_changed()
+    return template
+
+
+# --- templates ----------------------------------------------------------
+
+
+@app.get("/templates")
+def list_templates():
+    return service.list_templates()
 
 
 @app.get("/projects")
@@ -526,7 +566,14 @@ async def unlink_requirements(project_id: str, body: LinkBody):
 
 RPC_METHODS = {
     "version.get": lambda p: version_info(),
-    "project.create": lambda p: service.create_project(p["name"], p.get("description", "")),
+    "project.create": lambda p: service.create_project(
+        p["name"], p.get("description", ""), p.get("template_id"), p.get("parent_project_id")
+    ),
+    "project.set_parent": lambda p: service.set_project_parent(p["id"], p.get("parent_project_id")),
+    "project.save_as_template": lambda p: service.save_project_as_template(
+        p["id"], p["name"], p.get("description", "")
+    ),
+    "template.list": lambda p: service.list_templates(),
     "project.get": lambda p: service.get_project(p["id"]),
     "project.list": lambda p: service.list_projects(),
     "project.purge": lambda p: {"purged": service.purge_project(p["id"])},
@@ -604,13 +651,17 @@ def _error_response(request_id, code: int, message: str) -> dict:
 
 
 MUTATING_METHODS = {
-    "project.create", "project.purge", "attribute.add", "module.create", "module.purge",
+    "project.create", "project.set_parent", "project.purge", "attribute.add", "module.create", "module.purge",
     "link_configuration.create", "link_configuration.remove",
     "view.create", "view.remove",
     "requirement.add", "requirement.update", "requirement.remove", "requirement.move",
     "requirement.reorder", "requirement.copy", "requirement.import_csv",
     "requirement.link", "requirement.unlink",
 }
+
+# Methods that change the data directory's template set rather than a
+# project: they broadcast {"event": "templates_changed"} instead of "changed".
+TEMPLATE_MUTATING_METHODS = {"project.save_as_template"}
 
 
 def _project_id_of(method_name: str, params: dict, result: Any) -> str | None:
@@ -634,6 +685,8 @@ async def _dispatch(request: dict, sender: WebSocket | None = None) -> dict:
             project_id = _project_id_of(method_name, params, result)
             if project_id:
                 await manager.broadcast(project_id, exclude=sender)
+        elif method_name in TEMPLATE_MUTATING_METHODS:
+            await manager.broadcast_templates_changed(exclude=sender)
         return {"jsonrpc": "2.0", "id": request_id, "result": _serialize(result)}
     except FileNotFoundError as exc:
         return _error_response(request_id, -32001, str(exc))

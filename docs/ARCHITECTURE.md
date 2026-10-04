@@ -71,6 +71,8 @@ after any mutation, the backend broadcasts `{"event": "changed",
 the relevant queries and refetches. Switching the data directory broadcasts
 `{"event": "root_changed"}` instead, which clears the entire client cache
 (the whole project/module/requirement set is now a different dataset).
+Saving a project as a template broadcasts `{"event": "templates_changed"}`,
+which refetches the template list.
 
 ## Data model and disk layout
 
@@ -82,10 +84,16 @@ persistence" below.
 
 ```
 <data-directory>/
+  _templates/                     # user project templates (never a project)
+    <template-id>.json            #   see "Project templates" below
+  .reqman-staging/                # transient: a project created from a
+                                  #   template is assembled here, then
+                                  #   renamed into place (removed afterwards)
   <project-id>/
     project.json                  # Project: id, name, description,
+                                   #   parent_project_id (only if set),
                                    #   attributes (incl. system ones),
-                                   #   id_counters, link_configurations
+                                   #   id_counters, link_configurations, views
     modules/
       <module-id>/
         module.json                # Module: id, name, prefix, description
@@ -99,7 +107,11 @@ persistence" below.
 ```
 
 - **Project** (`project.json`) — `id` (slug, see below), `name`,
-  `description`, `attributes: list[AttributeDefinition]` (applies to every
+  `description`, `parent_project_id: str | None` (see "Subprojects" below;
+  the key is written right after `description` and **only when set**, so a
+  top-level project's file keeps exactly the keys it had before subprojects
+  existed and old files are not rewritten with a new `null` line),
+  `attributes: list[AttributeDefinition]` (applies to every
   module in the project — there is no per-module attribute schema),
   `id_counters: dict[prefix, int]` (requirement id allocation state, one
   counter per module *prefix*, shared across modules that use the same
@@ -218,6 +230,89 @@ system or not, becomes an exported `SPEC-OBJECT` value; link configurations
 *additionally* become `SPEC-RELATION-TYPE`/`SPEC-RELATION`s from the
 central pairs store).
 
+### Subprojects
+
+`Project.parent_project_id` forms a generic → specific product-line tree
+in the EN 50129 sense (e.g. RTE → RBC_GP → RBC_GA_NCBIR → RBC_SA_NCBIR →
+RBC_NCBIR); `None` means top level. It is a pure grouping: link
+configurations, attributes and requirements stay within one project.
+`ProjectService._check_parent` enforces the rules for `create_project` and
+`set_project_parent` (`PUT /projects/{id}/parent`): the parent must be the
+id of an existing project as listed in the data directory (404 otherwise;
+a path such as `a/../b` or an absolute path is never a project id), not the
+project itself, and not one of its descendants (400 — the only way to form
+a cycle is reparenting). `ProjectStore` treats any project id that is not a
+single plain path component as not found. Data written by hand can still
+hold a dangling or cyclic parent: the ancestor walk only follows listed
+project ids and stops at a missing, unreadable or already-visited project,
+and `list_projects` reports such projects as top level (in the response
+only; the stored value is kept, and `GET /projects/{id}` returns it as
+stored), so the sidebar tree always terminates. Reparenting such a project
+(dangling or in a cycle) to `null` repairs it; the "Change parent project"
+dialog compares the choice with the stored parent from `GET /projects/{id}`,
+so choosing "None (top level)" is possible even though the list already
+shows the project as top level.
+There is no project-removal operation (purge only deletes requirements), so
+the app itself never leaves a dangling parent.
+
+### Project templates
+
+A template is a JSON file holding a project's *structure* — attribute
+definitions, modules, link configurations between those modules, and views
+— and no requirements. `backend/reqman/templates.py` documents the format
+(`format_version` 1) and checks its shape; `ProjectService` applies the
+domain rules.
+
+- **Ids are namespaced by location**, so templates can never collide or
+  shadow each other: `builtin:<stem>` for the read-only files shipped in
+  `backend/reqman/templates/` (currently `builtin:rbc_template`, the
+  ERTMS/ETCS RBC structure for EN 50126/50128/50129) and `user:<stem>` for
+  `<data-directory>/_templates/<stem>.json`. The file stem is the identity;
+  the `id` key inside the file is informational. Lookups pick from the
+  listed files, never by joining a raw id into a path.
+- **`_templates/` is never a project**: project ids are slugs
+  (`[a-z0-9-]`), which can never be `_templates` or `.reqman-staging`, and
+  `ProjectStore` skips both names when listing, checking or loading
+  projects, even if a `project.json` is put there by hand.
+- **Validation is the create path**: `_build_from_template` builds the
+  project in memory with the same helpers as `add_attribute_definition`,
+  `create_module`, `create_link_configuration` and `create_view`
+  (attribute name/type/choices/default rules, prefix rule, link-name rule,
+  view references), so a template can never produce a project those
+  operations would reject. `templates.py` adds template-only checks:
+  required keys and types, unique module keys/names, link keys and view
+  names, link `source_module`/`target_module` must be module keys, and view
+  entries must be `object_text`, a template attribute id, or `link:<key>`
+  (the mirror attribute of that link configuration). Duplicate module
+  prefixes are allowed, as in projects (they share one id counter).
+- **Compatibility**: unknown keys are ignored at every level, so a later
+  optional key (for example a module `type`) needs no `format_version`
+  bump. `format_version` is bumped only for incompatible changes; a
+  template with any other `format_version` than 1 is invalid.
+- **Listing** (`GET /templates`): built-in templates, then user templates,
+  each sorted by name, each fully validated. An invalid file (unreadable,
+  bad JSON, wrong shape, unsupported version, rule violation) is listed with
+  the reason in `error` (and logged at debug level) instead of breaking the
+  list; creating from it fails with the same reason.
+- **Create from template** (`POST /projects` with `template_id`) is
+  all-or-nothing: everything is validated in memory first, then
+  `project.json`, the modules and empty link-pair files are written into
+  `.reqman-staging/<random>/` and moved into the data directory with one
+  `os.rename`. The staging directory is always removed, so a failure leaves
+  nothing behind. Module ids are slugged from the module names, link
+  configuration ids from the link names (each with its system mirror
+  attribute), and view `link:<key>` entries are mapped to those ids.
+- **Save as template** (`POST /projects/{id}/save-as-template`) writes
+  `_templates/<slug-of-name>.json` (atomic write, two-space indent, trailing
+  newline, fixed key order): non-system attributes except `object_text`,
+  modules (`key` = module id, in id order), link configurations (between
+  module keys) and views (mirror attributes as `link:<key>`; references to
+  attributes the project no longer has are dropped). Requirements, id
+  counters and the parent are not saved. The result is round-tripped
+  through the loader before it is written. A name already used by any
+  template (built-in or user, case-insensitive) is rejected with 409; a
+  file is never overwritten.
+
 ### Git-friendly persistence
 
 The data directory is meant to be a git repository the user manages
@@ -278,6 +373,10 @@ backend/reqman/
   csv_import.py    The inverse of csv_export.py, same duck-typed pattern:
                    validates CSV text all-or-nothing and returns rows;
                    ProjectService.import_csv allocates ids and writes them.
+  templates.py     Project template format: namespaced ids, reading the
+                   built-in templates/ folder, shape checks (no domain
+                   rules — ProjectService validates by building the project
+                   in memory). templates/ holds the built-in JSON files.
   config.py        Where the *chosen data directory itself* is persisted
                    (`.reqman/config.json` next to the repo, or
                    REQMAN_DATA_DIR/--dir override) — deliberately
@@ -305,13 +404,14 @@ almost mechanical adapter.
 ### REST API surface
 
 All routes are project-scoped (`/projects/{project_id}/...`) except
-`/projects`, `/config`, `/fs/browse`, and `/version`. See `backend/reqman/app.py` for
+`/projects`, `/templates`, `/config`, `/fs/browse`, and `/version`. See `backend/reqman/app.py` for
 the authoritative, current route list — the summary here groups them by
 resource:
 
 | Resource | Routes |
 |---|---|
-| Projects | `POST/GET /projects`, `GET /projects/{id}` |
+| Projects | `POST/GET /projects` (`POST` body: `name`, `description`, optional `template_id`, optional `parent_project_id`), `GET /projects/{id}`, `PUT /projects/{id}/parent` (`{"parent_project_id": id or null}`) |
+| Templates | `GET /templates` → `[{id, source, name, description, modules: [{key, name, prefix}], error}]`, `POST /projects/{id}/save-as-template` (`{name, description}`; 409 on a name clash; broadcasts `templates_changed`) |
 | Attributes | `POST /projects/{id}/attributes` |
 | Link configurations | `POST/GET /projects/{id}/link-configurations`, `DELETE .../link-configurations/{config_id}` |
 | Modules | `POST/GET /projects/{id}/modules`, `GET .../modules/{id}`, `POST .../modules/{id}/purge` |
@@ -335,7 +435,13 @@ move/reorder/copy/link/unlink`, `link_configuration.create/list/remove`,
 …) — see `RPC_METHODS` in `app.py` for the exact table. Methods listed in
 `MUTATING_METHODS` broadcast a `changed` event after success, same as the
 REST side (`manager.broadcast`, excluding the sender socket so a client
-doesn't get a redundant refresh of its own change).
+doesn't get a redundant refresh of its own change). Templates and
+subprojects: `template.list`, `project.create` (optional `template_id`,
+`parent_project_id`), `project.set_parent` (`{id, parent_project_id}`,
+broadcasts `changed`), and `project.save_as_template` (`{id, name,
+description}`, in `TEMPLATE_MUTATING_METHODS`: broadcasts
+`templates_changed` instead of `changed`). A 409 conflict on the REST side
+is a `-32602` error over WebSocket, like other validation errors.
 
 ## Frontend structure
 
@@ -349,7 +455,8 @@ frontend/src/
                     should call `api.*` directly.
   hooks/
     useLiveSync.ts  The one app-wide WebSocket connection; invalidates
-                    queries on "changed", clears the cache on "root_changed"
+                    queries on "changed", the template list on
+                    "templates_changed", clears the cache on "root_changed"
                     (except the version query: same backend), refetches the version query on reconnect (or on first
                     connect if it failed while the backend was down)
   layout/
@@ -363,10 +470,17 @@ frontend/src/
                     NewProjectModal, NewModuleModal, AddAttributeModal,
                     LinkConfigurationModal, RequirementFormModal, LinkModal,
                     MoveRequirementModal, FolderPickerModal,
-                    EditableAttributeCell, DataDirSettings, Sidebar)
+                    SaveAsTemplateModal, ProjectParentModal,
+                    EditableAttributeCell, DataDirSettings, Sidebar).
+                    NewProjectModal picks an optional template and parent;
+                    Sidebar renders projects as a tree by
+                    parent_project_id (projectTree.ts: forest building,
+                    indented project options, descendant lookup)
   pages/
     HomePage.tsx     redirects to the first project, or an empty state
-    ProjectPage.tsx  project overview: attributes, link configurations, modules
+    ProjectPage.tsx  project overview: parent/subprojects, attributes, link
+                     configurations, views, modules; New subproject, Change
+                     parent and Save as template actions
     ModulePage.tsx   the requirements tree/table — the largest page;
                      owns the tree-flattening logic, the copy/cut/paste
                      clipboard, and the right-click context menu
