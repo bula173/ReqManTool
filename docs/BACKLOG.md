@@ -435,6 +435,34 @@ to the categories above.
       reorders/reparents within the module (same rules as Move/Cut-Paste).
       Works with the collapsible-panel item (the tab strip stays visible
       on the collapsed rail).
+- [ ] Module templates + heading skeletons in project and module templates.
+      Requested 2026-10-04 (extends the delivered project templates).
+      (1) Module templates: JSON files (built-in + user, like project
+      templates) describing one module — name, prefix, module type (once
+      that item lands), attribute applicability, default view, and a
+      heading skeleton; "Add module from template" into an existing
+      project, "Save module as template"; project templates may reference
+      module templates instead of repeating them (template format
+      version 2, with a migration from version 1). (2) Heading skeletons:
+      a nested list of headings (plus optional informative text) created
+      as requirements with Object Type = Heading in tree order when the
+      module is created, ids allocated by the server as usual. Built-in
+      skeletons — requirements modules: Introduction (Purpose, Scope,
+      Definitions and Abbreviations, References), Overview/Context,
+      Functional Requirements, Interface Requirements, Performance, RAM,
+      Safety Requirements (SIL allocation, THR), Security, Constraints,
+      Configuration/Data; test-case modules: Introduction, Test
+      Environment, Test Strategy, Functional Tests, Interface Tests,
+      Performance Tests, Safety/Fault-Injection Tests, Regression;
+      test-execution modules: Campaign (build/version under test,
+      environment, date), Results, Deviations. (3) `RBC_Template` uses
+      them with RBC-specific chapters: SyRS Functional — Movement
+      Authority, Train Registration/Start of Mission, Level and Mode
+      Transitions, Temporary Speed Restrictions, Emergency Messages,
+      RBC-RBC Handover; Interfaces — Onboard (Euroradio, SUBSET-037),
+      Interlocking, Neighbouring RBC (SUBSET-098), Operator/TMS; SwRS per
+      EN 50128 software requirements specification structure. Exact
+      chapter lists are data in the template files and can be edited.
 - [ ] Multiple open modules (tabs), detachable module windows, and
       drag-and-drop linking. Requested 2026-10-04. (1) Tabs: opening a
       module adds a tab to a tab bar listing the open modules (project ·
