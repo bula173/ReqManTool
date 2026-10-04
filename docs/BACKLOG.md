@@ -418,6 +418,23 @@ to the categories above.
       state and widths are remembered per browser (not in git-tracked
       data). On narrow screens both panels start collapsed and open as
       overlays. The requirements table uses the freed width.
+- [ ] Left panel tabs: Workspace / Project / Module. Requested 2026-10-04.
+      The left panel gets three tabs that drill down: **Workspace** — all
+      projects in the data directory (top-level projects with their
+      subproject tree, project references visible), picking one selects it
+      for the next tab; **Project** — the chosen project's subprojects and
+      its modules (inside module folders once that item lands), picking a
+      module opens it; **Module** — a collapsible outline of the open
+      module's requirement tree (headings / parent requirements expand and
+      collapse, each node shows id + start of ObjectText, Object Type
+      icon once templates set it), clicking a node selects and scrolls to
+      that requirement in the table and detail panel; expand/collapse all;
+      filter box. Selection and the active tab are kept in the URL /
+      per browser; live sync refreshes all three. Left-click/right-click
+      menus apply to every node; drag-and-drop in the Module outline
+      reorders/reparents within the module (same rules as Move/Cut-Paste).
+      Works with the collapsible-panel item (the tab strip stays visible
+      on the collapsed rail).
 - [ ] Multiple open modules (tabs), detachable module windows, and
       drag-and-drop linking. Requested 2026-10-04. (1) Tabs: opening a
       module adds a tab to a tab bar listing the open modules (project ·
