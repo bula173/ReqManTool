@@ -725,10 +725,11 @@ to the categories above.
       CSV export — product decision needed: reject such names in
       `add_attribute_definition`, or match those columns by attribute id.
 - [ ] Project list with a project written by a newer ReqManTool. Follow-up
-      of the format-version item (2026-10-04); product decision pending.
-      Today one such project makes `GET /projects` / `project.list` fail as
-      a whole (409); alternative: list it as a greyed stub entry carrying
-      the error, like broken user templates.
+      of the format-version item (2026-10-04). Decided 2026-10-04: list it
+      as a greyed, read-only stub entry carrying the error (like broken
+      user templates) instead of failing `GET /projects` / `project.list`
+      as a whole (409 today); opening it shows the "newer ReqManTool"
+      error.
 - [ ] Read all data files as `utf-8-sig` with an explicit encoding.
       Follow-up of the format-version item (2026-10-04). `project.json`,
       module, requirement and link-pair files are read with the locale
@@ -736,10 +737,9 @@ to the categories above.
       already accept one); `_check_project_format` also swallows JSON
       errors (pre-existing).
 - [ ] Menu bar product decisions + template list loading. Follow-up of the
-      menu bar item (2026-10-04). (1) Paste as sibling: Ctrl/Cmd+V with the
-      copied requirement itself selected does nothing today (paste as
-      child onto it is unavailable); decide whether it pastes as a
-      sibling. (2) Export ▸ is enabled only while a module is open, although
+      menu bar item (2026-10-04). Decided 2026-10-04: (1) Ctrl/Cmd+V with
+      the copied requirement itself selected pastes it as a sibling right
+      after it (today it does nothing). (2) Export ▸ is enabled only while a module is open, although
       exports cover the whole project; enable it on the project page.
       (3) The templates list is fetched on every app load; load it lazily
       (when a template picker or the Load template menu opens).
