@@ -21,28 +21,24 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconClipboard,
-  IconCopy,
-  IconCut,
   IconDownload,
   IconFileExport,
   IconFileImport,
   IconLink,
   IconPlus,
   IconArrowsMove,
-  IconArrowUp,
-  IconArrowDown,
   IconTrash,
+  IconX,
 } from '@tabler/icons-react';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { api, API_BASE_URL, ApiError } from '../api/client';
+import { ActionMenuEntries } from '../actions/ActionMenuEntries';
+import { useAppActions } from '../actions/context';
+import { REQUIREMENT_CONTEXT_MENU } from '../actions/registry';
+import { api, ApiError } from '../api/client';
 import {
-  useCopyRequirement,
   useModule,
-  useMoveRequirement,
   useProject,
-  useRemoveRequirement,
-  useReorderRequirement,
   useRequirements,
   usePurgeModule,
   useUpdateRequirement,
@@ -50,7 +46,6 @@ import {
 } from '../api/queries';
 import type { FindRequirementResult } from '../api/queries';
 import { EditableAttributeCell } from '../components/EditableAttributeCell';
-import { ImportCsvModal } from '../components/ImportCsvModal';
 import { LinkModal } from '../components/LinkModal';
 import { MoveRequirementModal } from '../components/MoveRequirementModal';
 import { RequirementFormModal } from '../components/RequirementFormModal';
@@ -98,11 +93,6 @@ function ancestorIds(requirements: Requirement[], requirementId: string): string
   return ancestors;
 }
 
-interface ClipboardEntry {
-  mode: 'copy' | 'cut';
-  requirement: Requirement;
-}
-
 interface ContextMenuState {
   x: number;
   y: number;
@@ -117,22 +107,18 @@ export function ModulePage() {
   const moduleQuery = useModule(projectId, moduleId);
   const requirementsQuery = useRequirements(projectId, moduleId);
   const viewsQuery = useViews(projectId);
-  const removeRequirement = useRemoveRequirement(projectId ?? '', moduleId ?? '');
   const purgeModule = usePurgeModule(projectId ?? '', moduleId ?? '');
   const updateRequirement = useUpdateRequirement(projectId ?? '', moduleId ?? '');
-  const moveRequirement = useMoveRequirement(projectId ?? '', moduleId ?? '');
-  const reorderRequirement = useReorderRequirement(projectId ?? '', moduleId ?? '');
-  const copyRequirement = useCopyRequirement(projectId ?? '', moduleId ?? '');
+  // Selection, clipboard, active view and the detail panel are shared with
+  // the menu bar and keyboard shortcuts through the action registry.
+  const { state: appState, run, isAvailable } = useAppActions();
+  const { commands } = appState;
 
   const [addParentId, setAddParentId] = useState<string | null | undefined>(undefined);
   const [linkSource, setLinkSource] = useState<Requirement | null>(null);
   const [moveSource, setMoveSource] = useState<Requirement | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [clipboard, setClipboard] = useState<ClipboardEntry | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [activeViewId, setActiveViewId] = useState<string | null>(null);
-  const [importOpen, setImportOpen] = useState(false);
   const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map());
 
   const highlightId = searchParams.get('highlight');
@@ -148,7 +134,7 @@ export function ModulePage() {
       }
       return next;
     });
-    setSelectedId(highlightId);
+    commands.selectRequirement(highlightId);
 
     const row = rowRefs.current.get(highlightId);
     row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -190,10 +176,12 @@ export function ModulePage() {
   const module = moduleQuery.data;
   const rows = flattenTree(requirements, collapsed);
   const views = viewsQuery.data ?? [];
+  const activeViewId = appState.activeViewId;
   const activeView = views.find((v) => v.id === activeViewId) ?? null;
   const visibleAttributes = activeView
     ? attributes.filter((a) => activeView.attribute_ids.includes(a.id))
     : attributes;
+  const selectedId = appState.selectedRequirement?.id ?? null;
   const selectedRequirement = requirements.find((r) => r.id === selectedId) ?? null;
 
   const toggleExpanded = (id: string) => {
@@ -214,7 +202,7 @@ export function ModulePage() {
           for (const ancestorId of ancestorIds(requirements, targetId)) next.delete(ancestorId);
           return next;
         });
-        setSelectedId(targetId);
+        commands.selectRequirement(targetId);
         rowRefs.current.get(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       } else {
         navigate(`/projects/${projectId}/modules/${result.module_id}?highlight=${targetId}`);
@@ -239,83 +227,6 @@ export function ModulePage() {
           }),
       },
     );
-  };
-
-  const handleReorder = (requirement: Requirement, direction: 'up' | 'down') => {
-    reorderRequirement.mutate(
-      { id: requirement.id, direction },
-      {
-        onError: (err) =>
-          notifications.show({
-            message: err instanceof ApiError ? err.message : 'Failed to reorder requirement',
-            color: 'red',
-          }),
-      },
-    );
-  };
-
-  const handleCopy = (requirement: Requirement) => {
-    setClipboard({ mode: 'copy', requirement });
-    setContextMenu(null);
-  };
-
-  const handleCut = (requirement: Requirement) => {
-    setClipboard({ mode: 'cut', requirement });
-    setContextMenu(null);
-  };
-
-  const handlePaste = (targetParentId: string | null) => {
-    if (!clipboard) return;
-    const { mode, requirement } = clipboard;
-    setContextMenu(null);
-
-    if (mode === 'copy') {
-      copyRequirement.mutate(
-        { id: requirement.id, targetParentId },
-        {
-          onSuccess: () => notifications.show({ message: `Pasted a copy of ${requirement.id}`, color: 'green' }),
-          onError: (err) =>
-            notifications.show({
-              message: err instanceof ApiError ? err.message : 'Failed to paste requirement',
-              color: 'red',
-            }),
-        },
-      );
-    } else {
-      moveRequirement.mutate(
-        { id: requirement.id, parentId: targetParentId },
-        {
-          onSuccess: () => {
-            notifications.show({ message: `Moved ${requirement.id}`, color: 'green' });
-            setClipboard(null);
-          },
-          onError: (err) =>
-            notifications.show({
-              message: err instanceof ApiError ? err.message : 'Failed to move requirement',
-              color: 'red',
-            }),
-        },
-      );
-    }
-  };
-
-  const handleRemove = (requirement: Requirement) => {
-    modals.openConfirmModal({
-      title: 'Remove requirement',
-      children: <Text size="sm">Are you sure you want to remove requirement "{requirement.id}"? This cannot be undone.</Text>,
-      labels: { confirm: 'Remove', cancel: 'Cancel' },
-      confirmProps: { color: 'red' },
-      onConfirm: () => {
-        removeRequirement.mutate(requirement.id, {
-          onSuccess: () => notifications.show({ message: `Removed ${requirement.id}`, color: 'green' }),
-          onError: (err) =>
-            notifications.show({
-              message: err instanceof ApiError ? err.message : 'Failed to remove requirement',
-              color: 'red',
-            }),
-        });
-      },
-    });
   };
 
   const handlePurge = () => {
@@ -358,49 +269,49 @@ export function ModulePage() {
         <Button
           variant="default"
           leftSection={<IconClipboard size={16} />}
-          disabled={!clipboard}
-          onClick={() => handlePaste(null)}
+          disabled={!isAvailable('requirement.pasteAtRoot')}
+          onClick={() => run('requirement.pasteAtRoot')}
         >
-          Paste
+          Paste at root
         </Button>
         <Button color="red" variant="light" leftSection={<IconTrash size={16} />} onClick={handlePurge}>
           Purge Module
         </Button>
         <Button
-          component="a"
-          href={`${API_BASE_URL}/projects/${projectId}/export/reqif`}
           variant="default"
           leftSection={<IconFileExport size={16} />}
+          disabled={!isAvailable('file.export.reqif')}
+          onClick={() => run('file.export.reqif')}
         >
           Export ReqIF
           <IconDownload size={14} style={{ marginLeft: 6 }} />
         </Button>
         <Button
-          component="a"
-          href={`${API_BASE_URL}/projects/${projectId}/export/csv`}
           variant="default"
           leftSection={<IconFileExport size={16} />}
+          disabled={!isAvailable('file.export.csv')}
+          onClick={() => run('file.export.csv')}
         >
           Export CSV
           <IconDownload size={14} style={{ marginLeft: 6 }} />
         </Button>
-        <Button variant="default" leftSection={<IconFileImport size={16} />} onClick={() => setImportOpen(true)}>
+        <Button variant="default" leftSection={<IconFileImport size={16} />} onClick={() => run('file.importCsv')}>
           Import CSV
         </Button>
         <Button
-          component="a"
-          href={`${API_BASE_URL}/projects/${projectId}/export/xlsx`}
           variant="default"
           leftSection={<IconFileExport size={16} />}
+          disabled={!isAvailable('file.export.xlsx')}
+          onClick={() => run('file.export.xlsx')}
         >
           Export XLSX
           <IconDownload size={14} style={{ marginLeft: 6 }} />
         </Button>
         <Button
-          component="a"
-          href={`${API_BASE_URL}/projects/${projectId}/export/docx`}
           variant="default"
           leftSection={<IconFileExport size={16} />}
+          disabled={!isAvailable('file.export.docx')}
+          onClick={() => run('file.export.docx')}
         >
           Export DOCX
           <IconDownload size={14} style={{ marginLeft: 6 }} />
@@ -409,7 +320,7 @@ export function ModulePage() {
           placeholder="All attributes"
           data={views.map((v) => ({ value: v.id, label: v.name }))}
           value={activeViewId}
-          onChange={setActiveViewId}
+          onChange={commands.setActiveView}
           clearable
           w={200}
           ml="auto"
@@ -445,11 +356,12 @@ export function ModulePage() {
                   if (el) rowRefs.current.set(req.id, el);
                   else rowRefs.current.delete(req.id);
                 }}
-                onClick={() => setSelectedId(req.id)}
+                onClick={() => commands.selectRequirement(req.id)}
                 bg={selectedId === req.id ? 'var(--mantine-color-blue-light)' : undefined}
                 style={{ cursor: 'pointer' }}
                 onContextMenu={(e) => {
                   e.preventDefault();
+                  commands.selectRequirement(req.id);
                   setContextMenu({ x: e.clientX, y: e.clientY, requirement: req });
                 }}
               >
@@ -499,7 +411,11 @@ export function ModulePage() {
                       </ActionIcon>
                     </Tooltip>
                     <Tooltip label="Remove">
-                      <ActionIcon variant="subtle" color="red" onClick={() => handleRemove(req)}>
+                      <ActionIcon
+                        variant="subtle"
+                        color="red"
+                        onClick={() => run('requirement.delete', { requirement: req })}
+                      >
                         <IconTrash size={16} />
                       </ActionIcon>
                     </Tooltip>
@@ -511,10 +427,21 @@ export function ModulePage() {
         </Table>
       </Table.ScrollContainer>
 
+      {appState.detailPanelOpen && (
       <Card withBorder w={320} style={{ flexShrink: 0 }}>
-        <Title order={5} mb="sm">
-          Requirement details
-        </Title>
+        <Group justify="space-between" mb="sm" wrap="nowrap">
+          <Title order={5}>Requirement details</Title>
+          <Tooltip label="Hide the detail panel (View › Requirement detail panel)">
+            <ActionIcon
+              variant="subtle"
+              size="sm"
+              aria-label="Hide requirement details"
+              onClick={() => run('view.toggleDetailPanel')}
+            >
+              <IconX size={14} />
+            </ActionIcon>
+          </Tooltip>
+        </Group>
         {!selectedRequirement && (
           <Text c="dimmed" size="sm">
             Select a requirement to see its full details.
@@ -546,6 +473,7 @@ export function ModulePage() {
           </Stack>
         )}
       </Card>
+      )}
       </Group>
 
       <Menu
@@ -567,40 +495,7 @@ export function ModulePage() {
         </Menu.Target>
         <Menu.Dropdown>
           {contextMenu && (
-            <>
-              <Menu.Item leftSection={<IconCopy size={14} />} onClick={() => handleCopy(contextMenu.requirement)}>
-                Copy
-              </Menu.Item>
-              <Menu.Item leftSection={<IconCut size={14} />} onClick={() => handleCut(contextMenu.requirement)}>
-                Cut
-              </Menu.Item>
-              <Menu.Item
-                leftSection={<IconClipboard size={14} />}
-                disabled={!clipboard}
-                onClick={() => handlePaste(contextMenu.requirement.id)}
-              >
-                Paste as child
-              </Menu.Item>
-              <Menu.Divider />
-              <Menu.Item leftSection={<IconArrowUp size={14} />} onClick={() => handleReorder(contextMenu.requirement, 'up')}>
-                Move Up
-              </Menu.Item>
-              <Menu.Item leftSection={<IconArrowDown size={14} />} onClick={() => handleReorder(contextMenu.requirement, 'down')}>
-                Move Down
-              </Menu.Item>
-              <Menu.Divider />
-              <Menu.Item
-                leftSection={<IconTrash size={14} />}
-                color="red"
-                onClick={() => {
-                  const requirement = contextMenu.requirement;
-                  setContextMenu(null);
-                  handleRemove(requirement);
-                }}
-              >
-                Remove
-              </Menu.Item>
-            </>
+            <ActionMenuEntries entries={REQUIREMENT_CONTEXT_MENU} targets={{ requirement: contextMenu.requirement }} />
           )}
         </Menu.Dropdown>
       </Menu>
@@ -625,13 +520,6 @@ export function ModulePage() {
         source={moveSource}
         allRequirements={requirements}
         onClose={() => setMoveSource(null)}
-      />
-      <ImportCsvModal
-        opened={importOpen}
-        onClose={() => setImportOpen(false)}
-        projectId={projectId}
-        moduleId={moduleId}
-        moduleName={module.name}
       />
     </Stack>
   );

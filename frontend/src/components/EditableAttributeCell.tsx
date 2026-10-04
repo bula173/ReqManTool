@@ -164,70 +164,76 @@ export function EditableAttributeCell({
     if (e.key === 'Enter' && attr.type !== 'text') commit();
   };
 
-  switch (attr.type) {
-    case 'text':
-      return (
-        <Textarea
-          ref={inputRef as Ref<HTMLTextAreaElement>}
-          autosize
-          minRows={2}
-          value={String(draft ?? '')}
-          onChange={(e) => setDraft(e.currentTarget.value)}
-          onBlur={commit}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') cancel();
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) commit();
-          }}
-        />
-      );
-    case 'integer':
-      return (
-        <NumberInput
-          ref={inputRef as Ref<HTMLInputElement>}
-          value={draft === null || draft === undefined ? '' : (draft as number | string)}
-          onChange={setDraft}
-          allowDecimal={false}
-          onBlur={commit}
-          onKeyDown={commonKeyDown}
-        />
-      );
-    case 'boolean':
-      return (
-        <Checkbox
-          ref={inputRef as Ref<HTMLInputElement>}
-          checked={Boolean(draft)}
-          onChange={(e) => {
-            const next = e.currentTarget.checked;
-            setDraft(next);
-            onSave(next);
-            setEditing(false);
-          }}
-          onBlur={cancel}
-        />
-      );
-    case 'enum':
-      return (
-        <Select
-          data={attr.choices ?? []}
-          value={draft === null || draft === undefined ? null : String(draft)}
-          onChange={(next) => {
-            setDraft(next);
-            onSave(next);
-            setEditing(false);
-          }}
-          onDropdownClose={cancel}
-          clearable={!attr.required}
-        />
-      );
-    default:
-      return (
-        <TextInput
-          ref={inputRef as Ref<HTMLInputElement>}
-          value={String(draft ?? '')}
-          onChange={(e) => setDraft(e.currentTarget.value)}
-          onBlur={commit}
-          onKeyDown={commonKeyDown}
-        />
-      );
-  }
+  // `data-inline-editor` marks the open editor so application keyboard
+  // shortcuts (Ctrl/Cmd+C/X/V, Alt+arrows) stay inactive while it has focus.
+  const renderEditor = () => {
+    switch (attr.type) {
+      case 'text':
+        return (
+          <Textarea
+            ref={inputRef as Ref<HTMLTextAreaElement>}
+            autosize
+            minRows={2}
+            value={String(draft ?? '')}
+            onChange={(e) => setDraft(e.currentTarget.value)}
+            onBlur={commit}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') cancel();
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) commit();
+            }}
+          />
+        );
+      case 'integer':
+        return (
+          <NumberInput
+            ref={inputRef as Ref<HTMLInputElement>}
+            value={draft === null || draft === undefined ? '' : (draft as number | string)}
+            onChange={setDraft}
+            allowDecimal={false}
+            onBlur={commit}
+            onKeyDown={commonKeyDown}
+          />
+        );
+      case 'boolean':
+        return (
+          <Checkbox
+            ref={inputRef as Ref<HTMLInputElement>}
+            checked={Boolean(draft)}
+            onChange={(e) => {
+              const next = e.currentTarget.checked;
+              setDraft(next);
+              onSave(next);
+              setEditing(false);
+            }}
+            onBlur={cancel}
+          />
+        );
+      case 'enum':
+        return (
+          <Select
+            data={attr.choices ?? []}
+            value={draft === null || draft === undefined ? null : String(draft)}
+            onChange={(next) => {
+              setDraft(next);
+              onSave(next);
+              setEditing(false);
+            }}
+            onDropdownClose={cancel}
+            clearable={!attr.required}
+          />
+        );
+      default:
+        return (
+          <TextInput
+            ref={inputRef as Ref<HTMLInputElement>}
+            value={String(draft ?? '')}
+            onChange={(e) => setDraft(e.currentTarget.value)}
+            onBlur={commit}
+            onKeyDown={commonKeyDown}
+          />
+        );
+    }
+  };
+
+  return <div data-inline-editor="">{renderEditor()}</div>;
 }

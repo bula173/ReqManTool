@@ -45,16 +45,33 @@ export function useConfig(): UseQueryResult<{ data_dir: string }> {
   });
 }
 
+const datasetClearedListeners = new Set<() => void>();
+
 /**
  * Drops all cached data after the data directory was switched (a different
  * dataset). Same as `qc.clear()` except that the backend version query is
  * kept: the backend process, and so its version, is unchanged, and the
  * footer's observer stays bound to that query instance, so removing it would
  * stop reconnect/focus refetches from reaching the footer until a reload.
+ * Then notifies `subscribeDatasetCleared` listeners, so client-side state
+ * tied to the old dataset (requirement clipboard, selection) is dropped too.
  */
 export function clearDatasetCache(qc: QueryClient): void {
   qc.removeQueries({ predicate: (query) => query.queryKey[0] !== queryKeys.version[0] });
   qc.getMutationCache().clear();
+  datasetClearedListeners.forEach((listener) => listener());
+}
+
+/**
+ * Calls `listener` whenever the data directory was switched (in this tab or,
+ * via the `root_changed` live-sync event, by another client); returns the
+ * unsubscribe function.
+ */
+export function subscribeDatasetCleared(listener: () => void): () => void {
+  datasetClearedListeners.add(listener);
+  return () => {
+    datasetClearedListeners.delete(listener);
+  };
 }
 
 export function useSetDataDir() {
@@ -148,6 +165,23 @@ export function useSaveProjectAsTemplate(projectId: string) {
   return useMutation({
     mutationFn: (body: { name: string; description?: string }) =>
       api.post<TemplateSummary>(`/projects/${projectId}/save-as-template`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.templates });
+    },
+  });
+}
+
+/**
+ * Uploads a template JSON file as a new user template (`POST
+ * /templates/import`, WS `template.import`). The file's bytes are sent
+ * unchanged with Content-Type application/json; the server checks UTF-8, the
+ * template shape and every project rule (400), and rejects a name that any
+ * template already uses (409) — nothing is overwritten.
+ */
+export function useImportTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (file: Blob) => api.postBody<TemplateSummary>('/templates/import', file, 'application/json'),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.templates });
     },

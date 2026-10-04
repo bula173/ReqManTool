@@ -300,7 +300,8 @@ domain rules.
   template with any other `format_version` than 1 is invalid.
 - **Listing** (`GET /templates`): built-in templates, then user templates,
   each sorted by name, each fully validated. An invalid file (unreadable,
-  bad JSON, wrong shape, unsupported version, rule violation) is listed with
+  bad or too deeply nested JSON (over 100 levels, `MAX_TEMPLATE_JSON_DEPTH`), a string that is not valid UTF-8 such as a
+  lone `\ud800` escape, wrong shape, unsupported version, rule violation) is listed with
   the reason in `error` (and logged at debug level) instead of breaking the
   list; creating from it fails with the same reason.
 - **Create from template** (`POST /projects` with `template_id`) is
@@ -321,6 +322,17 @@ domain rules.
   through the loader before it is written. A name already used by any
   template (built-in or user, case-insensitive) is rejected with 409; a
   file is never overwritten.
+- **Import a template file** (`POST /templates/import`, WS
+  `template.import`; File ▸ Load template ▸ Import template file) saves an
+  uploaded template JSON document as a user template
+  (`ProjectService.import_template`). It is checked exactly like a loaded
+  template (UTF-8, an optional BOM, at most 1 MiB of UTF-8 over REST and
+  WebSocket alike, no lone surrogate escapes, shape, `format_version`,
+  every project rule) and then written like Save as template: `_templates/<slug-of-name>.json`
+  (slug suffixed if the file name is taken), the file's `id` key replaced by
+  that stem, canonical key order (unknown keys are not kept). Invalid input
+  → 400, a name used by any template → 409, nothing is written in either
+  case; success broadcasts `templates_changed`.
 
 ### Format versions
 
@@ -471,7 +483,7 @@ resource:
 | Resource | Routes |
 |---|---|
 | Projects | `POST/GET /projects` (`POST` body: `name`, `description`, optional `template_id`, optional `parent_project_id`), `GET /projects/{id}`, `PUT /projects/{id}/parent` (`{"parent_project_id": id or null}`) |
-| Templates | `GET /templates` → `[{id, source, name, description, modules: [{key, name, prefix}], error}]`, `POST /projects/{id}/save-as-template` (`{name, description}`; 409 on a name clash; broadcasts `templates_changed`) |
+| Templates | `GET /templates` → `[{id, source, name, description, modules: [{key, name, prefix}], error}]`, `POST /projects/{id}/save-as-template` (`{name, description}`; 409 on a name clash; broadcasts `templates_changed`), `POST /templates/import` (raw template JSON request body, `Content-Type: application/json` required (415 otherwise), UTF-8 with optional BOM, at most 1 MiB (413); invalid → 400, name clash → 409; returns the template summary; broadcasts `templates_changed`; WS: `template.import` `{text}`) |
 | Attributes | `POST /projects/{id}/attributes` |
 | Link configurations | `POST/GET /projects/{id}/link-configurations`, `DELETE .../link-configurations/{config_id}` |
 | Modules | `POST/GET /projects/{id}/modules`, `GET .../modules/{id}`, `POST .../modules/{id}/purge`, `POST /projects/{project_id}/modules/{module_id}/reorder` (`{"direction": "up" \| "down"}`; WS: `module.reorder`) |
@@ -498,9 +510,10 @@ REST side (`manager.broadcast`, excluding the sender socket so a client
 doesn't get a redundant refresh of its own change). Templates and
 subprojects: `template.list`, `project.create` (optional `template_id`,
 `parent_project_id`), `project.set_parent` (`{id, parent_project_id}`,
-broadcasts `changed`), and `project.save_as_template` (`{id, name,
-description}`, in `TEMPLATE_MUTATING_METHODS`: broadcasts
-`templates_changed` instead of `changed`). A 409 conflict on the REST side
+broadcasts `changed`), `project.save_as_template` (`{id, name,
+description}`) and `template.import` (`{text}`: the template file's
+content), both in `TEMPLATE_MUTATING_METHODS`: they broadcast
+`templates_changed` instead of `changed`. A 409 conflict on the REST side
 is a `-32602` error over WebSocket, like other validation errors.
 
 ## Frontend structure
@@ -519,10 +532,22 @@ frontend/src/
                     "templates_changed", clears the cache on "root_changed"
                     (except the version query: same backend), refetches the version query on reconnect (or on first
                     connect if it failed while the backend was down)
+  actions/          The shared action registry (see "Actions, menus and
+                    shortcuts" below): types.ts, registry.ts (all actions,
+                    menu layouts, shortcut dispatch), appActions.ts
+                    (File/View/Help), requirementActions.tsx (Edit and the
+                    row context menu), AppActionsProvider.tsx (state,
+                    dialogs, global shortcuts), ActionMenuEntries.tsx (renders
+                    a menu layout), shortcuts.ts (matching, display, typing
+                    guard)
   layout/
-    AppLayout.tsx   Header (title, data-folder settings, color scheme) +
-                    Sidebar + routed <Outlet/> + VersionFooter (frontend
-                    version/build, backend-version mismatch warning)
+    AppLayout.tsx   Header (title, menu bar, data-folder settings, color
+                    scheme) + Sidebar + routed <Outlet/> + VersionFooter
+                    (frontend version/build, backend-version mismatch
+                    warning), all inside AppActionsProvider
+    MenuBar.tsx     File / Edit / View / Help, rendered from MENU_BAR
+    AppDialogs.tsx  The dialogs actions open (new project, data folder,
+                    save as / import template, import CSV, shortcuts, about)
   buildInfo.ts      FRONTEND_VERSION_INFO from the Vite `define` globals
                     __REQMAN_VERSION__/__REQMAN_BUILD__ (declared in
                     vite-env.d.ts, computed in vite.config.ts)
@@ -542,15 +567,69 @@ frontend/src/
                      configurations, views, modules; New subproject, Change
                      parent and Save as template actions
     ModulePage.tsx   the requirements tree/table — the largest page;
-                     owns the tree-flattening logic, the copy/cut/paste
-                     clipboard, and the right-click context menu
+                     owns the tree-flattening logic and renders the
+                     right-click context menu from the action registry
 ```
 
 Server state (projects/modules/requirements/config/link-configurations)
 lives entirely in TanStack Query's cache — there is no separate Redux/
-Zustand store. Local UI-only state (which modal is open, the copy/cut
-clipboard, collapsed tree nodes) is plain `useState` in the owning
-component; it isn't lifted higher than it needs to be.
+Zustand store. Local UI-only state (which modal is open, collapsed tree
+nodes) is plain `useState` in the owning component; it isn't lifted higher
+than it needs to be. State that the menu bar, context menus and shortcuts
+share — the requirement selection and copy/cut clipboard, the active
+attribute view, the detail panel toggle (remembered per browser in
+`localStorage`), the colour scheme and the app-wide dialogs — lives in
+`AppActionsProvider`.
+
+### Actions, menus and shortcuts
+
+Every command reachable from more than one place is an `Action` in one
+registry (`frontend/src/actions/registry.ts`): `id`, `element` (element
+type), `label`, optional `icon` and `shortcuts`, `isAvailable(ctx)`,
+`run(ctx)`, and optionally `isChecked(ctx)` (toggles) or `items(ctx)`
+(a generated submenu, e.g. one entry per view or template). The context is
+the provider's `AppState` (route ids, loaded project/module/requirements,
+selection, clipboard, views, templates, `commands`) plus a `target` whose
+type depends on the element type: nothing for `app` actions, a requirement
+for `requirement` actions. Explicit targets are passed keyed by element
+type (`run(id, { requirement: row })`, `<ActionMenuEntries targets=…>`), so
+each action of a mixed menu gets a target of its own type; without an
+entry, `resolveTarget` supplies the default. Menus are data (`MenuEntry[]` layouts:
+`MENU_BAR`, `REQUIREMENT_CONTEXT_MENU`) rendered by `ActionMenuEntries`, so
+the menu bar and the row context menu show the same labels, shortcut hints
+and enabled state. The menu bar and shortcuts target the selected
+requirement; a context menu passes the clicked row as its `requirement`
+target. Toolbar buttons (Paste at root, Import CSV, the module page's
+Export buttons, header data-folder and colour-scheme buttons, New project
+in the sidebar, New subproject on the project page) call `run(id)` too.
+The clipboard is scoped to the data folder it was filled in, and a data
+folder switch (in this tab, or a `root_changed` live-sync event) clears the
+clipboard and the selection, since ids repeat across folders.
+
+Shortcuts are dispatched by one `keydown` listener in the provider: the
+first registered action with a matching shortcut that is available runs;
+a binding marked `whenNoTarget` only counts while the action's default
+target is empty (so Ctrl/Cmd+V pastes as child of the selection — never
+onto the clipboard requirement itself — or at the root only when nothing
+is selected; with a selection it never falls through to the root). They are ignored while focus is in an input,
+textarea, select, contenteditable element, the inline cell editor
+(`data-inline-editor`), a combobox/listbox, an open menu or a dialog, and
+Ctrl/Cmd+C/X are left to the browser while page text is selected.
+
+To add a context menu for another element (sidebar node, column header,
+tab): add the element type to `ActionTargets` with its target type, add its
+actions to the registry, add a `resolveTarget` case for the menu bar /
+shortcuts, and describe the menu as a `MenuEntry[]` layout rendered with
+`targets={{ <element>: clicked }}`.
+
+The menu bar follows the WAI-ARIA menubar pattern: `role="menubar"`, one
+tab stop (roving tabindex), ArrowLeft/ArrowRight (Home/End) between the
+top-level menus, ArrowDown opens one, and with a menu open ArrowLeft/
+ArrowRight open the adjacent menu. Modified keys on a menu title (e.g.
+Alt+ArrowDown) are left to the app shortcuts. Escape (also inside a
+submenu) returns focus to the menu title; ArrowLeft in a submenu returns it
+to the submenu's item (`SubMenu` in `ActionMenuEntries.tsx` works around a
+Mantine 9.6 bug that would drop focus to `<body>`).
 
 `ModulePage.tsx`'s requirements table is a **flattened tree**, not nested
 JSX: `flattenTree()` walks the parent/child structure (sorted by `order`)

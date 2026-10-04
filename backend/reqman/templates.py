@@ -57,6 +57,17 @@ from typing import Any
 
 FORMAT_VERSION = 1
 
+# Upper bound for an imported template file ("Load template ▸ Import"). Real
+# templates are a few KiB; the limit only guards against a wrong file.
+MAX_TEMPLATE_IMPORT_BYTES = 1024 * 1024
+
+# Deepest JSON nesting a template file may have (the top-level object is
+# depth 1). The format needs 4 (template → "attributes" → attribute →
+# "choices"); unknown keys may nest further, up to this limit. ``json.loads``
+# accepts ~100k levels, far more than ``json.dumps`` or ``repr`` (used in
+# error messages) can handle, so a deeper file is rejected right after parsing.
+MAX_TEMPLATE_JSON_DEPTH = 100
+
 BUILTIN_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
 BUILTIN_SOURCE = "builtin"
@@ -221,6 +232,10 @@ def parse_template_text(text: str, template_id: str) -> Template:
     """Parse JSON text into a ``Template``; raises ``ValueError`` describing the first problem.
 
     A leading UTF-8 byte order mark (as some editors save files) is ignored.
+    JSON nested deeper than ``MAX_TEMPLATE_JSON_DEPTH`` (or too deeply for
+    the parser), and strings that cannot be encoded as UTF-8 (a lone
+    surrogate escape such as ``"\\ud800"``), are rejected so that such a
+    template is never written, listed or used.
     """
     if text.startswith("\ufeff"):
         text = text[1:]
@@ -228,7 +243,46 @@ def parse_template_text(text: str, template_id: str) -> Template:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ValueError(f"not valid JSON: {exc}") from exc
+    except RecursionError as exc:
+        raise ValueError(_TOO_DEEP) from exc
+    _check_json_values(data)
     return parse_template(data, template_id)
+
+
+_TOO_DEEP = f"nested too deeply (more than {MAX_TEMPLATE_JSON_DEPTH} levels)"
+
+
+def _check_json_values(data: Any) -> None:
+    """Reject nesting deeper than ``MAX_TEMPLATE_JSON_DEPTH`` and unencodable strings.
+
+    Walks the parsed data with an explicit stack, in document order, so it
+    never recurses itself. Bounding the depth here keeps every later step
+    (validation and its error messages, writing) safe from ``RecursionError``.
+    """
+    stack: list[tuple[Any, int]] = [(data, 1)]
+    while stack:
+        value, depth = stack.pop()
+        if isinstance(value, str):
+            _check_utf8_encodable(value)
+        elif isinstance(value, (dict, list)):
+            if depth > MAX_TEMPLATE_JSON_DEPTH:
+                raise ValueError(_TOO_DEEP)
+            if isinstance(value, dict):
+                for key, item in reversed(value.items()):
+                    stack.append((item, depth + 1))
+                    stack.append((key, depth + 1))
+            else:
+                stack.extend((item, depth + 1) for item in reversed(value))
+
+
+def _check_utf8_encodable(value: str) -> None:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        code_point = ord(exc.object[exc.start])
+        raise ValueError(
+            f"contains a character that cannot be encoded as UTF-8 (unpaired surrogate \\u{code_point:04x})"
+        ) from exc
 
 
 def parse_template(data: Any, template_id: str) -> Template:

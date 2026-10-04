@@ -1,13 +1,12 @@
 import { Alert, Button, Center, Loader, Stack, Text, Title } from '@mantine/core';
 import { IconFolderPlus, IconInfoCircle } from '@tabler/icons-react';
-import { useState } from 'react';
 import { Navigate } from 'react-router-dom';
+import { useAppActions } from '../actions/context';
 import { useProjects } from '../api/queries';
-import { NewProjectModal } from '../components/NewProjectModal';
 
 export function HomePage() {
   const projectsQuery = useProjects();
-  const [newProjectOpened, setNewProjectOpened] = useState(false);
+  const { run } = useAppActions();
 
   if (projectsQuery.isLoading) {
     return (
@@ -34,11 +33,10 @@ export function HomePage() {
       <Stack align="center" gap="sm">
         <Title order={2}>No projects yet</Title>
         <Text c="dimmed">Create your first project to start tracking requirements.</Text>
-        <Button leftSection={<IconFolderPlus size={16} />} onClick={() => setNewProjectOpened(true)}>
+        <Button leftSection={<IconFolderPlus size={16} />} onClick={() => run('file.newProject')}>
           Create your first project
         </Button>
       </Stack>
-      <NewProjectModal opened={newProjectOpened} onClose={() => setNewProjectOpened(false)} />
     </Center>
   );
 }

@@ -15,6 +15,8 @@ interface NewProjectModalProps {
   onClose: () => void;
   /** Preselected parent (e.g. "New subproject"); top level if omitted. */
   defaultParentProjectId?: string | null;
+  /** Preselected template (File ▸ Load template); blank project if omitted. */
+  defaultTemplateId?: string;
 }
 
 interface FormValues {
@@ -24,7 +26,7 @@ interface FormValues {
   parentProjectId: string;
 }
 
-function NewProjectForm({ onClose, defaultParentProjectId }: Omit<NewProjectModalProps, 'opened'>) {
+function NewProjectForm({ onClose, defaultParentProjectId, defaultTemplateId }: Omit<NewProjectModalProps, 'opened'>) {
   const navigate = useNavigate();
   const createProject = useCreateProject();
   const templatesQuery = useTemplates();
@@ -33,7 +35,7 @@ function NewProjectForm({ onClose, defaultParentProjectId }: Omit<NewProjectModa
     initialValues: {
       name: '',
       description: '',
-      templateId: BLANK_TEMPLATE,
+      templateId: defaultTemplateId ?? BLANK_TEMPLATE,
       parentProjectId: defaultParentProjectId ?? TOP_LEVEL,
     },
     validate: {
@@ -133,12 +135,18 @@ function NewProjectForm({ onClose, defaultParentProjectId }: Omit<NewProjectModa
   );
 }
 
-export function NewProjectModal({ opened, onClose, defaultParentProjectId }: NewProjectModalProps) {
+export function NewProjectModal({ opened, onClose, defaultParentProjectId, defaultTemplateId }: NewProjectModalProps) {
   // The form lives in a child that unmounts while the modal is closed, so
   // each opening starts fresh with the current default parent.
   return (
     <Modal opened={opened} onClose={onClose} title="New project" centered>
-      {opened && <NewProjectForm onClose={onClose} defaultParentProjectId={defaultParentProjectId} />}
+      {opened && (
+        <NewProjectForm
+          onClose={onClose}
+          defaultParentProjectId={defaultParentProjectId}
+          defaultTemplateId={defaultTemplateId}
+        />
+      )}
     </Modal>
   );
 }

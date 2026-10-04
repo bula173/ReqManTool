@@ -2,10 +2,10 @@ import { Loader, NavLink, ScrollArea, Stack, Text, Tooltip } from '@mantine/core
 import { IconFolderPlus, IconFolders, IconFileText, IconPlus } from '@tabler/icons-react';
 import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { useAppActions } from '../actions/context';
 import { useModules, useProjects } from '../api/queries';
 import type { Project } from '../api/types';
 import { NewModuleModal } from './NewModuleModal';
-import { NewProjectModal } from './NewProjectModal';
 import { ancestorIds, buildProjectForest, type ProjectForest } from './projectTree';
 
 function ProjectNode({
@@ -88,7 +88,7 @@ function ProjectNode({
 export function Sidebar() {
   const projectsQuery = useProjects();
   const params = useParams<{ projectId?: string; moduleId?: string }>();
-  const [newProjectOpened, setNewProjectOpened] = useState(false);
+  const { run } = useAppActions();
   const [newModuleProjectId, setNewModuleProjectId] = useState<string | null>(null);
 
   const projects = projectsQuery.data ?? [];
@@ -102,7 +102,7 @@ export function Sidebar() {
           <NavLink
             label="New project"
             leftSection={<IconFolderPlus size={16} />}
-            onClick={() => setNewProjectOpened(true)}
+            onClick={() => run('file.newProject')}
             fw={600}
           />
         </Tooltip>
@@ -136,7 +136,6 @@ export function Sidebar() {
           />
         ))}
       </ScrollArea>
-      <NewProjectModal opened={newProjectOpened} onClose={() => setNewProjectOpened(false)} />
       <NewModuleModal projectId={newModuleProjectId} onClose={() => setNewModuleProjectId(null)} />
     </Stack>
   );

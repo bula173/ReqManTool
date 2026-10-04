@@ -30,6 +30,7 @@ from .csv_import import MAX_CSV_IMPORT_BYTES
 from .formats import NewerFormatError
 from .service import ConflictError, ProjectService
 from .store import ProjectStore
+from .templates import MAX_TEMPLATE_IMPORT_BYTES
 from .version import build_id, version_info
 
 logger = logging.getLogger("reqman.app")
@@ -271,6 +272,27 @@ def _wrap(fn, *args, **kwargs):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _media_type(request: Request) -> str:
+    return request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+
+
+async def _read_limited_body(request: Request, limit: int, kind: str) -> bytes:
+    """The raw request body; 413 as soon as it exceeds ``limit`` bytes."""
+    too_large = HTTPException(
+        status_code=413,
+        detail=f"The {kind} file is too large: the limit is {limit // (1024 * 1024)} MiB",
+    )
+    content_length = request.headers.get("content-length")
+    if content_length is not None and content_length.isdigit() and int(content_length) > limit:
+        raise too_large
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > limit:
+            raise too_large
+    return bytes(raw)
+
+
 # --- projects ----------------------------------------------------------
 
 
@@ -303,6 +325,27 @@ async def save_project_as_template(project_id: str, body: SaveAsTemplateBody):
 @app.get("/templates")
 def list_templates():
     return service.list_templates()
+
+
+@app.post("/templates/import")
+async def import_template(request: Request):
+    # The template file is sent as the raw request body (Content-Type:
+    # application/json), like the CSV import: no multipart dependency, and a
+    # cross-origin "simple" request (text/plain, form post) cannot import.
+    if _media_type(request) != "application/json":
+        raise HTTPException(
+            status_code=415, detail="The template file must be sent with Content-Type: application/json"
+        )
+    raw = await _read_limited_body(request, MAX_TEMPLATE_IMPORT_BYTES, "template")
+    try:
+        # Plain UTF-8: a leading byte order mark is kept and ignored by the
+        # template parser, exactly as for template files read from disk.
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="The template file must be UTF-8 encoded") from exc
+    template = _wrap(service.import_template, text)
+    await manager.broadcast_templates_changed()
+    return template
 
 
 @app.get("/projects")
@@ -460,22 +503,10 @@ async def import_csv(project_id: str, module_id: str, request: Request):
     # The file is sent as the raw request body (Content-Type: text/csv), so
     # no multipart parser dependency is needed. Requiring text/csv also keeps
     # cross-origin "simple" requests (text/plain, form posts) from importing.
-    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    if media_type != "text/csv":
+    if _media_type(request) != "text/csv":
         raise HTTPException(status_code=415, detail="The CSV file must be sent with Content-Type: text/csv")
 
-    too_large = HTTPException(
-        status_code=413,
-        detail=f"The CSV file is too large: the limit is {MAX_CSV_IMPORT_BYTES // (1024 * 1024)} MiB",
-    )
-    content_length = request.headers.get("content-length")
-    if content_length is not None and content_length.isdigit() and int(content_length) > MAX_CSV_IMPORT_BYTES:
-        raise too_large
-    raw = bytearray()
-    async for chunk in request.stream():
-        raw.extend(chunk)
-        if len(raw) > MAX_CSV_IMPORT_BYTES:
-            raise too_large
+    raw = await _read_limited_body(request, MAX_CSV_IMPORT_BYTES, "CSV")
     try:
         csv_text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
@@ -590,6 +621,7 @@ RPC_METHODS = {
         p["id"], p["name"], p.get("description", "")
     ),
     "template.list": lambda p: service.list_templates(),
+    "template.import": lambda p: service.import_template(p["text"]),
     "project.get": lambda p: service.get_project(p["id"]),
     "project.list": lambda p: service.list_projects(),
     "project.purge": lambda p: {"purged": service.purge_project(p["id"])},
@@ -679,7 +711,7 @@ MUTATING_METHODS = {
 
 # Methods that change the data directory's template set rather than a
 # project: they broadcast {"event": "templates_changed"} instead of "changed".
-TEMPLATE_MUTATING_METHODS = {"project.save_as_template"}
+TEMPLATE_MUTATING_METHODS = {"project.save_as_template", "template.import"}
 
 
 def _project_id_of(method_name: str, params: dict, result: Any) -> str | None:

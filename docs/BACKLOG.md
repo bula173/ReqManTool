@@ -237,6 +237,48 @@
       (see backlog): one project written by a newer tool fails the whole
       project list; data files are not read as `utf-8-sig`; no view rename
       or module delete; module move up/down is not in the sidebar.
+- [x] Application menu bar + shared action registry. Desktop-style menu
+      bar in the app shell (`frontend/src/layout/MenuBar.tsx`): **File** —
+      New project (from template, with parent), Open project folder, Load
+      template ▸ (create from template / import template file), Save as
+      template, Import CSV, Export ▸ ReqIF/CSV/XLSX/DOCX; **Edit** — Cut,
+      Copy, Paste as child, Paste at root, Move Up, Move Down, Delete;
+      **View** — attribute view ▸, detail panel toggle (remembered per
+      browser), light/dark; **Help** — keyboard shortcuts (dialog generated
+      from the registry), documentation links, About (tool version +
+      build). One action registry in `frontend/src/actions/` (id, label,
+      shortcuts, `isAvailable`/`run` for a context; targets keyed by
+      element type, `app` and `requirement` today; menus are data) drives
+      the menu bar, the keyboard shortcuts, the requirement row context
+      menu and the toolbar buttons (exports, paste at root, import CSV, new
+      subproject) — the base for the "Left-click and right-click menus
+      everywhere" item. Shortcuts Ctrl/Cmd+X/C/V, Ctrl/Cmd+Shift+V (paste
+      at root), Alt+↑/↓; inactive in inputs, textareas, selects,
+      contenteditable, the inline cell editor, open menus and dialogs.
+      Ctrl/Cmd+V pastes as child of the selection, or at root only when
+      nothing is selected; paste as child onto the copied requirement
+      itself is unavailable. The clipboard is per data folder and is
+      cleared, with the selection, on a data-folder switch. Keyboard
+      access: `role="menubar"`, roving tabindex, Arrow Left/Right/Home/
+      End/Down; Escape and submenu ArrowLeft return focus (workaround for
+      a Mantine `focusParentItem` bug). Template import: `POST
+      /templates/import` (raw JSON body; not `application/json` → 415;
+      over 1 MiB of UTF-8 → 413; invalid UTF-8, invalid template, an
+      unencodable lone surrogate or nesting deeper than 100 levels → 400)
+      and WebSocket `template.import` (-32602), via
+      `ProjectService.import_template`: validated by the existing template
+      validation and saved as a user template `_templates/<slug>.json` in
+      standard form (never overwrites; a name already used by any template
+      → 409), broadcast `templates_changed`. Template listing no longer
+      fails with 500 on such files on disk (listed as invalid). Frontend:
+      `ImportTemplateModal.tsx`, `KeyboardShortcutsModal.tsx`,
+      `AboutModal.tsx`, `AppDialogs.tsx`. Backend tests 615 → 692. Not
+      covered (see backlog): paste as sibling; Export ▸ is enabled only
+      while a module is open; the templates list is fetched on every app
+      load; the page-local Add child / Link / Move to parent dialogs are
+      not registry actions yet; no detail-panel (collapsible-panels item),
+      Delete or F10/Alt shortcut; no user-template management; no frontend
+      unit tests (no test runner in the repo).
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -315,21 +357,6 @@ custom report templates ❌.
 Ordered roughly by how directly each was requested / how foundational it is
 to the categories above.
 
-- [ ] Application menu bar. Requested 2026-10-04. A desktop-style menu bar
-      in the app shell (`frontend/src/layout/`), built on the existing
-      features rather than duplicating their logic: **File** — New project
-      (from template, with parent project), Open project folder (the
-      existing data-directory switcher / folder picker), Load template
-      (create from a template; import a template JSON file, validated
-      server-side), Save as template, Import CSV, Export ▸ ReqIF/CSV/XLSX/
-      DOCX; **Edit** — Cut, Copy, Paste (as child / at root), Move Up, Move
-      Down, Delete on the selected requirement (same actions as the row
-      context menu), enabled/disabled by selection and clipboard state,
-      with keyboard shortcuts (Ctrl/Cmd+X/C/V, Alt+↑/↓) that stay inactive
-      while a text field or inline cell editor has focus; **View** —
-      attribute view selector, detail panel toggle, light/dark mode;
-      **Help** — keyboard shortcuts, documentation links, About (tool
-      version + build, from the version item).
 - [ ] Left-click and right-click menus everywhere. Requested 2026-10-04.
       Two distinct menus, adapted to what was clicked: **left click** opens
       a navigation/view menu (open, open in new tab, detach, show links,
@@ -350,7 +377,10 @@ to the categories above.
       menu). Builds on the menu bar item; tab, folder and reference
       entries appear as those items land. Sidebar module entries also get
       Move Up/Down (today only on the project page module cards, via
-      `module.reorder`).
+      `module.reorder`). Menu bar follow-ups (2026-10-04): lift the
+      page-local Add child / Link / Move to parent dialogs into registry
+      actions (`frontend/src/actions/`); add a Delete key shortcut and
+      F10 / Alt access to the menu bar.
 - [ ] Per-module attribute applicability. Requested 2026-10-04. A project
       attribute definition can be marked as valid only for selected
       modules (`AttributeDefinition.modules`: list of module ids; absent /
@@ -705,6 +735,23 @@ to the categories above.
       default encoding (`load_project`) and reject a UTF-8 BOM (templates
       already accept one); `_check_project_format` also swallows JSON
       errors (pre-existing).
+- [ ] Menu bar product decisions + template list loading. Follow-up of the
+      menu bar item (2026-10-04). (1) Paste as sibling: Ctrl/Cmd+V with the
+      copied requirement itself selected does nothing today (paste as
+      child onto it is unavailable); decide whether it pastes as a
+      sibling. (2) Export ▸ is enabled only while a module is open, although
+      exports cover the whole project; enable it on the project page.
+      (3) The templates list is fetched on every app load; load it lazily
+      (when a template picker or the Load template menu opens).
+- [ ] User-template management dialog. Follow-up of the menu bar item
+      (2026-10-04). List the user templates in `_templates/` (with invalid
+      ones and their error) and delete them; today they can only be added
+      (Save as template, Load template ▸ import template file).
+- [ ] Frontend test runner. Follow-up of the menu bar item (2026-10-04).
+      The frontend has no test runner, so the action registry and shortcut
+      logic (`frontend/src/actions/`), like earlier frontend work, is
+      untested; add Vitest + Testing Library and cover the registry
+      availability rules and the shortcut focus guards.
 - [ ] User handling. Requested 2026-10-04; scope not yet narrowed down
       with the user. Changes the project scope (today: single-user local
       tool, no auth), so `.claude/CLAUDE.md` rule 7 must be lifted before

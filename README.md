@@ -16,12 +16,16 @@ JSON files on disk, so history, review, and backup are just... git.
   module and direction enforced. Linked requirements show `>` (outgoing) /
   `<` (incoming) markers
 - **Copy / cut / paste and reordering** for requirements, via a right-click
-  context menu
+  context menu, the Edit menu, or keyboard shortcuts (Ctrl/Cmd+X/C/V,
+  Alt+↑/↓)
+- **Application menu bar** — File (new project, open project folder, load /
+  import / save templates, CSV import, exports), Edit, View (attribute view,
+  detail panel, dark mode) and Help (shortcuts, documentation, About)
 - **Project templates** — create a project from a template (attributes,
   modules, link configurations and views, no requirements), including the
   built-in `RBC_Template` for an ERTMS/ETCS RBC under EN 50126/50128/50129;
-  save any project's structure as your own template (stored in the data
-  folder's `_templates/`)
+  save any project's structure as your own template, or import a template
+  JSON file (stored in the data folder's `_templates/`)
 - **Subprojects** — arrange projects as a generic → specific tree (e.g.
   generic product → generic application → specific application), shown as
   a tree in the sidebar

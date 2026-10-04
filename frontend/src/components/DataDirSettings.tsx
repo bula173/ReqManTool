@@ -4,6 +4,7 @@ import { notifications } from '@mantine/notifications';
 import { IconFolder, IconFolderSearch } from '@tabler/icons-react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAppActions } from '../actions/context';
 import { ApiError } from '../api/client';
 import { useConfig, useSetDataDir } from '../api/queries';
 import { FolderPickerModal } from './FolderPickerModal';
@@ -12,8 +13,13 @@ interface FormValues {
   data_dir: string;
 }
 
-export function DataDirSettings() {
-  const [opened, setOpened] = useState(false);
+interface DataDirModalProps {
+  opened: boolean;
+  onClose: () => void;
+}
+
+/** Switches the data folder (File ▸ Open project folder, or the header folder button). */
+export function DataDirModal({ opened, onClose }: DataDirModalProps) {
   const [pickerOpened, setPickerOpened] = useState(false);
   const navigate = useNavigate();
   const configQuery = useConfig();
@@ -36,7 +42,7 @@ export function DataDirSettings() {
     setDataDir.mutate(values.data_dir, {
       onSuccess: (result) => {
         notifications.show({ message: `Now using data folder: ${result.data_dir}`, color: 'green' });
-        setOpened(false);
+        onClose();
         navigate('/');
       },
       onError: (error) => {
@@ -50,12 +56,7 @@ export function DataDirSettings() {
 
   return (
     <>
-      <Tooltip label="Data folder">
-        <ActionIcon variant="default" size="lg" aria-label="Data folder settings" onClick={() => setOpened(true)}>
-          <IconFolder size={18} />
-        </ActionIcon>
-      </Tooltip>
-      <Modal opened={opened} onClose={() => setOpened(false)} title="Data folder" centered>
+      <Modal opened={opened} onClose={onClose} title="Data folder" centered>
         <form onSubmit={handleSubmit}>
           <Stack gap="sm">
             <Text size="sm" c="dimmed">
@@ -79,7 +80,7 @@ export function DataDirSettings() {
               </Button>
             </Group>
             <Group justify="flex-end" mt="sm">
-              <Button variant="default" onClick={() => setOpened(false)}>
+              <Button variant="default" onClick={onClose}>
                 Cancel
               </Button>
               <Button type="submit" loading={setDataDir.isPending}>
@@ -96,5 +97,17 @@ export function DataDirSettings() {
         onSelect={(path) => form.setFieldValue('data_dir', path)}
       />
     </>
+  );
+}
+
+/** Header button: runs the shared "Open project folder" action. */
+export function DataDirSettings() {
+  const { run } = useAppActions();
+  return (
+    <Tooltip label="Data folder">
+      <ActionIcon variant="default" size="lg" aria-label="Data folder settings" onClick={() => run('file.openFolder')}>
+        <IconFolder size={18} />
+      </ActionIcon>
+    </Tooltip>
   );
 }

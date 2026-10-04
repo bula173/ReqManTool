@@ -28,6 +28,7 @@ from .templates import (
     BUILTIN_SOURCE,
     BUILTIN_TEMPLATES_DIR,
     LINK_REF_PREFIX,
+    MAX_TEMPLATE_IMPORT_BYTES,
     USER_SOURCE,
     Template,
     TemplateAttribute,
@@ -1037,8 +1038,13 @@ class ProjectService:
     def _fallback_template_name(text: str | None, local_id: str) -> str:
         try:
             name = json.loads(text)["name"] if text is not None else None
-        except (ValueError, TypeError, KeyError, IndexError):
+        except (ValueError, TypeError, KeyError, IndexError, RecursionError):
             name = None
+        if isinstance(name, str):
+            try:
+                name.encode("utf-8")
+            except UnicodeEncodeError:  # e.g. a lone surrogate escape: unlistable
+                name = None
         return name.strip() if isinstance(name, str) and name.strip() else local_id
 
     def list_templates(self) -> list[dict[str, Any]]:
@@ -1169,6 +1175,50 @@ class ProjectService:
         except ValueError as exc:
             raise ValueError(f"Project '{project_id}' cannot be saved as a template: {exc}") from exc
         self.store.save_user_template(local_id, data)
+        return self._template_summary(template)
+
+    def import_template(self, text: Any) -> dict[str, Any]:
+        """Save an uploaded template JSON document as a new user template.
+
+        ``text`` is the file's content (a leading UTF-8 byte order mark is
+        ignored). It is checked exactly like a template loaded from disk —
+        shape and ``format_version`` (``parse_template_text``), then every
+        project rule (``_validate_template``) — so an imported template can
+        always be used to create a project. Invalid input raises
+        ``ValueError`` and writes nothing.
+
+        Like "Save as template", an import never overwrites anything: a
+        template whose name is already used by any template (built-in or
+        user, case-insensitive) raises ``ConflictError``. The file name stem
+        (the template's identity, ``user:<slug>``) is slugged from the name
+        and suffixed on collision; the file's own ``id`` key is
+        informational and replaced. The file is written in the canonical
+        template shape (stable key order; unknown keys are not kept).
+        """
+        if not isinstance(text, str):
+            raise ValueError("The template file content must be a string")
+        # The limit is in UTF-8 bytes, as over REST (a BOM counts, as it does
+        # in the request body). "surrogatepass" cannot fail here; lone
+        # surrogates are rejected by ``parse_template_text``.
+        if len(text.encode("utf-8", "surrogatepass")) > MAX_TEMPLATE_IMPORT_BYTES:
+            raise ValueError(
+                f"The template file is too large: the limit is {MAX_TEMPLATE_IMPORT_BYTES // (1024 * 1024)} MiB"
+            )
+        # A provisional id: the real one depends on the (validated) name.
+        provisional_id = make_template_id(USER_SOURCE, "import")
+        try:
+            template = parse_template_text(text, provisional_id)
+            self._validate_template(template)
+        except ValueError as exc:
+            raise ValueError(f"The template file is invalid: {exc}") from exc
+
+        for entry in self.list_templates():
+            if entry["name"].casefold() == template.name.casefold():
+                raise ConflictError(f"A template named '{entry['name']}' already exists ({entry['id']})")
+
+        local_id = _unique_slug(template.name, self.store.user_template_path_exists, fallback="template")
+        template.id = make_template_id(USER_SOURCE, local_id)
+        self.store.save_user_template(local_id, template.to_dict())
         return self._template_summary(template)
 
     # --- export ----------------------------------------------------------------

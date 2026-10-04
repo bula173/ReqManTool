@@ -29,6 +29,7 @@ import {
 } from '@tabler/icons-react';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useAppActions } from '../actions/context';
 import { ApiError } from '../api/client';
 import {
   useModules,
@@ -41,9 +42,7 @@ import {
 import { AddAttributeModal } from '../components/AddAttributeModal';
 import { LinkConfigurationModal } from '../components/LinkConfigurationModal';
 import { NewModuleModal } from '../components/NewModuleModal';
-import { NewProjectModal } from '../components/NewProjectModal';
 import { ProjectParentModal } from '../components/ProjectParentModal';
-import { SaveAsTemplateModal } from '../components/SaveAsTemplateModal';
 import { ViewModal } from '../components/ViewModal';
 import type { LinkConfiguration, Module, View } from '../api/types';
 
@@ -60,9 +59,8 @@ export function ProjectPage() {
   const [newModuleOpened, setNewModuleOpened] = useState(false);
   const [newLinkConfigOpened, setNewLinkConfigOpened] = useState(false);
   const [newViewOpened, setNewViewOpened] = useState(false);
-  const [newSubprojectOpened, setNewSubprojectOpened] = useState(false);
   const [parentOpened, setParentOpened] = useState(false);
-  const [saveTemplateOpened, setSaveTemplateOpened] = useState(false);
+  const { run, isAvailable } = useAppActions();
 
   if (!projectId) return null;
 
@@ -185,7 +183,8 @@ export function ProjectPage() {
             size="xs"
             variant="default"
             leftSection={<IconFolderPlus size={14} />}
-            onClick={() => setNewSubprojectOpened(true)}
+            disabled={!isAvailable('project.newSubproject')}
+            onClick={() => run('project.newSubproject')}
           >
             New subproject
           </Button>
@@ -201,7 +200,7 @@ export function ProjectPage() {
             size="xs"
             variant="default"
             leftSection={<IconTemplate size={14} />}
-            onClick={() => setSaveTemplateOpened(true)}
+            onClick={() => run('file.saveAsTemplate')}
           >
             Save as template
           </Button>
@@ -411,17 +410,7 @@ export function ProjectPage() {
         opened={newViewOpened}
         onClose={() => setNewViewOpened(false)}
       />
-      <NewProjectModal
-        opened={newSubprojectOpened}
-        onClose={() => setNewSubprojectOpened(false)}
-        defaultParentProjectId={projectId}
-      />
       <ProjectParentModal project={project} opened={parentOpened} onClose={() => setParentOpened(false)} />
-      <SaveAsTemplateModal
-        project={project}
-        opened={saveTemplateOpened}
-        onClose={() => setSaveTemplateOpened(false)}
-      />
     </Stack>
   );
 }

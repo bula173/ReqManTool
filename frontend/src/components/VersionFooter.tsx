@@ -1,7 +1,6 @@
 import { Badge, Group, Text, Tooltip } from '@mantine/core';
 import { IconAlertTriangle } from '@tabler/icons-react';
-import { useBackendVersion } from '../api/queries';
-import { FRONTEND_VERSION_INFO, isVersionMismatch } from '../buildInfo';
+import { useVersionStatus } from '../hooks/useVersionStatus';
 
 /**
  * App-shell footer: this frontend's version/build, plus a warning when the
@@ -9,15 +8,7 @@ import { FRONTEND_VERSION_INFO, isVersionMismatch } from '../buildInfo';
  * version loads, or if /version fails, only the frontend part is shown.
  */
 export function VersionFooter() {
-  const backend = useBackendVersion();
-  const frontend = FRONTEND_VERSION_INFO;
-  const mismatch = isVersionMismatch(frontend, backend.data);
-
-  const backendLabel = backend.data
-    ? `Backend: ReqManTool ${backend.data.version} · build ${backend.data.build}`
-    : backend.isError
-      ? `Backend version unavailable: ${backend.error.message}`
-      : 'Checking backend version…';
+  const { frontend, backend, mismatch, backendLabel } = useVersionStatus();
 
   return (
     <Group h="100%" px="md" gap="xs" justify="flex-end" wrap="nowrap">
