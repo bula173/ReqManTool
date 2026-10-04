@@ -376,6 +376,29 @@ to the categories above.
       requirement ids, so rewrite prompts can modify instead of
       duplicating (shows a diff preview before applying). Users can add,
       edit, export and import their own prompts.
+- [ ] Project lifecycle: remove project, lock project, baseline modules.
+      Requested 2026-10-04 (absorbs the former "Baselines" item).
+      (1) Remove project: deletes the project folder after a typed-name
+      confirmation; refused while it has subprojects or other projects
+      reference it (listed in the error); user data is git-tracked, so
+      the dialog points at git for recovery; broadcasts a change so all
+      clients drop it. REST + WebSocket. (2) Lock project:
+      `Project.locked` with who/when/reason; while locked every mutating
+      operation on the project, its modules, requirements, links, views
+      and attributes is rejected server-side (one guard in
+      `ProjectService`, a dedicated "project is locked" error) except
+      unlock; the UI shows a lock badge and disables editing, menus and
+      drag-and-drop. (3) Baselines: freeze a module (or a set of modules /
+      the whole project) as a named, immutable snapshot —
+      `<project>/baselines/<id>/` with name, description, timestamp, the
+      tool + format version, and copies of module, requirements, link
+      pairs and the attribute schema at that moment; never modified
+      afterwards. Browse a baseline read-only (same table/views/exports),
+      compare baseline ↔ current or baseline ↔ baseline with
+      requirement-level semantics (added / removed / modified, per
+      attribute and link), optional "lock after baseline". Complements
+      git history; a baseline can be referenced by sign-off records,
+      verification and test execution reports, and impact analysis.
 - [ ] Multiple open modules (tabs), detachable module windows, and
       drag-and-drop linking. Requested 2026-10-04. (1) Tabs: opening a
       module adds a tab to a tab bar listing the open modules (project ·
@@ -606,11 +629,6 @@ to the categories above.
       last-linked-at attribute value/hash against the current one), and
       surface it visually (e.g. a warning color on the `>`/`<` badge). Not
       yet requested — DOORS' core value-add over "just having links."
-- [ ] Baselines: name and snapshot a module (or project) at a point in
-      time; compare two baselines to see what changed. Complements (not a
-      replacement for) the user's own git history — a baseline is aware of
-      requirement-level semantics (added/removed/modified requirement),
-      not just file diffs. Not yet requested.
 - [ ] Comments/discussion thread per requirement. Not yet requested.
 - [ ] Multi-select + bulk attribute edit across several requirements at
       once. Not yet requested.
