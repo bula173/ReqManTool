@@ -90,10 +90,12 @@ persistence" below.
                                   #   template is assembled here, then
                                   #   renamed into place (removed afterwards)
   <project-id>/
-    project.json                  # Project: id, name, description,
+    project.json                  # format_version (first key), then
+                                   #   Project: id, name, description,
                                    #   parent_project_id (only if set),
                                    #   attributes (incl. system ones),
-                                   #   id_counters, link_configurations, views
+                                   #   id_counters, link_configurations, views,
+                                   #   module_order (only if set)
     modules/
       <module-id>/
         module.json                # Module: id, name, prefix, description
@@ -115,7 +117,11 @@ persistence" below.
   module in the project — there is no per-module attribute schema),
   `id_counters: dict[prefix, int]` (requirement id allocation state, one
   counter per module *prefix*, shared across modules that use the same
-  prefix), `link_configurations: list[LinkConfiguration]`.
+  prefix), `link_configurations: list[LinkConfiguration]`,
+  `views: list[View]` (view names are unique per project, compared
+  case-insensitively after stripping, like template view names),
+  `module_order: list[str]` (module ids in display order; written last and
+  only when non-empty — see "Module order" below).
 - **AttributeDefinition** — `id`, `name`, `type` (`string | text | integer
   | boolean | enum`), `required`, `default`, `choices` (enum only),
   `system: bool`. `system=True` marks an attribute the service manages
@@ -245,7 +251,10 @@ a cycle is reparenting). `ProjectStore` treats any project id that is not a
 single plain path component as not found. Data written by hand can still
 hold a dangling or cyclic parent: the ancestor walk only follows listed
 project ids and stops at a missing, unreadable or already-visited project,
-and `list_projects` reports such projects as top level (in the response
+but a parent (or, when reparenting, any ancestor) written by a newer
+ReqManTool is refused with `NewerFormatError` (REST 409, WebSocket -32602,
+nothing written) for both "create under" and "move under", since its own
+parent cannot be read to rule out a cycle; `list_projects` reports such projects as top level (in the response
 only; the stored value is kept, and `GET /projects/{id}` returns it as
 stored), so the sidebar tree always terminates. Reparenting such a project
 (dangling or in a cycle) to `null` repairs it; the "Change parent project"
@@ -305,13 +314,64 @@ domain rules.
 - **Save as template** (`POST /projects/{id}/save-as-template`) writes
   `_templates/<slug-of-name>.json` (atomic write, two-space indent, trailing
   newline, fixed key order): non-system attributes except `object_text`,
-  modules (`key` = module id, in id order), link configurations (between
+  modules (`key` = module id, in the project's module order), link configurations (between
   module keys) and views (mirror attributes as `link:<key>`; references to
   attributes the project no longer has are dropped). Requirements, id
   counters and the parent are not saved. The result is round-tripped
   through the loader before it is written. A name already used by any
   template (built-in or user, case-insensitive) is rejected with 409; a
   file is never overwritten.
+
+### Format versions
+
+`project.json` and the app config file (`.reqman/config.json`) start with
+an integer `format_version` (`reqman/formats.py`: `PROJECT_FORMAT`,
+`CONFIG_FORMAT`, both currently 1). Module, requirement and link-pair files
+have no version of their own; they are governed by their project's
+version. Templates keep their own, separate `format_version`.
+
+- A file without the key is version 1 (the format written before versions
+  existed) and loads unchanged.
+- Loading never rewrites a file: `formats.upgrade` applies the registered
+  migration steps (`FileFormat.migrations[n]`: version `n` to `n + 1`) in
+  memory; the current version is written by the next real save, so reads
+  leave git diffs quiet.
+- A file with a newer version than the tool supports raises
+  `NewerFormatError` ("... was written by a newer ReqManTool ...": REST
+  409, WebSocket -32602). `ProjectStore` checks the project's stored
+  version before every read or write of the project's files, and
+  `config.save_data_dir` checks the config file, so such files are never
+  misread or overwritten. A newer config file stops the server at start
+  (unless `REQMAN_DATA_DIR`/`--dir` is given) rather than silently using
+  another data directory.
+- Bump a version for a change an older reader would misinterpret, and for
+  any new persisted key that must survive a round-trip through an older
+  tool: `Project.from_dict`/`to_dict` drop unknown keys, so a versioned
+  tool that loads and saves a project would silently delete a key added
+  later without a bump. `module_order` was added without a bump only
+  because the tools it could be lost through predate versioning and cannot
+  be protected anyway; from this release on, new keys bump the version
+  (module folders therefore must). A project migration that changes
+  module, requirement or link-pair files must upgrade those files too.
+
+### Module order
+
+`project.module_order` stores the module display order. `GET
+/projects/{id}/modules` (and exports, save-as-template) apply it
+tolerantly: entries naming missing modules or repeating one are skipped,
+and modules it does not list follow in id order, so older projects (no
+key) list in id order as before. New modules are appended; a project
+created from a template keeps the template's declared module order.
+`POST /projects/{id}/modules/{module_id}/reorder` (`{"direction": "up" |
+"down"}`, WebSocket `module.reorder`) moves a module one place and stores
+the whole effective order; a move past either end writes nothing.
+
+Planned evolution: module folders (a later backlog item) will turn
+`module_order` into ordered entries that are either modules or folders,
+through a `PROJECT_FORMAT` 1 → 2 migration (for example, each id string
+becomes `{"module": id}`, and folders are `{"folder": ..., "children":
+[...]}`). The migration runs on the raw dict in `formats.upgrade()`,
+before `Project.from_dict`.
 
 ### Git-friendly persistence
 
@@ -414,7 +474,7 @@ resource:
 | Templates | `GET /templates` → `[{id, source, name, description, modules: [{key, name, prefix}], error}]`, `POST /projects/{id}/save-as-template` (`{name, description}`; 409 on a name clash; broadcasts `templates_changed`) |
 | Attributes | `POST /projects/{id}/attributes` |
 | Link configurations | `POST/GET /projects/{id}/link-configurations`, `DELETE .../link-configurations/{config_id}` |
-| Modules | `POST/GET /projects/{id}/modules`, `GET .../modules/{id}`, `POST .../modules/{id}/purge` |
+| Modules | `POST/GET /projects/{id}/modules`, `GET .../modules/{id}`, `POST .../modules/{id}/purge`, `POST /projects/{project_id}/modules/{module_id}/reorder` (`{"direction": "up" \| "down"}`; WS: `module.reorder`) |
 | Requirements | `POST/GET .../requirements`, `GET/PUT/DELETE .../requirements/{id}`, `PUT .../requirements/{id}/parent` (move), `POST .../requirements/{id}/reorder`, `POST .../requirements/{id}/copy` |
 | Links | `POST/DELETE /projects/{id}/links` |
 | Export | `GET /projects/{id}/export/reqif`, `GET /projects/{id}/export/csv` |
@@ -430,7 +490,7 @@ resource:
 "requirement.add", "params": {...}}` → `{"jsonrpc": "2.0", "id": ...,
 "result": ...}` or `{"jsonrpc": "2.0", "id": ..., "error": {"code": ...,
 "message": ...}}`. Method names mirror the REST resources
-(`project.create`, `module.create`, `requirement.add/update/remove/
+(`project.create`, `module.create/purge/reorder`, `requirement.add/update/remove/
 move/reorder/copy/link/unlink`, `link_configuration.create/list/remove`,
 …) — see `RPC_METHODS` in `app.py` for the exact table. Methods listed in
 `MUTATING_METHODS` broadcast a `changed` event after success, same as the

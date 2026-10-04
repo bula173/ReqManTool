@@ -3,7 +3,8 @@ endpoint, and the live-sync broadcast connection manager.
 
 Route handlers are intentionally thin — parse the request, call a
 ``ProjectService`` method via ``_wrap`` (which maps ``FileNotFoundError``
-to 404 and ``ValueError`` to 400), broadcast on success. All real business
+to 404, ``ConflictError`` and ``NewerFormatError`` to 409 and
+``ValueError`` to 400), broadcast on success. All real business
 logic lives in ``service.py``; see its module docstring and
 docs/ARCHITECTURE.md for why. ``RPC_METHODS`` mirrors the REST surface
 one-to-one so a WebSocket client (used for live requirement editing by the
@@ -24,8 +25,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel
 
-from .config import DEFAULT_DATA_DIR, load_saved_data_dir, save_data_dir
+from .config import DEFAULT_DATA_DIR, check_config_writable, load_saved_data_dir, save_data_dir
 from .csv_import import MAX_CSV_IMPORT_BYTES
+from .formats import NewerFormatError
 from .service import ConflictError, ProjectService
 from .store import ProjectStore
 from .version import build_id, version_info
@@ -133,15 +135,18 @@ async def set_config(body: SetDataDirBody):
     global DATA_DIR, store, service
 
     new_dir = Path(body.data_dir).expanduser().resolve()
+    # Refuse before switching anything if the config file must not be
+    # overwritten (written by a newer ReqManTool).
+    _wrap(check_config_writable)
     try:
         new_store = ProjectStore(new_dir)
     except OSError as exc:
         raise HTTPException(status_code=400, detail=f"Cannot use '{new_dir}': {exc}") from exc
 
+    _wrap(save_data_dir, str(new_dir))
     DATA_DIR = new_dir
     store = new_store
     service = ProjectService(store)
-    save_data_dir(str(DATA_DIR))
     logger.info("Requirements data directory changed to: %s", DATA_DIR)
 
     await manager.broadcast_root_changed()
@@ -227,6 +232,10 @@ class ReorderRequirementBody(BaseModel):
     direction: Literal["up", "down"]
 
 
+class ReorderModuleBody(BaseModel):
+    direction: Literal["up", "down"]
+
+
 class CopyRequirementBody(BaseModel):
     target_parent_id: str | None = None
 
@@ -256,7 +265,7 @@ def _wrap(fn, *args, **kwargs):
         return fn(*args, **kwargs)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ConflictError as exc:
+    except (ConflictError, NewerFormatError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -298,7 +307,7 @@ def list_templates():
 
 @app.get("/projects")
 def list_projects():
-    return [p.to_dict() for p in service.list_projects()]
+    return [p.to_dict() for p in _wrap(service.list_projects)]
 
 
 @app.get("/projects/{project_id}")
@@ -437,6 +446,13 @@ def list_modules(project_id: str):
 @app.get("/projects/{project_id}/modules/{module_id}")
 def get_module(project_id: str, module_id: str):
     return _wrap(service.get_module, project_id, module_id).to_dict()
+
+
+@app.post("/projects/{project_id}/modules/{module_id}/reorder")
+async def reorder_module(project_id: str, module_id: str, body: ReorderModuleBody):
+    module = _wrap(service.reorder_module, project_id, module_id, body.direction)
+    await manager.broadcast(project_id)
+    return module.to_dict()
 
 
 @app.post("/projects/{project_id}/modules/{module_id}/import/csv")
@@ -587,6 +603,7 @@ RPC_METHODS = {
     "module.get": lambda p: service.get_module(p["project_id"], p["id"]),
     "module.list": lambda p: service.list_modules(p["project_id"]),
     "module.purge": lambda p: {"purged": service.purge_module(p["project_id"], p["id"])},
+    "module.reorder": lambda p: service.reorder_module(p["project_id"], p["id"], p["direction"]),
     "link_configuration.create": lambda p: service.create_link_configuration(
         p["project_id"], p["name"], p["source_module_id"], p["target_module_id"]
     ),
@@ -651,7 +668,8 @@ def _error_response(request_id, code: int, message: str) -> dict:
 
 
 MUTATING_METHODS = {
-    "project.create", "project.set_parent", "project.purge", "attribute.add", "module.create", "module.purge",
+    "project.create", "project.set_parent", "project.purge", "attribute.add",
+    "module.create", "module.purge", "module.reorder",
     "link_configuration.create", "link_configuration.remove",
     "view.create", "view.remove",
     "requirement.add", "requirement.update", "requirement.remove", "requirement.move",

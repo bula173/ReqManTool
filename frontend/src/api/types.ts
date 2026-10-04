@@ -36,6 +36,11 @@ export interface Project {
   attributes: AttributeDefinition[];
   link_configurations: LinkConfiguration[];
   views: View[];
+  /**
+   * Stored module display order. Omitted when never set; use the order of
+   * `GET /projects/{id}/modules`, which applies it tolerantly.
+   */
+  module_order?: string[];
 }
 
 export interface Module {

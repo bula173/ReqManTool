@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .csv_import import RESERVED_COLUMNS
+from .formats import NewerFormatError
 from .models import AttributeDefinition, LinkConfiguration, LinkPair, Module, Project, Requirement, View
 from .store import ProjectStore, validate_prefix
 from .templates import (
@@ -188,7 +189,10 @@ class ProjectService:
         project) must not be one of its descendants. The ancestor walk only
         follows ids of that set and stops at a missing, unreadable or
         already-visited project, so hand-edited dangling, path-like or cyclic
-        data cannot make it loop or read outside the data directory.
+        data cannot make it loop or read outside the data directory. A parent
+        (or, when moving, any ancestor) written by a newer ReqManTool raises
+        ``NewerFormatError``: its own parent cannot be read, so "create under"
+        and "move under" it are both refused and nothing is written.
         """
         if parent_project_id is None:
             return
@@ -199,8 +203,6 @@ class ProjectService:
         project_ids = set(self.store.list_project_ids())
         if parent_project_id not in project_ids:
             raise FileNotFoundError(f"Parent project '{parent_project_id}' not found")
-        if project_id is None:
-            return
         seen: set[str] = set()
         node: Any = parent_project_id
         while isinstance(node, str) and node in project_ids and node not in seen:
@@ -212,8 +214,12 @@ class ProjectService:
             seen.add(node)
             try:
                 node = self.store.load_project(node).parent_project_id
-            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            except NewerFormatError:
+                raise  # its parent is unknown, so a cycle cannot be ruled out: refuse (409)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError):
                 break  # missing or malformed project.json: its parent is unknown
+            if project_id is None:
+                break  # a new project has no subprojects: only its parent's format matters
 
     def set_project_parent(self, project_id: str, parent_project_id: str | None) -> Project:
         """Move a project in the subproject tree; ``None`` makes it top level."""
@@ -322,21 +328,73 @@ class ProjectService:
     # --- modules ----------------------------------------------------------------
 
     def create_module(self, project_id: str, name: str, prefix: str, description: str = "") -> Module:
-        if not self.store.project_exists(project_id):
-            raise FileNotFoundError(f"Project '{project_id}' not found")
+        """Create a module, appended at the end of the project's module order.
+
+        The module file is written first, then project.json with the new
+        order. If the second write fails, the module is still listed: an
+        existing module missing from the order is appended in id order.
+        """
+        project = self.store.load_project(project_id)
         validate_prefix(prefix)
         module_id = _unique_slug(
             name, lambda c: self.store.module_exists(project_id, c), fallback="module"
         )
         module = Module(id=module_id, name=name, prefix=prefix, description=description)
+        order = self._module_order(project)
         self.store.save_module(project_id, module)
+        project.module_order = [*order, module_id]
+        self.store.save_project(project)
         return module
 
     def get_module(self, project_id: str, module_id: str) -> Module:
         return self.store.load_module(project_id, module_id)
 
+    def _module_order(self, project: Project) -> list[str]:
+        """The project's module ids in display order.
+
+        ``project.module_order`` is applied tolerantly, so hand-edited or
+        older data always lists every module exactly once: entries naming a
+        module that does not exist (or repeating one) are skipped, and
+        modules the order does not mention follow in id order. A project
+        without a stored order (older data) lists its modules in id order.
+        The stored value is not rewritten here.
+        """
+        existing = self.store.list_module_ids(project.id)
+        existing_set = set(existing)
+        order: list[str] = []
+        for module_id in project.module_order:
+            if module_id in existing_set and module_id not in order:
+                order.append(module_id)
+        listed = set(order)
+        order.extend(module_id for module_id in existing if module_id not in listed)
+        return order
+
     def list_modules(self, project_id: str) -> list[Module]:
-        return [self.store.load_module(project_id, mid) for mid in self.store.list_module_ids(project_id)]
+        """The project's modules in display order (see ``_module_order``)."""
+        if not self.store.project_exists(project_id):
+            return []
+        project = self.store.load_project(project_id)
+        return [self.store.load_module(project_id, mid) for mid in self._module_order(project)]
+
+    def reorder_module(self, project_id: str, module_id: str, direction: str) -> Module:
+        """Move a module one place up or down in the project's module order.
+
+        Moving the first module up or the last one down changes nothing and
+        writes nothing. Otherwise the whole effective order is stored, which
+        also drops entries naming missing modules.
+        """
+        if direction not in ("up", "down"):
+            raise ValueError(f"Invalid direction '{direction}': must be 'up' or 'down'")
+        project = self.store.load_project(project_id)
+        module = self.store.load_module(project_id, module_id)
+        order = self._module_order(project)
+        index = order.index(module_id)
+        neighbor_index = index - 1 if direction == "up" else index + 1
+        if 0 <= neighbor_index < len(order):
+            order[index], order[neighbor_index] = order[neighbor_index], order[index]
+            project.module_order = order
+            self.store.save_project(project)
+        return module
 
     # --- requirements ----------------------------------------------------------------
 
@@ -728,8 +786,28 @@ class ProjectService:
         return view
 
     @staticmethod
-    def _add_view(project: Project, name: str, attribute_ids: list[str]) -> View:
-        """Add a view to ``project`` in memory; every attribute id must be defined."""
+    def _checked_view_name(project: Project, name: Any, view_id: str | None = None) -> str:
+        """Return ``name`` stripped, or raise if it is blank or another view's name.
+
+        Names are compared case-insensitively after stripping, like view
+        names in templates, so a project can always be saved as a template.
+        ``view_id`` is the view being renamed (its own name is not a clash);
+        no caller passes it yet: it is reserved for a future view rename.
+        Existing duplicates in older data are left as they are.
+        """
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("View name must not be empty")
+        stripped = name.strip()
+        folded = stripped.casefold()
+        for view in project.views:
+            if view.id != view_id and isinstance(view.name, str) and view.name.strip().casefold() == folded:
+                raise ValueError(f"View name '{stripped}' is already used by view '{view.id}'")
+        return stripped
+
+    @classmethod
+    def _add_view(cls, project: Project, name: str, attribute_ids: list[str]) -> View:
+        """Add a view to ``project`` in memory; the name must be new, every attribute id defined."""
+        name = cls._checked_view_name(project, name)
         defined_ids = {a.id for a in project.attributes}
         unknown = set(attribute_ids) - defined_ids
         if unknown:
@@ -902,6 +980,8 @@ class ProjectService:
             modules.append(
                 Module(id=module_id, name=tmodule.name, prefix=tmodule.prefix, description=tmodule.description)
             )
+        # The template's declared module order, not the modules' id order.
+        project.module_order = [m.id for m in modules]
 
         link_ids: dict[str, str] = {}
         for index, tconfig in enumerate(template.link_configurations):

@@ -1953,7 +1953,7 @@ def test_legacy_invalid_defaults_are_skipped_not_rewritten(service, tmp_path):
         {"id": "owner", "name": "Owner", "type": "string", "default": "team"},
     )
     project_file = tmp_path / project.id / "project.json"
-    stored_before = project_file.read_text()
+    stored_before = json.loads(project_file.read_text())["attributes"]
     module = create_module(service, project.id)
 
     requirement = service.add_requirement(project.id, module.id, {"object_text": "x"})
@@ -1962,7 +1962,7 @@ def test_legacy_invalid_defaults_are_skipped_not_rewritten(service, tmp_path):
     expected = {"object_text": "x", "owner": "team"}
     assert requirement.attributes == expected
     assert _by_text(service, project.id, module.id)["y"].attributes == {"object_text": "y", "owner": "team"}
-    assert project_file.read_text().replace('"id_counters": {\n    "REQ": 2\n  }', '"id_counters": {}') == stored_before
+    assert json.loads(project_file.read_text())["attributes"] == stored_before
 
 
 def test_legacy_invalid_default_of_required_attribute_counts_as_no_default(service):
@@ -2010,13 +2010,13 @@ def test_legacy_unknown_attribute_type_is_kept_and_not_rewritten(service, tmp_pa
     project = create_project(service)
     _write_legacy_attributes(service, project.id, {"id": "size", "name": "Size", "type": "Integer"})
     project_file = tmp_path / project.id / "project.json"
-    stored_before = project_file.read_text()
+    stored_before = json.loads(project_file.read_text())["attributes"]
     module = create_module(service, project.id)
 
     requirement = service.add_requirement(project.id, module.id, {"object_text": "x", "size": "big"})
     assert requirement.attributes == {"object_text": "x", "size": "big"}
     assert service.get_project(project.id).attributes[-1].type == "Integer"
-    assert project_file.read_text().replace('"id_counters": {\n    "REQ": 1\n  }', '"id_counters": {}') == stored_before
+    assert json.loads(project_file.read_text())["attributes"] == stored_before
 
 
 # --- R4: blank values for required attributes -----------------------------------

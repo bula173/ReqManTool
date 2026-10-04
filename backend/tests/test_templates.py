@@ -245,7 +245,7 @@ def test_parent_key_follows_description(service):
     parent = service.create_project("Parent")
     child = service.create_project("Child", parent_project_id=parent.id)
     data = json.loads((service.store.root / child.id / "project.json").read_text())
-    assert list(data)[:4] == ["id", "name", "description", "parent_project_id"]
+    assert list(data)[:5] == ["format_version", "id", "name", "description", "parent_project_id"]
 
 
 def test_dangling_and_cyclic_parents_on_disk_list_as_top_level(service):

@@ -29,8 +29,9 @@ export function ViewModal({ projectId, attributes, opened, onClose }: ViewModalP
 
   const handleSubmit = form.onSubmit((values) => {
     createView.mutate(values, {
-      onSuccess: () => {
-        notifications.show({ message: `View "${values.name}" created`, color: 'green' });
+      onSuccess: (view) => {
+        // The server stores the name stripped (and rejects duplicates, case-insensitively).
+        notifications.show({ message: `View "${view.name}" created`, color: 'green' });
         form.reset();
         onClose();
       },

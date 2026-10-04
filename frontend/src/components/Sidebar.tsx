@@ -116,6 +116,7 @@ export function Sidebar() {
         {projectsQuery.isError && (
           <Text c="red" size="sm" px="sm">
             Failed to load projects
+            {projectsQuery.error instanceof Error ? `: ${projectsQuery.error.message}` : ''}
           </Text>
         )}
         {projectsQuery.data?.length === 0 && (

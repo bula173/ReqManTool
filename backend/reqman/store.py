@@ -9,6 +9,13 @@ caller (``ProjectService``) to have already validated the request.
 Every write goes through ``_write_json``, which writes a temporary file in
 the target's directory and then ``os.replace``s it over the target, so a
 crash or I/O error never leaves a half-written JSON file behind.
+
+``project.json`` starts with the project's ``format_version`` (see
+``formats.py``): ``load_project`` upgrades older data in memory without
+rewriting the file, and ``save_project`` writes the current version. Every
+read or write of a project's files first checks the version stored in its
+``project.json`` (``_check_project_format``), so the files of a project
+written by a newer ReqManTool are never misread or overwritten.
 """
 
 from __future__ import annotations
@@ -22,6 +29,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from .formats import PROJECT_FORMAT, check_format_version, upgrade, with_format_version
 from .models import LinkPair, Module, Project, Requirement
 
 try:
@@ -100,6 +108,41 @@ class ProjectStore:
     def __init__(self, root: Path | str):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        # project id -> (mtime_ns, ctime_ns, size, inode) of a project.json whose version was checked
+        self._format_cache: dict[str, tuple[int, int, int, int]] = {}
+
+    # --- format version guard ----------------------------------------------
+
+    def _check_project_format(self, project_id: str) -> None:
+        """Raise ``NewerFormatError`` if ``project_id``'s project.json is from a newer tool.
+
+        Called before every read or write of a project's files. A missing
+        project.json (a project being created) or one that is not a JSON
+        object has no version to protect and is left to ``load_project`` to
+        report. An invalid ``format_version`` raises ``ValueError``. A
+        successful check is cached per project until the file's mtime, ctime,
+        size or inode changes (ctime also catches a same-size in-place edit
+        that keeps or restores the mtime).
+        """
+        if not self._is_project_id(project_id):
+            return
+        path = self._project_file(project_id)
+        try:
+            stat = path.stat()
+        except OSError:
+            return
+        key = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_ino)
+        if self._format_cache.get(project_id) == key:
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        check_format_version(data, PROJECT_FORMAT, f"Project '{project_id}'")
+        # Only a supported version is cached; a newer one raises every time.
+        self._format_cache[project_id] = key
 
     # --- paths -----------------------------------------------------------
 
@@ -163,13 +206,22 @@ class ProjectStore:
         return project_id in RESERVED_ROOT_NAMES or path.exists() or path.is_symlink()
 
     def save_project(self, project: Project) -> None:
+        """Write project.json at the current ``format_version`` (its first key)."""
+        self._check_project_format(project.id)
         self._project_dir(project.id).mkdir(parents=True, exist_ok=True)
-        _write_json(self._project_file(project.id), project.to_dict())
+        _write_json(self._project_file(project.id), with_format_version(project.to_dict(), PROJECT_FORMAT))
 
     def load_project(self, project_id: str) -> Project:
+        """Read project.json, upgrading older format versions in memory (the file is not rewritten).
+
+        Raises ``NewerFormatError`` for a project written by a newer ReqManTool.
+        """
         if not self._is_project_id(project_id) or not self._project_file(project_id).exists():
             raise FileNotFoundError(f"Project '{project_id}' not found")
-        return Project.from_dict(json.loads(self._project_file(project_id).read_text()))
+        data = json.loads(self._project_file(project_id).read_text())
+        if isinstance(data, dict):
+            data = upgrade(data, PROJECT_FORMAT, f"Project '{project_id}'")
+        return Project.from_dict(data)
 
     def list_project_ids(self) -> list[str]:
         if not self.root.exists():
@@ -220,6 +272,7 @@ class ProjectStore:
         return self._module_file(project_id, module_id).exists()
 
     def save_module(self, project_id: str, module: Module) -> None:
+        self._check_project_format(project_id)
         self._requirements_dir(project_id, module.id).mkdir(parents=True, exist_ok=True)
         _write_json(self._module_file(project_id, module.id), module.to_dict())
 
@@ -227,6 +280,7 @@ class ProjectStore:
         path = self._module_file(project_id, module_id)
         if not path.exists():
             raise FileNotFoundError(f"Module '{module_id}' not found in project '{project_id}'")
+        self._check_project_format(project_id)
         return Module.from_dict(json.loads(path.read_text()))
 
     def list_module_ids(self, project_id: str) -> list[str]:
@@ -243,6 +297,7 @@ class ProjectStore:
         return self._requirement_file(project_id, module_id, requirement_id).exists()
 
     def save_requirement(self, project_id: str, module_id: str, requirement: Requirement) -> None:
+        self._check_project_format(project_id)
         path = self._requirement_file(project_id, module_id, requirement.id)
         _write_json(path, requirement.to_dict())
 
@@ -252,6 +307,7 @@ class ProjectStore:
             raise FileNotFoundError(
                 f"Requirement '{requirement_id}' not found in module '{module_id}'"
             )
+        self._check_project_format(project_id)
         return Requirement.from_dict(json.loads(path.read_text()))
 
     def delete_requirement(self, project_id: str, module_id: str, requirement_id: str) -> None:
@@ -260,6 +316,7 @@ class ProjectStore:
             raise FileNotFoundError(
                 f"Requirement '{requirement_id}' not found in module '{module_id}'"
             )
+        self._check_project_format(project_id)
         path.unlink()
 
     def list_requirement_ids(self, project_id: str, module_id: str) -> list[str]:
@@ -308,7 +365,8 @@ class ProjectStore:
         # into a path, so an id can never point outside the templates folder.
         if template_id not in self.list_user_template_ids():
             raise FileNotFoundError(f"Template 'user:{template_id}' not found")
-        return self._user_template_file(template_id).read_text(encoding="utf-8")
+        # utf-8-sig: a file saved by an editor with a UTF-8 BOM is accepted.
+        return self._user_template_file(template_id).read_text(encoding="utf-8-sig")
 
     def save_user_template(self, template_id: str, data: dict) -> None:
         """Write a new user template file; the caller has already chosen a free id."""
@@ -318,6 +376,7 @@ class ProjectStore:
     # --- link pairs ("link module") ---------------------------------------
 
     def load_link_pairs(self, project_id: str, config_id: str) -> list[LinkPair]:
+        self._check_project_format(project_id)
         path = self._link_pairs_file(project_id, config_id)
         if not path.exists():
             return []
@@ -325,11 +384,13 @@ class ProjectStore:
         return [LinkPair.from_dict(p) for p in data.get("pairs", [])]
 
     def save_link_pairs(self, project_id: str, config_id: str, pairs: list[LinkPair]) -> None:
+        self._check_project_format(project_id)
         path = self._link_pairs_file(project_id, config_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         _write_json(path, {"pairs": [p.to_dict() for p in pairs]})
 
     def delete_link_pairs(self, project_id: str, config_id: str) -> None:
+        self._check_project_format(project_id)
         path = self._link_pairs_file(project_id, config_id)
         if path.exists():
             path.unlink()

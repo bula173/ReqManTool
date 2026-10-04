@@ -18,6 +18,11 @@ from typing import Any, Literal
 AttributeType = Literal["string", "text", "integer", "boolean", "enum"]
 
 
+def _string_list(value: Any) -> list[str]:
+    """The strings of a hand-editable list value; anything else reads as empty."""
+    return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
+
 @dataclass
 class AttributeDefinition:
     id: str
@@ -148,6 +153,10 @@ class Project:
     id_counters: dict[str, int] = field(default_factory=dict)
     link_configurations: list[LinkConfiguration] = field(default_factory=list)
     views: list[View] = field(default_factory=list)
+    # Module ids in display order. Optional: a project without it (older
+    # data) lists its modules in id order. ``ProjectService`` drops entries
+    # naming missing modules and appends unlisted modules in id order.
+    module_order: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         data: dict[str, Any] = {
@@ -167,6 +176,9 @@ class Project:
             "id_counters": self.id_counters,
             "link_configurations": [c.to_dict() for c in self.link_configurations],
             "views": [v.to_dict() for v in self.views],
+            # Written only when set, like ``parent_project_id``, so a project
+            # without modules (or older data) gains no empty key on save.
+            **({"module_order": list(self.module_order)} if self.module_order else {}),
         }
 
     @staticmethod
@@ -182,4 +194,5 @@ class Project:
             link_configurations=[
                 LinkConfiguration.from_dict(c) for c in data.get("link_configurations", [])
             ],
+            module_order=_string_list(data.get("module_order")),
         )

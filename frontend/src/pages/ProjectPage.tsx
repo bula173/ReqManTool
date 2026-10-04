@@ -18,6 +18,8 @@ import {
 import { modals } from '@mantine/modals';
 import { notifications } from '@mantine/notifications';
 import {
+  IconArrowDown,
+  IconArrowUp,
   IconFolderPlus,
   IconHierarchy2,
   IconInfoCircle,
@@ -28,7 +30,14 @@ import {
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
-import { useModules, useProject, useProjects, useRemoveLinkConfiguration, useRemoveView } from '../api/queries';
+import {
+  useModules,
+  useProject,
+  useProjects,
+  useRemoveLinkConfiguration,
+  useRemoveView,
+  useReorderModule,
+} from '../api/queries';
 import { AddAttributeModal } from '../components/AddAttributeModal';
 import { LinkConfigurationModal } from '../components/LinkConfigurationModal';
 import { NewModuleModal } from '../components/NewModuleModal';
@@ -46,6 +55,7 @@ export function ProjectPage() {
   const modulesQuery = useModules(projectId);
   const removeLinkConfiguration = useRemoveLinkConfiguration(projectId ?? '');
   const removeView = useRemoveView(projectId ?? '');
+  const reorderModule = useReorderModule(projectId ?? '');
   const [addAttributeOpened, setAddAttributeOpened] = useState(false);
   const [newModuleOpened, setNewModuleOpened] = useState(false);
   const [newLinkConfigOpened, setNewLinkConfigOpened] = useState(false);
@@ -122,6 +132,19 @@ export function ProjectPage() {
         });
       },
     });
+  };
+
+  const handleReorderModule = (module: Module, direction: 'up' | 'down') => {
+    reorderModule.mutate(
+      { id: module.id, direction },
+      {
+        onError: (err) =>
+          notifications.show({
+            message: err instanceof ApiError ? err.message : 'Failed to move module',
+            color: 'red',
+          }),
+      },
+    );
   };
 
   const attributeLabel = (attrId: string) =>
@@ -318,6 +341,7 @@ export function ProjectPage() {
         {modulesQuery.isError && (
           <Text c="red" size="sm">
             Failed to load modules
+            {modulesQuery.error instanceof Error ? `: ${modulesQuery.error.message}` : ''}
           </Text>
         )}
         {modulesQuery.data?.length === 0 && (
@@ -326,7 +350,7 @@ export function ProjectPage() {
           </Text>
         )}
         <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }}>
-          {modulesQuery.data?.map((module) => (
+          {modulesQuery.data?.map((module, index, modules) => (
             <Card
               key={module.id}
               withBorder
@@ -334,11 +358,37 @@ export function ProjectPage() {
               style={{ cursor: 'pointer' }}
               onClick={() => navigate(`/projects/${projectId}/modules/${module.id}`)}
             >
-              <Group gap="xs">
-                <Text fw={600}>{module.name}</Text>
-                <Badge size="sm" variant="outline">
-                  {module.prefix}
-                </Badge>
+              <Group gap="xs" justify="space-between" wrap="nowrap">
+                <Group gap="xs">
+                  <Text fw={600}>{module.name}</Text>
+                  <Badge size="sm" variant="outline">
+                    {module.prefix}
+                  </Badge>
+                </Group>
+                <Group gap={2} wrap="nowrap" onClick={(event) => event.stopPropagation()}>
+                  <Tooltip label="Move up">
+                    <ActionIcon
+                      variant="subtle"
+                      size="sm"
+                      aria-label={`Move ${module.name} up`}
+                      disabled={index === 0 || reorderModule.isPending}
+                      onClick={() => handleReorderModule(module, 'up')}
+                    >
+                      <IconArrowUp size={14} />
+                    </ActionIcon>
+                  </Tooltip>
+                  <Tooltip label="Move down">
+                    <ActionIcon
+                      variant="subtle"
+                      size="sm"
+                      aria-label={`Move ${module.name} down`}
+                      disabled={index === modules.length - 1 || reorderModule.isPending}
+                      onClick={() => handleReorderModule(module, 'down')}
+                    >
+                      <IconArrowDown size={14} />
+                    </ActionIcon>
+                  </Tooltip>
+                </Group>
               </Group>
               <Text size="sm" c="dimmed" lineClamp={2}>
                 {module.description || 'No description'}

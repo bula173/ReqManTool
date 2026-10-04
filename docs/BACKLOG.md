@@ -200,6 +200,43 @@
       (no persisted module order); cross-project links, module types and
       the menu bar remain separate backlog items; no frontend unit tests
       (no test runner in the repo).
+- [x] Data format versions, persisted module order, and template/view
+      consistency fixes. (1) Format versions: `backend/reqman/formats.py`
+      holds the current version per file kind (project and config both at
+      1) and an explicit migration registry (`migrations[n]` upgrades
+      n→n+1, applied in memory). `format_version` is the first key of
+      `project.json` and `.reqman/config.json`; a missing key means
+      version 1; module, requirement and link-pair files are governed by
+      their project's version; templates keep their own `format_version`.
+      Loading never rewrites a file; the version is written on the next
+      real save. A newer file is rejected with "written by a newer
+      ReqManTool … the file was not changed" (REST 409, WebSocket -32602)
+      and never overwritten: every project-file read/write checks
+      `project.json`'s version (cached by mtime/ctime/size/inode); a newer
+      config refuses startup and `POST /config`; creating a subproject
+      under, or moving a project under, a newer project is rejected
+      (prevents an unseen cycle). (2) Module order: optional
+      `module_order` in `project.json` (written last, only when non-empty;
+      no format bump, since pre-versioning tools cannot be protected
+      anyway); projects without it use id order; unknown entries are
+      dropped and unlisted modules appended in id order. New modules are
+      appended; projects from templates keep the template's declared order
+      (`RBC_Template`: StRS → SyRS → SwRS → SysTest → SwTest);
+      save-as-template and exports follow it. Move up/down: `POST
+      /projects/{project_id}/modules/{module_id}/reorder`
+      (`{"direction":"up"|"down"}`) and WebSocket `module.reorder`,
+      broadcast `changed`; up/down buttons on the module cards in
+      `ProjectPage.tsx`. `docs/ARCHITECTURE.md` documents the planned
+      evolution: module folders turn `module_order` into ordered
+      module/folder entries via a PROJECT_FORMAT 1→2 migration, and any
+      new persisted key from now on needs a format bump. (3) Views:
+      duplicate view names in a project are rejected case-insensitively
+      after trimming, blank names rejected, names stored trimmed (REST 400,
+      WebSocket -32602). (4) Templates: user and built-in template files
+      with a UTF-8 BOM are accepted. Backend tests 510 → 615. Not covered
+      (see backlog): one project written by a newer tool fails the whole
+      project list; data files are not read as `utf-8-sig`; no view rename
+      or module delete; module move up/down is not in the sidebar.
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -278,24 +315,6 @@ custom report templates ❌.
 Ordered roughly by how directly each was requested / how foundational it is
 to the categories above.
 
-- [ ] Data format versions, persisted module order, and template/view
-      consistency fixes. Requested 2026-10-04. (1) Format versions:
-      `project.json` and the app config file (`.reqman/config.json`, later
-      the per-user config of the distribution item) carry an integer
-      `format_version` as their first key; module, requirement and
-      link-pair files are governed by their project's version. Files
-      without the key are version 1 (today's format) and keep loading
-      unchanged; the loader upgrades older versions in memory through
-      explicit, tested migration steps and writes the current version on
-      the next save; a file newer than the running tool supports is
-      rejected with a clear "written by a newer ReqManTool" error instead
-      of being misread or overwritten. Templates keep their own
-      `format_version`. (2) Module order: projects persist an explicit
-      module order (new modules appended; templates keep their declared
-      order, so `RBC_Template` shows StRS → SyRS → SwRS → SysTest → SwTest);
-      move up/down for modules in the UI, REST + WebSocket. (3) Projects
-      reject duplicate view names (case-insensitive, like templates).
-      (4) User template files saved with a UTF-8 BOM are accepted.
 - [ ] Application menu bar. Requested 2026-10-04. A desktop-style menu bar
       in the app shell (`frontend/src/layout/`), built on the existing
       features rather than duplicating their logic: **File** — New project
@@ -329,7 +348,9 @@ to the categories above.
       selects; double-click keeps inline editing; Esc / outside click
       closes; keyboard-accessible (Shift+F10 / menu key opens the editing
       menu). Builds on the menu bar item; tab, folder and reference
-      entries appear as those items land.
+      entries appear as those items land. Sidebar module entries also get
+      Move Up/Down (today only on the project page module cards, via
+      `module.reorder`).
 - [ ] Per-module attribute applicability. Requested 2026-10-04. A project
       attribute definition can be marked as valid only for selected
       modules (`AttributeDefinition.modules`: list of module ids; absent /
@@ -544,7 +565,9 @@ to the categories above.
       unaffected. Persisted in `project.json` as an extension of the
       persisted module order (from the format-version item), with a format
       migration; templates may declare folders (e.g. `RBC_Template`:
-      Requirements/ StRS SyRS SwRS, Tests/ SysTest SwTest).
+      Requirements/ StRS SyRS SwRS, Tests/ SysTest SwTest). Needs a
+      PROJECT_FORMAT 1→2 migration turning `module_order` into ordered
+      module/folder entries (see `docs/ARCHITECTURE.md`).
 - [ ] Distribution package + user-space install. Requested 2026-10-04.
       (1) Packaging: a `pyproject.toml` for the backend with a `reqman`
       console script; the built frontend (`npm run build` → `dist/`) is
@@ -650,7 +673,9 @@ to the categories above.
       attribute definitions; add/rename/retire enum choices with migration
       across all requirement files; delete non-system attributes after a
       confirmation listing affected requirements; rename/delete modules and
-      projects (no such routes today); a `multi_enum` type. Pairs with the
+      projects (no such routes today); rename views (no route today; the
+      project's case-insensitive unique view-name check is ready for it);
+      a `multi_enum` type. Pairs with the
       `date`/`user` type item. Suggested 2026-10-04 (feature scout, seen in
       ReqView custom attributes). Not yet requested.
 - [ ] Tool qualification evidence pack (EN 50128 §6.7, likely class T2) —
@@ -669,6 +694,17 @@ to the categories above.
       or two attributes sharing a name, breaks re-import of a project's own
       CSV export — product decision needed: reject such names in
       `add_attribute_definition`, or match those columns by attribute id.
+- [ ] Project list with a project written by a newer ReqManTool. Follow-up
+      of the format-version item (2026-10-04); product decision pending.
+      Today one such project makes `GET /projects` / `project.list` fail as
+      a whole (409); alternative: list it as a greyed stub entry carrying
+      the error, like broken user templates.
+- [ ] Read all data files as `utf-8-sig` with an explicit encoding.
+      Follow-up of the format-version item (2026-10-04). `project.json`,
+      module, requirement and link-pair files are read with the locale
+      default encoding (`load_project`) and reject a UTF-8 BOM (templates
+      already accept one); `_check_project_format` also swallows JSON
+      errors (pre-existing).
 - [ ] User handling. Requested 2026-10-04; scope not yet narrowed down
       with the user. Changes the project scope (today: single-user local
       tool, no auth), so `.claude/CLAUDE.md` rule 7 must be lifted before

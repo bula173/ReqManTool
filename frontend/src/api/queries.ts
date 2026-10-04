@@ -283,6 +283,20 @@ export function useCreateModule(projectId: string) {
   });
 }
 
+/** Moves a module one place up or down in the project's module order. */
+export function useReorderModule(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, direction }: { id: string; direction: 'up' | 'down' }) =>
+      api.post<Module>(`/projects/${projectId}/modules/${id}/reorder`, { direction }),
+    onSuccess: () => {
+      // Only the list order (and the stored order in the project) changed.
+      qc.invalidateQueries({ queryKey: queryKeys.modules(projectId), exact: true });
+      qc.invalidateQueries({ queryKey: queryKeys.project(projectId), exact: true });
+    },
+  });
+}
+
 export function usePurgeModule(projectId: string, moduleId: string) {
   const qc = useQueryClient();
   return useMutation({

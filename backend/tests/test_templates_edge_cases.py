@@ -624,7 +624,13 @@ def test_save_as_template_rejects_case_insensitive_duplicate_names_on_rest_and_w
         expected = "duplicate module name 'alpha'"
     else:
         client.post(f"/projects/{project_id}/views", json={"name": "Main", "attribute_ids": []})
-        client.post(f"/projects/{project_id}/views", json={"name": "MAIN", "attribute_ids": []})
+        # Projects reject the duplicate now; older (hand-edited) data can still hold one.
+        resp = client.post(f"/projects/{project_id}/views", json={"name": "MAIN", "attribute_ids": []})
+        assert resp.status_code == 400, resp.text
+        path = tmp_path / project_id / "project.json"
+        data = json.loads(path.read_text())
+        data["views"].append({"id": "main-2", "name": "MAIN", "attribute_ids": []})
+        path.write_text(json.dumps(data, indent=2) + "\n")
         expected = "duplicate view name 'MAIN'"
 
     with client.websocket_connect("/ws") as ws1, client.websocket_connect("/ws") as ws2:
@@ -759,15 +765,19 @@ def test_legacy_project_without_parent_loads_and_is_only_rewritten_by_real_chang
 
     assert service.get_project("legacy").parent_project_id is None
     assert service.list_projects()[0].parent_project_id is None
-    module = service.create_module("legacy", "Reqs", "R")
     service.set_project_parent("legacy", None)  # already top level: no write
     service.list_projects()
+    service.list_modules("legacy")
     service.list_templates()
     assert path.read_text() == legacy
 
+    # Creating a module is a real change: it records the module order, and the
+    # file gains its format_version as first key.
+    module = service.create_module("legacy", "Reqs", "R")
     service.add_requirement("legacy", module.id, {"object_text": "x"})  # bumps id_counters
-    expected = json.loads(legacy)
+    expected = {"format_version": 1, **json.loads(legacy)}
     expected["id_counters"] = {"R": 1}
+    expected["module_order"] = [module.id]
     assert path.read_text() == json.dumps(expected, indent=2) + "\n"
     assert "parent_project_id" not in path.read_text()
 

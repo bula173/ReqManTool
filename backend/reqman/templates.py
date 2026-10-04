@@ -181,7 +181,7 @@ def read_builtin_template_text(local_id: str, directory: Path = BUILTIN_TEMPLATE
     # Looked up among the listed files, never by joining a raw id into a path.
     if local_id not in list_builtin_template_ids(directory):
         raise FileNotFoundError(f"Template '{make_template_id(BUILTIN_SOURCE, local_id)}' not found")
-    return (directory / f"{local_id}.json").read_text(encoding="utf-8")
+    return (directory / f"{local_id}.json").read_text(encoding="utf-8-sig")
 
 
 # --- shape validation --------------------------------------------------------
@@ -218,7 +218,12 @@ def _check_format_version(data: dict) -> int:
 
 
 def parse_template_text(text: str, template_id: str) -> Template:
-    """Parse JSON text into a ``Template``; raises ``ValueError`` describing the first problem."""
+    """Parse JSON text into a ``Template``; raises ``ValueError`` describing the first problem.
+
+    A leading UTF-8 byte order mark (as some editors save files) is ignored.
+    """
+    if text.startswith("\ufeff"):
+        text = text[1:]
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
