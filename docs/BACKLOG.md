@@ -278,6 +278,24 @@ custom report templates ❌.
 Ordered roughly by how directly each was requested / how foundational it is
 to the categories above.
 
+- [ ] Data format versions, persisted module order, and template/view
+      consistency fixes. Requested 2026-10-04. (1) Format versions:
+      `project.json` and the app config file (`.reqman/config.json`, later
+      the per-user config of the distribution item) carry an integer
+      `format_version` as their first key; module, requirement and
+      link-pair files are governed by their project's version. Files
+      without the key are version 1 (today's format) and keep loading
+      unchanged; the loader upgrades older versions in memory through
+      explicit, tested migration steps and writes the current version on
+      the next save; a file newer than the running tool supports is
+      rejected with a clear "written by a newer ReqManTool" error instead
+      of being misread or overwritten. Templates keep their own
+      `format_version`. (2) Module order: projects persist an explicit
+      module order (new modules appended; templates keep their declared
+      order, so `RBC_Template` shows StRS → SyRS → SwRS → SysTest → SwTest);
+      move up/down for modules in the UI, REST + WebSocket. (3) Projects
+      reject duplicate view names (case-insensitive, like templates).
+      (4) User template files saved with a UTF-8 BOM are accepted.
 - [ ] Application menu bar. Requested 2026-10-04. A desktop-style menu bar
       in the app shell (`frontend/src/layout/`), built on the existing
       features rather than duplicating their logic: **File** — New project
@@ -292,8 +310,7 @@ to the categories above.
       while a text field or inline cell editor has focus; **View** —
       attribute view selector, detail panel toggle, light/dark mode;
       **Help** — keyboard shortcuts, documentation links, About (tool
-      version + build, from the version item). Depends on the version and
-      template items above.
+      version + build, from the version item).
 - [ ] Multiple open modules (tabs), detachable module windows, and
       drag-and-drop linking. Requested 2026-10-04. (1) Tabs: opening a
       module adds a tab to a tab bar listing the open modules (project ·
