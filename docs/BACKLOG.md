@@ -348,6 +348,34 @@ to the categories above.
       applicability by module key (`RBC_Template`: test fields → SysTest/
       SwTest; SIL/Allocation/Verification Method → StRS/SyRS/SwRS).
       Needs a project format-version bump (format-version item).
+- [ ] AI prompt library (copy → external AI chat → CSV → import).
+      Requested 2026-10-04. No AI service is called by ReqManTool; the
+      user copies a generated prompt into any AI chat and imports the CSV
+      answer. (1) Prompts are JSON templates (built-in in
+      `backend/reqman/prompts/`, user ones in the data directory, never
+      listed as projects) with placeholders filled server-side from the
+      current context: project/module name and description, the module's
+      exact CSV import header (Id, Parent, applicable attributes with
+      types, required flags and enum choices), the selected requirements
+      as CSV, and import rules (server allocates ids, file Id is only a
+      Parent key, one CSV code block, no prose). (2) Built-in prompts:
+      draft requirements from a free-text description; decompose selected
+      StRS into SyRS; derive SwRS from selected SyRS; generate test cases
+      (Preconditions / Test Steps / Expected Result) for selected
+      requirements; split compound requirements; rewrite selected
+      requirements in EARS / INCOSE style; list ambiguities and missing
+      verification methods. (3) UI: Prompts dialog (menu bar + context
+      menus) — pick a prompt, optional free-text input, preview, Copy;
+      "Paste AI result" opens the CSV import with a paste-text box (today
+      file upload only), all-or-nothing validation and row errors as now;
+      a one-time notice that pasted requirements leave the machine.
+      (4) Import extensions this needs: an optional link column (e.g.
+      `Satisfies StRS` = existing target ids) creating links validated
+      against the module's link configurations, so decomposed SyRS stay
+      traced to their StRS; and an update mode matching existing
+      requirement ids, so rewrite prompts can modify instead of
+      duplicating (shows a diff preview before applying). Users can add,
+      edit, export and import their own prompts.
 - [ ] Multiple open modules (tabs), detachable module windows, and
       drag-and-drop linking. Requested 2026-10-04. (1) Tabs: opening a
       module adds a tab to a tab bar listing the open modules (project ·
