@@ -399,6 +399,16 @@ to the categories above.
       attribute and link), optional "lock after baseline". Complements
       git history; a baseline can be referenced by sign-off records,
       verification and test execution reports, and impact analysis.
+- [ ] Resizable table columns. Requested 2026-10-04. Drag a column header's
+      right edge to resize (requirements table, detail-panel label column,
+      report grids); double-click the edge to auto-fit to content; minimum
+      width so a column never disappears; long text wraps inside the
+      width (toggle wrap / single line per column). Widths are remembered
+      per browser per project+module (and per view), so they do not touch
+      the git-tracked data; a named view can optionally store its column
+      widths in `project.json` (`View.column_widths`, backward compatible)
+      so a shared view looks the same for everyone. "Reset column widths"
+      in the View menu and the column header menu.
 - [ ] Multiple open modules (tabs), detachable module windows, and
       drag-and-drop linking. Requested 2026-10-04. (1) Tabs: opening a
       module adds a tab to a tab bar listing the open modules (project ·
