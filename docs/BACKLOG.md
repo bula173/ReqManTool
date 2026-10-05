@@ -510,6 +510,28 @@ to the categories above.
       handling exists; no remotes/push in-app (the user pushes). The
       user's current data dir inside the ReqManTool checkout shows
       `nested`, so it gets no history until moved.
+- [ ] Git remotes: share projects between local tool instances (e.g. via
+      GitLab/GitHub). Requested 2026-10-05; builds on the git-integration
+      item. Each user runs their own local ReqManTool; a project's repo
+      gets a configurable remote. (1) Configure: per project set remote
+      URL (SSH or HTTPS; credentials stay with the user's git — ssh agent
+      / credential helper, never stored by ReqManTool), shown in the Git
+      panel; validated with `git ls-remote`. (2) Sync: explicit Push and
+      Pull/Fetch actions in the Git panel (and menu bar) — push `current`
+      and `baseline` branches plus `baseline/*` tags; pull with
+      fast-forward; a non-fast-forward or merge conflict is NOT
+      auto-merged: the project is flagged "sync conflict", mutations are
+      blocked until resolved (resolve in git by the user; a later item
+      may add in-app requirement-level merge). Auto-push after each
+      commit/baseline is an opt-in per-project setting. (3) Clone: "Add
+      project from remote" clones a repo into the data directory and
+      lists it as a project (validated like any loaded project).
+      (4) Concurrency: two instances editing the same project meet at
+      push time (reject + pull first); live-sync stays per-instance;
+      the user-handling item's ETag protection covers same-instance
+      conflicts. REST + WebSocket parity; all git calls via the existing
+      git_repo subprocess wrapper; remote operations never run
+      automatically without the opt-in.
 - [ ] Left-click and right-click menus everywhere. Requested 2026-10-04.
       Two distinct menus, adapted to what was clicked: **left click** opens
       a navigation/view menu (open, open in new tab, detach, show links,
