@@ -410,3 +410,130 @@ def requirement_history(
     blame = {key: value for key, value in blame.items() if key in latest_attrs}
     entries.reverse()
     return {"entries": entries, "blame": blame, "truncated": truncated}
+
+
+# --- baseline compare ----------------------------------------------------------
+
+
+def build_snapshot(files: dict[str, bytes | None]) -> dict[str, Any]:
+    """A structured snapshot of a project's data files (for ``compare_snapshots``).
+
+    ``files`` maps project-relative paths to raw bytes (a baseline's tree, or
+    the working files on disk). Unreadable or missing files are skipped.
+    Returns ``{"project", "modules": {id: dict}, "requirements": {module id:
+    {requirement id: dict}}, "links": {config id: {(source, target), ...}}}``.
+    """
+    snapshot: dict[str, Any] = {"project": None, "modules": {}, "requirements": {}, "links": {}}
+    for path, content in files.items():
+        parsed = _parse(content)
+        if parsed is None or parsed is _UNREADABLE:
+            continue
+        if _PROJECT_FILE.match(path):
+            snapshot["project"] = parsed if isinstance(parsed, dict) else None
+        elif match := _MODULE_FILE.match(path):
+            snapshot["modules"][match.group(1)] = parsed if isinstance(parsed, dict) else {}
+        elif match := _REQUIREMENT_FILE.match(path):
+            if isinstance(parsed, dict):
+                snapshot["requirements"].setdefault(match.group(1), {})[match.group(2)] = parsed
+        elif match := _LINK_FILE.match(path):
+            snapshot["links"][match.group(1)] = _pairs(parsed)
+    return snapshot
+
+
+def _attribute_definition_changes(old_project: Any, new_project: Any) -> dict[str, list[dict[str, Any]]]:
+    """Added/removed/changed attribute definitions between two project.json objects (system ones excluded)."""
+    before = _by_id(old_project.get("attributes") if isinstance(old_project, dict) else None)
+    after = _by_id(new_project.get("attributes") if isinstance(new_project, dict) else None)
+    entry = lambda item: {"id": item["id"], "name": str(item.get("name") or item["id"])}  # noqa: E731
+    return {
+        "added": [entry(a) for i, a in after.items() if i not in before and not a.get("system")],
+        "removed": [entry(a) for i, a in before.items() if i not in after and not a.get("system")],
+        "changed": [
+            entry(after[i])
+            for i in after
+            if i in before and after[i] != before[i] and not after[i].get("system")
+        ],
+    }
+
+
+def compare_snapshots(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    """Requirement-level differences between two project snapshots (``build_snapshot``).
+
+    Per module: requirement ids added/removed and, for requirements present
+    on both sides, per-attribute/parent/order diffs (``_attribute_diffs``;
+    link-mirror/system attributes are left out — the ``links`` section
+    describes them). Modules added/removed and attribute definition changes
+    are reported at summary level; link pair changes are listed per
+    configuration with its name.
+    """
+    naming = _naming([old.get("project"), new.get("project")])
+    module_ids = sorted(
+        set(old["modules"]) | set(new["modules"]) | set(old["requirements"]) | set(new["requirements"])
+    )
+    modules: list[dict[str, Any]] = []
+    added_total = removed_total = modified_total = 0
+    for module_id in module_ids:
+        old_reqs: dict[str, dict] = old["requirements"].get(module_id, {})
+        new_reqs: dict[str, dict] = new["requirements"].get(module_id, {})
+        in_old, in_new = module_id in old["modules"], module_id in new["modules"]
+        change = "added" if (in_new and not in_old) else "removed" if (in_old and not in_new) else None
+        added = sorted(set(new_reqs) - set(old_reqs))
+        removed = sorted(set(old_reqs) - set(new_reqs))
+        modified = []
+        for requirement_id in sorted(set(old_reqs) & set(new_reqs)):
+            diffs = [
+                diff
+                for diff in _attribute_diffs(old_reqs[requirement_id], new_reqs[requirement_id])
+                if not (diff["kind"] == "attribute" and diff["attribute_id"] in naming.system_attribute_ids)
+            ]
+            if diffs:
+                modified.append({"id": requirement_id, "diffs": diffs})
+        if not (change or added or removed or modified):
+            continue
+        module = new["modules"].get(module_id) or old["modules"].get(module_id) or {}
+        modules.append(
+            {
+                "module_id": module_id,
+                "name": str(module.get("name") or module_id),
+                "change": change,
+                "added": added,
+                "removed": removed,
+                "modified": modified,
+            }
+        )
+        added_total += len(added)
+        removed_total += len(removed)
+        modified_total += len(modified)
+
+    links_added: list[dict[str, str]] = []
+    links_removed: list[dict[str, str]] = []
+    for config_id in sorted(set(old["links"]) | set(new["links"])):
+        before, after = old["links"].get(config_id, set()), new["links"].get(config_id, set())
+        name = naming.link_names.get(config_id, config_id)
+        links_added += [
+            {"config_id": config_id, "name": name, "source_id": s, "target_id": t}
+            for s, t in sorted(after - before)
+        ]
+        links_removed += [
+            {"config_id": config_id, "name": name, "source_id": s, "target_id": t}
+            for s, t in sorted(before - after)
+        ]
+
+    attributes = _attribute_definition_changes(old.get("project"), new.get("project"))
+    return {
+        "modules": modules,
+        "attributes": attributes,
+        "links": {"added": links_added, "removed": links_removed},
+        "summary": {
+            "modules_added": sum(1 for m in modules if m["change"] == "added"),
+            "modules_removed": sum(1 for m in modules if m["change"] == "removed"),
+            "requirements_added": added_total,
+            "requirements_removed": removed_total,
+            "requirements_modified": modified_total,
+            "links_added": len(links_added),
+            "links_removed": len(links_removed),
+            "attributes_added": len(attributes["added"]),
+            "attributes_removed": len(attributes["removed"]),
+            "attributes_changed": len(attributes["changed"]),
+        },
+    }

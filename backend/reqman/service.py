@@ -30,9 +30,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .csv_import import RESERVED_COLUMNS
-from .formats import NewerFormatError
-from .git_repo import GitHistory, RepoConflict
-from .history import FileChange, describe_changes
+from .formats import PROJECT_FORMAT, NewerFormatError, upgrade
+from .git_repo import DEFAULT_LOG_LIMIT, LOG_LIMIT, GitHistory, RepoConflict
+from .history import FileChange, build_snapshot, compare_snapshots, describe_changes
 from .models import AttributeDefinition, LinkConfiguration, LinkPair, Module, Project, Requirement, View
 from .store import ProjectStore, validate_prefix
 from .templates import (
@@ -245,6 +245,179 @@ class ProjectService:
             self.store.requirement_relative_path(module_id, requirement_id),
             requirement_id,
         )
+
+    def git_log(self, project_id: str, limit: int | None = None) -> dict[str, Any]:
+        """The newest commits of the project's ``current`` branch (read-only, for the Git panel).
+
+        ``limit`` defaults to ``DEFAULT_LOG_LIMIT`` (20) and is capped at
+        ``LOG_LIMIT`` (200). A project without a readable repository answers
+        ``available: false`` with the reason instead of failing.
+        """
+        self.store.load_project(project_id)
+        if limit is None:
+            limit = DEFAULT_LOG_LIMIT
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            raise ValueError(f"Invalid limit {limit!r}: expected an integer >= 1")
+        return self.history.log(self.store.project_path(project_id), min(limit, LOG_LIMIT))
+
+    # --- baselines (git) ---------------------------------------------------------
+
+    def create_baseline(self, project_id: str, name: str, description: str = "") -> dict[str, Any]:
+        """Create a named baseline: commit pending changes, tag ``baseline/<name>``, fast-forward ``baseline``.
+
+        See ``GitHistory.create_baseline`` for the rules. A nested/foreign/
+        paused/absent repository, a duplicate name or a hand-moved
+        ``baseline`` branch is ``ConflictError`` (409); an invalid name or
+        git off/missing is ``ValueError`` (400).
+        """
+        self.store.load_project(project_id)
+        from . import __version__
+
+        try:
+            return self.history.create_baseline(
+                self.store.project_path(project_id),
+                name,
+                description or "",
+                __version__,
+                PROJECT_FORMAT.current,
+                self._describer(project_id),
+            )
+        except RepoConflict as exc:
+            raise ConflictError(str(exc)) from exc
+
+    def list_baselines(self, project_id: str) -> dict[str, Any]:
+        """The project's baselines (from its ``baseline/*`` tags), newest first. Read-only."""
+        self.store.load_project(project_id)
+        return self.history.list_baselines(self.store.project_path(project_id))
+
+    def _baseline_files(self, project_id: str, name: str) -> tuple[str, dict[str, bytes | None]]:
+        self.store.load_project(project_id)
+        return self.history.baseline_files(self.store.project_path(project_id), name)
+
+    def _baseline_project(self, project_id: str, name: str, files: dict[str, bytes | None]) -> Project:
+        """The baseline's project.json as a ``Project``, upgraded in memory like ``load_project``.
+
+        A baseline written by a newer ReqManTool raises ``NewerFormatError``
+        (REST 409); an unreadable one raises ``ValueError``.
+        """
+        what = f"Baseline '{name}' of project '{project_id}'"
+        raw = files.get("project.json")
+        if raw is None:
+            raise ValueError(f"{what} has no readable project.json")
+        try:
+            data = json.loads(raw.decode("utf-8-sig"))
+        except (ValueError, RecursionError) as exc:
+            raise ValueError(f"{what} has an invalid project.json: not valid JSON ({exc})") from exc
+        if not isinstance(data, dict):
+            raise ValueError(f"{what} has an invalid project.json: expected a JSON object")
+        try:
+            return Project.from_dict(upgrade(data, PROJECT_FORMAT, what))
+        except KeyError as exc:
+            raise ValueError(f"{what} has an invalid project.json: missing key {exc}") from exc
+        except (TypeError, AttributeError) as exc:
+            raise ValueError(f"{what} has an invalid project.json: {exc}") from exc
+
+    @staticmethod
+    def _baseline_modules(project: Project, files: dict[str, bytes | None]) -> list[Module]:
+        """The baseline's modules, in the baseline project's (tolerant) module order."""
+        modules: dict[str, Module] = {}
+        for path, content in files.items():
+            match = re.match(r"^modules/([^/]+)/module\.json$", path)
+            if match is None or content is None:
+                continue
+            try:
+                modules[match.group(1)] = Module.from_dict(json.loads(content.decode("utf-8-sig")))
+            except (ValueError, TypeError, KeyError, RecursionError):
+                continue  # an unreadable module file is skipped, like an unreadable requirement
+        order = [m for m in project.module_order if m in modules]
+        order += [m for m in sorted(modules) if m not in order]
+        seen: set[str] = set()
+        return [modules[m] for m in order if not (m in seen or seen.add(m))]
+
+    def get_baseline(self, project_id: str, name: str) -> dict[str, Any]:
+        """The project and modules as they were at baseline ``name``. Read-only.
+
+        Read from the tag's commit in memory, never from a checkout; a
+        missing baseline is 404 and a baseline written by a newer ReqManTool
+        is 409 (``NewerFormatError``).
+        """
+        commit, files = self._baseline_files(project_id, name)
+        project = self._baseline_project(project_id, name, files)
+        return {
+            "name": name,
+            "commit": commit,
+            "project": project.to_dict(),
+            "modules": [m.to_dict() for m in self._baseline_modules(project, files)],
+        }
+
+    def baseline_requirements(self, project_id: str, name: str, module_id: str) -> list[Requirement]:
+        """A module's requirements as they were at baseline ``name`` (read-only), sorted by id."""
+        commit, files = self._baseline_files(project_id, name)
+        project = self._baseline_project(project_id, name, files)  # also rejects a newer format
+        del commit, project
+        if f"modules/{module_id}/module.json" not in files:
+            raise FileNotFoundError(f"Module '{module_id}' not found in baseline '{name}'")
+        requirements = []
+        prefix = f"modules/{module_id}/requirements/"
+        for path, content in files.items():
+            if not (path.startswith(prefix) and content is not None):
+                continue
+            try:
+                requirements.append(Requirement.from_dict(json.loads(content.decode("utf-8-sig"))))
+            except (ValueError, TypeError, KeyError, RecursionError):
+                continue
+        return sorted(requirements, key=lambda r: r.id)
+
+    def _working_files(self, project_id: str) -> dict[str, bytes | None]:
+        """The project's data files as they are on disk now (including uncommitted changes)."""
+        root = self.store.project_path(project_id)
+        files: dict[str, bytes | None] = {}
+
+        def add(relative: str) -> None:
+            try:
+                files[relative] = (root / relative).read_bytes()
+            except OSError:
+                pass
+
+        add("project.json")
+        for module_id in self.store.list_module_ids(project_id):
+            add(f"modules/{module_id}/module.json")
+            for requirement_id in self.store.list_requirement_ids(project_id, module_id):
+                add(self.store.requirement_relative_path(module_id, requirement_id))
+        links_dir = root / "links"
+        if links_dir.is_dir():
+            for path in sorted(links_dir.glob("*.json")):
+                if not path.name.startswith("."):
+                    add(f"links/{path.name}")
+        return files
+
+    def compare_baselines(self, project_id: str, from_name: str, to_name: str) -> dict[str, Any]:
+        """Requirement-level differences between two baselines, or a baseline and ``current``.
+
+        ``current`` (either side) means the working files on disk, including
+        uncommitted changes. Read-only; a missing baseline is 404, a baseline
+        written by a newer ReqManTool is 409.
+        """
+        self.store.load_project(project_id)  # 404 / stub / newer-format of the live project
+
+        def side(name: str) -> tuple[dict[str, Any], dict[str, Any]]:
+            if name == "current":
+                files = self._working_files(project_id)
+                meta: dict[str, Any] = {"name": "current", "commit": None}
+            else:
+                commit, files = self._baseline_files(project_id, name)
+                meta = {"name": name, "commit": commit}
+            snapshot = build_snapshot(files)
+            if snapshot["project"] is not None:
+                what = (
+                    f"Project '{project_id}'" if name == "current" else f"Baseline '{name}' of project '{project_id}'"
+                )
+                snapshot["project"] = upgrade(snapshot["project"], PROJECT_FORMAT, what)
+            return meta, snapshot
+
+        from_meta, from_snapshot = side(from_name)
+        to_meta, to_snapshot = side(to_name)
+        return {"from": from_meta, "to": to_meta, **compare_snapshots(from_snapshot, to_snapshot)}
 
     # --- projects ----------------------------------------------------------
 

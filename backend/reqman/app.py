@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel
@@ -200,6 +200,11 @@ class SetProjectParentBody(BaseModel):
 
 
 class SaveAsTemplateBody(BaseModel):
+    name: str
+    description: str = ""
+
+
+class CreateBaselineBody(BaseModel):
     name: str
     description: str = ""
 
@@ -384,6 +389,52 @@ async def enable_git_history(project_id: str):
         raise
     await manager.broadcast(project_id)
     return status
+
+
+@app.get("/projects/{project_id}/git/log")
+def get_git_log(project_id: str, limit: int = Query(default=20, ge=1)):
+    return _wrap(service.git_log, project_id, limit)
+
+
+# --- baselines (git) ----------------------------------------------------------
+
+
+@app.post("/projects/{project_id}/baselines")
+async def create_baseline(project_id: str, body: CreateBaselineBody):
+    try:
+        baseline = _wrap(service.create_baseline, project_id, body.name, body.description)
+    except HTTPException as exc:
+        # A part-way failure (BaselineFailed) may have committed pending changes.
+        if _changed_despite_failure(exc.__cause__):
+            await manager.broadcast(project_id)
+        raise
+    await manager.broadcast(project_id)
+    return baseline
+
+
+@app.get("/projects/{project_id}/baselines")
+def list_baselines(project_id: str):
+    return _wrap(service.list_baselines, project_id)
+
+
+# Declared before /baselines/{name}; the name "compare" is reserved.
+@app.get("/projects/{project_id}/baselines/compare")
+def compare_baselines(
+    project_id: str,
+    from_name: str = Query(alias="from"),
+    to_name: str = Query(alias="to"),
+):
+    return _wrap(service.compare_baselines, project_id, from_name, to_name)
+
+
+@app.get("/projects/{project_id}/baselines/{name}")
+def get_baseline(project_id: str, name: str):
+    return _wrap(service.get_baseline, project_id, name)
+
+
+@app.get("/projects/{project_id}/baselines/{name}/modules/{module_id}/requirements")
+def list_baseline_requirements(project_id: str, name: str, module_id: str):
+    return [r.to_dict() for r in _wrap(service.baseline_requirements, project_id, name, module_id)]
 
 
 @app.post("/projects/{project_id}/attributes")
@@ -660,6 +711,16 @@ RPC_METHODS = {
     "project.purge": lambda p: {"purged": service.purge_project(p["id"])},
     "project.git_status": lambda p: service.git_status(p["id"]),
     "project.git_enable": lambda p: service.enable_history(p["id"]),
+    "project.git_log": lambda p: service.git_log(p["id"], p.get("limit")),
+    "baseline.create": lambda p: service.create_baseline(
+        p["project_id"], p["name"], p.get("description", "")
+    ),
+    "baseline.list": lambda p: service.list_baselines(p["project_id"]),
+    "baseline.get": lambda p: service.get_baseline(p["project_id"], p["name"]),
+    "baseline.requirements": lambda p: service.baseline_requirements(
+        p["project_id"], p["name"], p["module_id"]
+    ),
+    "baseline.compare": lambda p: service.compare_baselines(p["project_id"], p["from"], p["to"]),
     "attribute.add": lambda p: service.add_attribute_definition(
         p["project_id"], p["id"], p["name"], p.get("type", "string"),
         p.get("required", False), p.get("default"), p.get("choices"),
@@ -736,7 +797,8 @@ def _error_response(request_id, code: int, message: str) -> dict:
 
 
 MUTATING_METHODS = {
-    "project.create", "project.set_parent", "project.purge", "project.git_enable", "attribute.add",
+    "project.create", "project.set_parent", "project.purge", "project.git_enable", "baseline.create",
+    "attribute.add",
     "module.create", "module.purge", "module.reorder",
     "link_configuration.create", "link_configuration.remove",
     "view.create", "view.remove",

@@ -76,6 +76,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -85,6 +86,28 @@ logger = logging.getLogger("reqman.git")
 
 WORKING_BRANCH = "current"
 WORKING_REF = f"refs/heads/{WORKING_BRANCH}"
+# Baselines: creating one fast-forwards ``refs/heads/baseline`` to ``current``
+# (never a merge) and adds an annotated ``baseline/<name>`` tag. Both then
+# contain the baselined commit, so the squash rule (no ref other than
+# ``refs/heads/current`` contains HEAD) never amends it.
+BASELINE_BRANCH = "baseline"
+BASELINE_REF = f"refs/heads/{BASELINE_BRANCH}"
+BASELINE_TAG_PREFIX = "baseline/"
+# Conservative baseline names: they appear in tag refs, URLs and the UI.
+# ``git check-ref-format`` is run as well (belt and braces).
+BASELINE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+MAX_BASELINE_NAME_LENGTH = 100
+# ``current`` names the working state in compare requests; ``compare`` is a
+# REST path segment under /baselines/.
+RESERVED_BASELINE_NAMES = frozenset({"current", "compare"})
+# Trailers of the annotated tag's message (machine-readable baseline facts).
+BASELINE_TRAILER = "Reqman-Baseline"
+BASELINE_DATE_TRAILER = "Reqman-Baseline-Date"
+BASELINE_TOOL_TRAILER = "Reqman-Tool-Version"
+BASELINE_FORMAT_TRAILER = "Reqman-Project-Format"
+_TRAILER_LINE = re.compile(r"^(Reqman-[A-Za-z-]+):[ \t]*(.*)$")
+DEFAULT_LOG_LIMIT = 20
+LOG_LIMIT = 200
 # The data files ReqManTool owns inside a project folder (see store.py), each
 # kind with its pathspec: only these are ever staged, committed or counted.
 # (``*`` in a ``:(glob)`` pathspec does not match ``/``.) Names starting with
@@ -186,6 +209,97 @@ class EnableFailed(ValueError):
     """
 
     project_changed = True
+
+
+class BaselineFailed(ValueError):
+    """Creating a baseline failed part-way (REST 400).
+
+    The pending-changes commit may already exist (which is a consistent
+    state on its own — the same commit an auto-commit would have made), so
+    callers broadcast a project change even though the request failed.
+    """
+
+    project_changed = True
+
+
+def validate_baseline_name(name: str) -> str:
+    """The trimmed baseline name, or ``ValueError`` explaining the rule.
+
+    Allowed: 1–100 characters of ``A-Za-z0-9._-``, starting with a letter or
+    digit, without ``..``, not ending in ``.`` or ``.lock``, and not the
+    reserved words ``current`` or ``compare``. (A subset of what
+    ``git check-ref-format`` allows for ``refs/tags/baseline/<name>``, which
+    is checked as well when the tag is made.)
+    """
+    name = (name or "").strip()
+    rule = (
+        "a baseline name must be 1–100 characters of letters, digits, '.', '_' or '-', start "
+        "with a letter or digit, contain no '..' and not end in '.' or '.lock'"
+    )
+    if not name:
+        raise ValueError(f"Baseline name must not be empty: {rule}")
+    if (
+        len(name) > MAX_BASELINE_NAME_LENGTH
+        or not BASELINE_NAME_PATTERN.match(name)
+        or ".." in name
+        or name.endswith(".")
+        or name.endswith(".lock")
+    ):
+        raise ValueError(f"Invalid baseline name '{name}': {rule}")
+    if name in RESERVED_BASELINE_NAMES:
+        raise ValueError(f"Invalid baseline name '{name}': the name is reserved")
+    return name
+
+
+def _parse_baseline_message(message: str) -> dict[str, Any]:
+    """Description and ``Reqman-*`` trailers of a baseline tag message.
+
+    The message is ``Baseline <name>``, an optional description paragraph
+    and a final paragraph of ``Reqman-*: value`` trailers; the description
+    is everything between the subject and the trailers.
+    """
+    paragraphs = [p for p in message.strip().split("\n\n") if p.strip()]
+    trailers: dict[str, str] = {}
+    if paragraphs:
+        matches = [_TRAILER_LINE.match(line) for line in paragraphs[-1].splitlines()]
+        if matches and all(matches):
+            trailers = {m.group(1): m.group(2).strip() for m in matches if m}
+            paragraphs = paragraphs[:-1]
+    description = "\n\n".join(paragraphs[1:]) if len(paragraphs) > 1 else ""
+    raw_format = trailers.get(BASELINE_FORMAT_TRAILER, "")
+    return {
+        "description": description,
+        "date": trailers.get(BASELINE_DATE_TRAILER),
+        "tool_version": trailers.get(BASELINE_TOOL_TRAILER) or None,
+        "format_version": int(raw_format) if raw_format.isdigit() else None,
+    }
+
+
+_TAGGER_LINE = re.compile(rb"^tagger (.*?) <(.*?)> (\d+)(?: ([+-]\d{4}))?$")
+
+
+def _parse_tag_object(raw: bytes) -> dict[str, Any]:
+    """Tagger and message fields of a raw annotated tag object (``cat-file``)."""
+    header, _sep, message = raw.partition(b"\n\n")
+    tagger = None
+    tagger_date = None
+    for line in header.splitlines():
+        match = _TAGGER_LINE.match(line)
+        if match:
+            tagger = {
+                "name": match.group(1).decode("utf-8", "replace"),
+                "email": match.group(2).decode("utf-8", "replace"),
+            }
+            try:
+                offset = match.group(4).decode() if match.group(4) else "+0000"
+                tz = timezone(
+                    timedelta(hours=int(offset[:3]), minutes=int(offset[0] + offset[3:]))
+                )
+                tagger_date = datetime.fromtimestamp(int(match.group(3)), tz).isoformat()
+            except (ValueError, OverflowError, OSError):
+                tagger_date = None
+    fields = _parse_baseline_message(message.decode("utf-8", "replace"))
+    return {**fields, "tagger": tagger, "tagger_date": tagger_date}
 
 
 def data_pathspec(path: str) -> str | None:
@@ -684,8 +798,18 @@ class GitHistory:
         others = [r for r in refs.stdout.decode("utf-8", "replace").split() if r != WORKING_REF]
         return not others
 
-    def _blobs(self, info: RepoInfo, specs: list[str], read_only: bool = False) -> list[bytes | None]:
-        """Contents of ``<rev>:<path>`` specs via one ``git cat-file --batch`` (``None`` if missing)."""
+    def _blobs(
+        self,
+        info: RepoInfo,
+        specs: list[str],
+        read_only: bool = False,
+        kinds: tuple[bytes, ...] = (b"blob",),
+    ) -> list[bytes | None]:
+        """Contents of object specs via one ``git cat-file --batch`` (``None`` if missing).
+
+        Only objects of the wanted ``kinds`` (blobs by default; tag objects
+        for reading baseline tags) return their bytes; anything else is ``None``.
+        """
         if not specs:
             return []
         result = self._repo(
@@ -700,7 +824,7 @@ class GitHistory:
             pos = end + 1
             if len(header) == 3 and header[1] in (b"blob", b"tree", b"commit", b"tag"):
                 size = int(header[2])
-                blobs.append(out[pos : pos + size] if header[1] == b"blob" else None)
+                blobs.append(out[pos : pos + size] if header[1] in kinds else None)
                 pos += size + 1
             else:  # "<spec> missing" / "ambiguous"
                 blobs.append(None)
@@ -946,6 +1070,267 @@ class GitHistory:
                 self._record(project_dir, f"Enabling history failed: {exc}")
                 raise EnableFailed(f"Enabling history failed: {exc}") from exc
             self._record(project_dir, None)
+
+    # --- baselines ---------------------------------------------------------------
+
+    def _rev(self, info: RepoInfo, ref: str) -> str | None:
+        """The commit a ref resolves to, or ``None`` if it does not exist."""
+        result = self._repo(info, ["rev-parse", "-q", "--verify", f"{ref}^{{commit}}"], check=False, read_only=True)
+        if result.returncode != 0:
+            return None
+        return result.stdout.decode("utf-8", "replace").strip() or None
+
+    def create_baseline(
+        self,
+        project_dir: Path,
+        name: str,
+        description: str,
+        tool_version: str,
+        format_version: int,
+        describe: Callable[[list[FileChange]], list[str]],
+    ) -> dict[str, Any]:
+        """Create baseline ``name``: commit pending changes, tag, fast-forward ``baseline``.
+
+        Order (so a mid-way failure leaves a consistent state): every check
+        that can refuse runs first and changes nothing; then (1) pending data
+        changes are committed — exactly the commit the next auto-commit would
+        have made, consistent on its own; (2) the annotated tag
+        ``baseline/<name>`` is created at HEAD; (3) ``refs/heads/baseline``
+        is fast-forwarded to HEAD with a compare-and-swap on its old value —
+        if that fails, the tag is deleted again. Once the tag and branch
+        contain HEAD, the squash rule (ref containment) makes sure no later
+        change ever amends the baselined commit, which also closes the
+        squash window.
+
+        Raises ``ValueError`` for an invalid name or git off/missing,
+        ``RepoConflict`` (409) when the folder is not ``ready``, the tag
+        exists, or ``baseline`` was moved by hand so it is no longer an
+        ancestor of ``current``, and ``BaselineFailed`` when a later step
+        failed (recorded as ``last_error``).
+        """
+        name = validate_baseline_name(name)
+        if not self.settings.enabled:
+            raise ValueError(
+                "Git history is turned off for this server (REQMAN_GIT=off); baselines need history"
+            )
+        with self._lock(project_dir):
+            info = self.detect(project_dir)
+            if info.state in (STATE_GIT_MISSING, STATE_ERROR, STATE_OFF):
+                raise ValueError(info.message or "git is not available")
+            if info.state != STATE_READY:
+                raise RepoConflict(
+                    info.message
+                    or "The project is not recording history, so a baseline cannot be created"
+                )
+            tag_ref = f"refs/tags/{BASELINE_TAG_PREFIX}{name}"
+            fmt = self._repo(info, ["check-ref-format", tag_ref], check=False, read_only=True)
+            if fmt.returncode != 0:
+                raise ValueError(f"Invalid baseline name '{name}': git does not accept it as a tag name")
+            if self._rev(info, tag_ref) is not None:
+                raise RepoConflict(f"A baseline named '{name}' already exists")
+            if self._head(info) is None and not self._changed_paths(info, read_only=True):
+                raise RepoConflict("The project has no commit and no changes yet; nothing to baseline")
+            old_baseline = self._rev(info, BASELINE_REF)
+            if old_baseline is not None:
+                ancestor = self._repo(
+                    info, ["merge-base", "--is-ancestor", old_baseline, "HEAD"], check=False, read_only=True
+                )
+                if ancestor.returncode == 1:
+                    raise RepoConflict(
+                        f"The '{BASELINE_BRANCH}' branch is not an ancestor of '{WORKING_BRANCH}' (it was "
+                        "moved by hand); nothing was changed. Move it back onto the "
+                        f"'{WORKING_BRANCH}' history to create baselines again."
+                    )
+                if ancestor.returncode != 0:
+                    raise RepoConflict(f"git merge-base failed: {_stderr(ancestor)}")
+            try:
+                # (1) The baseline covers exactly what is on disk.
+                self._commit_pending(info, describe)
+                head = self._head(info)
+                if head is None:
+                    raise GitError("the repository has no commit to baseline")
+                date = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                parts = [f"Baseline {name}"]
+                if description.strip():
+                    parts.append(description.strip())
+                parts.append(
+                    "\n".join(
+                        [
+                            f"{BASELINE_TRAILER}: {name}",
+                            f"{BASELINE_DATE_TRAILER}: {date}",
+                            f"{BASELINE_TOOL_TRAILER}: {tool_version}",
+                            f"{BASELINE_FORMAT_TRAILER}: {format_version}",
+                        ]
+                    )
+                )
+                message = "\n\n".join(parts) + "\n"
+                tagger_name, tagger_email = self._identity(info)
+                env = {
+                    "GIT_AUTHOR_NAME": tagger_name,
+                    "GIT_AUTHOR_EMAIL": tagger_email,
+                    "GIT_COMMITTER_NAME": tagger_name,
+                    "GIT_COMMITTER_EMAIL": tagger_email,
+                }
+                # (2) The tag (the baseline's source of truth), …
+                self._repo(
+                    info,
+                    ["-c", "tag.gpgsign=false", "tag", "-a", f"{BASELINE_TAG_PREFIX}{name}", "-F", "-", "HEAD"],
+                    input=message.encode("utf-8"),
+                    env=env,
+                )
+                # … then (3) the branch, compare-and-swapped against the value
+                # checked above; if it fails, the tag is removed again.
+                try:
+                    self._repo(info, ["update-ref", BASELINE_REF, head.commit, old_baseline or ""])
+                except GitError:
+                    self._repo(info, ["update-ref", "-d", tag_ref], check=False)
+                    raise
+            except RepoConflict:
+                raise
+            except Exception as exc:  # noqa: BLE001 - reported as a 400 with the recorded error
+                if not isinstance(exc, (GitError, OSError)):
+                    logger.exception("Unexpected error creating a baseline for %s", project_dir)
+                self._record(project_dir, f"Creating baseline '{name}' failed: {exc}")
+                raise BaselineFailed(f"Creating baseline '{name}' failed: {exc}") from exc
+            self._record(project_dir, None)
+            return {
+                "name": name,
+                "commit": head.commit,
+                "annotated": True,
+                "description": description.strip(),
+                "date": date,
+                "tagger": {"name": tagger_name, "email": tagger_email},
+                "tagger_date": date,
+                "tool_version": tool_version,
+                "format_version": format_version,
+            }
+
+    def list_baselines(self, project_dir: Path) -> dict[str, Any]:
+        """The project's baselines from its ``baseline/*`` tags, newest first.
+
+        A lightweight or foreign ``baseline/*`` tag (no annotated tag object,
+        or a message without the ``Reqman-*`` trailers) is listed too, with
+        ``annotated``/``description``/version fields reduced accordingly, so
+        a tag the user made by hand still shows up. ``available: false`` with
+        a ``reason`` when the project has no readable repository.
+        """
+        info = self.detect(project_dir)
+        empty: dict[str, Any] = {"available": False, "reason": info.message, "baselines": []}
+        if info.state not in (STATE_READY, STATE_PAUSED):
+            return empty
+        try:
+            result = self._repo(
+                info,
+                [
+                    "for-each-ref",
+                    "--sort=-creatordate",
+                    "--format=%(refname)%00%(objecttype)%00%(objectname)%00%(*objectname)%00%(creatordate:iso-strict)",
+                    f"refs/tags/{BASELINE_TAG_PREFIX}",
+                ],
+                read_only=True,
+            )
+            rows = [
+                line.split("\x00")
+                for line in result.stdout.decode("utf-8", "replace").splitlines()
+                if line.count("\x00") == 4
+            ]
+            tag_objects = iter(
+                self._blobs(
+                    info, [row[2] for row in rows if row[1] == "tag"], read_only=True, kinds=(b"tag",)
+                )
+            )
+            baselines = []
+            for refname, objecttype, objectname, peeled, created in rows:
+                entry: dict[str, Any] = {
+                    "name": refname.removeprefix(f"refs/tags/{BASELINE_TAG_PREFIX}"),
+                    "commit": peeled or objectname,
+                    "annotated": objecttype == "tag",
+                    "description": None,
+                    "date": created or None,
+                    "tagger": None,
+                    "tagger_date": None,
+                    "tool_version": None,
+                    "format_version": None,
+                }
+                if objecttype == "tag":
+                    raw = next(tag_objects)
+                    if raw is not None:
+                        fields = _parse_tag_object(raw)
+                        entry.update(fields)
+                        entry["date"] = fields.get("date") or fields.get("tagger_date") or entry["date"]
+                baselines.append(entry)
+            return {"available": True, "reason": None, "baselines": baselines}
+        except GitError as exc:
+            return {**empty, "reason": f"The baselines cannot be read: {exc}"}
+
+    def baseline_files(self, project_dir: Path, name: str) -> tuple[str, dict[str, bytes | None]]:
+        """``(commit, {relative path: bytes})`` of the data files at baseline ``name``.
+
+        Read from the tag's commit in memory (``ls-tree`` + ``cat-file
+        --batch``), never a checkout. ``FileNotFoundError`` when the baseline
+        (or a readable repository) does not exist.
+        """
+        missing = FileNotFoundError(f"Baseline '{name}' not found")
+        if not BASELINE_NAME_PATTERN.match(name or ""):
+            raise missing
+        info = self.detect(project_dir)
+        if info.state not in (STATE_READY, STATE_PAUSED):
+            raise missing
+        commit = self._rev(info, f"refs/tags/{BASELINE_TAG_PREFIX}{name}")
+        if commit is None:
+            raise missing
+        tree = self._repo(info, ["ls-tree", "-r", "-z", "--name-only", commit], read_only=True)
+        paths = [
+            p
+            for p in tree.stdout.decode("utf-8", "surrogateescape").split("\x00")
+            if p and data_pathspec(p) is not None
+        ]
+        blobs = self._blobs(info, [f"{commit}:{path}" for path in paths], read_only=True)
+        return commit, dict(zip(paths, blobs))
+
+    def log(self, project_dir: Path, limit: int) -> dict[str, Any]:
+        """The newest ``limit`` commits of ``current`` (first-parent, newest first), for the Git panel."""
+        info = self.detect(project_dir)
+        empty: dict[str, Any] = {"available": False, "reason": info.message, "entries": [], "truncated": False}
+        if info.state not in (STATE_READY, STATE_PAUSED):
+            return empty
+        try:
+            if self._head(info, read_only=True) is None:
+                return {**empty, "available": True, "reason": None}
+            result = self._repo(
+                info,
+                [
+                    "log",
+                    "--first-parent",
+                    "--no-show-signature",
+                    f"--max-count={limit + 1}",
+                    "--format=%x1e%H%x1f%an%x1f%ae%x1f%aI%x1f%cI%x1f%s",
+                    "HEAD",
+                ],
+                read_only=True,
+            )
+            entries = []
+            for record in result.stdout.decode("utf-8", "replace").split("\x1e"):
+                meta = record.strip("\n").split("\x1f")
+                if len(meta) >= 6:
+                    entries.append(
+                        {
+                            "commit": meta[0],
+                            "author_name": meta[1],
+                            "author_email": meta[2],
+                            "authored_date": meta[3],
+                            "date": meta[4],
+                            "subject": meta[5],
+                        }
+                    )
+            return {
+                "available": True,
+                "reason": None,
+                "entries": entries[:limit],
+                "truncated": len(entries) > limit,
+            }
+        except GitError as exc:
+            return {**empty, "reason": f"The log cannot be read: {exc}"}
 
     # --- reading ----------------------------------------------------------------
 

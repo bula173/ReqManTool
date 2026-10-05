@@ -624,8 +624,66 @@ so a project's repository never contains another project's files.
   differs from HEAD. A project without a readable repository (off, git
   missing, no repository, nested, foreign) answers `available: false` with
   the `reason`, not an error; a missing requirement is 404.
-- Not yet (later slices): baselines (`baseline` branch, `baseline/<name>`
-  tags, browse/compare), the project Git panel, remotes.
+- **Baselines** (`POST/GET /projects/{id}/baselines`, WS
+  `baseline.create`/`baseline.list`): a baseline is a named, immutable
+  snapshot. Creating one (only in state `ready`; otherwise 409, or 400 when
+  git is off/missing, like "Enable history") first commits any pending data
+  changes (so the baseline covers exactly what is on disk), then creates an
+  annotated tag `baseline/<name>` at HEAD whose message carries the
+  description plus parseable trailers (`Reqman-Baseline`,
+  `Reqman-Baseline-Date`, `Reqman-Tool-Version`, `Reqman-Project-Format`;
+  tagger = the configured author), then **fast-forwards**
+  `refs/heads/baseline` to HEAD (`git update-ref` with a compare-and-swap
+  on its old value; the branch is created if missing, and never merged). If
+  `baseline` is not an ancestor of `current` (moved by hand), the request is
+  refused with 409 and nothing changes. Steps are ordered so a mid-way
+  failure stays consistent: the pending-changes commit is exactly what an
+  auto-commit would have made; a failed branch update deletes the tag again;
+  a failure is 400 with `last_error` recorded and still broadcasts `changed`.
+  Since tag and branch then contain HEAD, the squash rule (ref containment)
+  guarantees the baselined commit is never amended — creating a baseline
+  also closes the squash window. Names: trimmed, 1–100 characters of
+  `A-Za-z0-9._-`, starting with a letter or digit, no `..`, not ending in
+  `.` or `.lock`, not `current`/`compare` (reserved), checked with
+  `git check-ref-format`; a duplicate is 409. Baselines are listed from the
+  `baseline/*` tags, newest first; a lightweight or foreign tag (made by
+  hand) is listed too with reduced fields (`annotated: false`, no
+  description/versions).
+- **Browsing a baseline** (`GET /projects/{id}/baselines/{name}` — project +
+  modules — and `GET .../baselines/{name}/modules/{m}/requirements`; WS
+  `baseline.get`/`baseline.requirements`; read-only, no mutation accepts a
+  baseline): the data files are read from the tag's commit in memory
+  (`ls-tree` + `cat-file --batch`), never through a checkout, and parsed
+  with the normal model path (in-memory format upgrade; a baseline written
+  by a newer ReqManTool is 409). A missing baseline or module is 404.
+- **Comparing** (`GET /projects/{id}/baselines/compare?from=<name>&to=<name|current>`,
+  WS `baseline.compare` `{project_id, from, to}`; read-only): `current`
+  means the working files on disk including uncommitted changes. The two
+  snapshots are compared requirement-level (`history.build_snapshot`/
+  `compare_snapshots`): per module, requirement ids added/removed and
+  per-attribute/parent/order diffs for modified ones (link-mirror/system
+  attributes are left out — the `links` section lists added/removed pairs
+  per configuration instead); modules added/removed and attribute
+  definition changes are reported at summary level, plus a numeric
+  `summary`. Both sides are read with one `ls-tree` and one `cat-file
+  --batch` (or straight from disk), so a few thousand requirements compare
+  in memory without extra git calls.
+- **Recent commits** (`GET /projects/{id}/git/log?limit=` — default 20, cap
+  200 — WS `project.git_log`, read-only): the first-parent log of
+  `current`, newest first, for the project Git panel.
+- **Frontend**: `GitStatusPanel.tsx` is the project Git panel (state,
+  branch, pending changes, warnings, Enable, the last commits, and the
+  baselines table with Create — `CreateBaselineModal.tsx` — Browse and
+  Compare). `BaselinePage.tsx` (`/projects/{id}/baselines/{name}`) shows a
+  baseline read-only ("Baseline <name> (read-only)": module picker plus the
+  requirement tree, no editing, no context menus);
+  `BaselineComparePage.tsx` (`/projects/{id}/baselines/compare?from=&to=`)
+  picks both sides (baseline or current) and renders the summary and
+  per-requirement change list. Baseline and git-log queries live under the
+  project's query-key prefix, so live sync refreshes them; every local
+  mutation invalidates the `git` and `baselines` keys.
+- Not yet (later slices): remotes/push, `merge --squash` of user branches,
+  a settings UI.
 
 ## Backend layering
 
@@ -705,7 +763,8 @@ resource:
 | Resource | Routes |
 |---|---|
 | Projects | `POST/GET /projects` (`GET` lists unloadable projects as `{id, name, error}` stubs; `POST` body: `name`, `description`, optional `template_id`, optional `parent_project_id`), `GET /projects/{id}`, `PUT /projects/{id}/parent` (`{"parent_project_id": id or null}`) |
-| History (git) | `GET /projects/{id}/git` (status; WS `project.git_status`), `POST /projects/{id}/git/enable` (WS `project.git_enable`, broadcasts `changed`, also after a part-way failure; 409 nested/foreign/detached/merge etc. in progress/`current` not checked out, 400 git off or missing or a failed step), `GET .../modules/{m}/requirements/{r}/history` (WS `requirement.history`) — see "Project history (git)" |
+| History (git) | `GET /projects/{id}/git` (status; WS `project.git_status`), `POST /projects/{id}/git/enable` (WS `project.git_enable`, broadcasts `changed`, also after a part-way failure; 409 nested/foreign/detached/merge etc. in progress/`current` not checked out, 400 git off or missing or a failed step), `GET /projects/{id}/git/log?limit=` (WS `project.git_log`), `GET .../modules/{m}/requirements/{r}/history` (WS `requirement.history`) — see "Project history (git)" |
+| Baselines (git) | `POST /projects/{id}/baselines` (`{name, description}`; WS `baseline.create`, broadcasts `changed`; 409 duplicate name / not `ready` / `baseline` moved by hand, 400 invalid name or git off/missing), `GET /projects/{id}/baselines` (WS `baseline.list`), `GET /projects/{id}/baselines/{name}` (WS `baseline.get`; 409 for a newer-format baseline), `GET .../baselines/{name}/modules/{m}/requirements` (WS `baseline.requirements`), `GET /projects/{id}/baselines/compare?from=&to=` (`to`/`from` = a baseline name or `current`; WS `baseline.compare`) — reads are read-only; see "Project history (git)" |
 | Templates | `GET /templates` → `[{id, source, name, description, modules: [{key, name, prefix}], error}]`, `POST /projects/{id}/save-as-template` (`{name, description}`; 409 on a name clash; broadcasts `templates_changed`), `POST /templates/import` (raw template JSON request body, `Content-Type: application/json` required (415 otherwise), UTF-8 with optional BOM, at most 1 MiB (413); invalid → 400, name clash → 409; returns the template summary; broadcasts `templates_changed`; WS: `template.import` `{text}`) |
 | Attributes | `POST /projects/{id}/attributes` |
 | Link configurations | `POST/GET /projects/{id}/link-configurations`, `DELETE .../link-configurations/{config_id}` |
@@ -779,6 +838,7 @@ frontend/src/
                     LinkConfigurationModal, RequirementFormModal, LinkModal,
                     MoveRequirementModal, FolderPickerModal,
                     SaveAsTemplateModal, ProjectParentModal,
+                    CreateBaselineModal,
                     EditableAttributeCell, DataDirSettings, Sidebar).
                     NewProjectModal picks an optional template and parent;
                     Sidebar renders projects as a tree by
@@ -786,11 +846,20 @@ frontend/src/
                     indented project options, descendant lookup)
   pages/
     HomePage.tsx     redirects to the first project, or an empty state
-    ProjectPage.tsx  project overview: parent/subprojects, history (git)
-                     status line (GitStatusPanel: state, last commit,
-                     pending changes, warnings, Enable history), attributes,
-                     link configurations, views, modules; New subproject,
+    ProjectPage.tsx  project overview: parent/subprojects, the Git panel
+                     (GitStatusPanel: state, branch, pending changes,
+                     warnings, Enable history, last commits, baselines with
+                     create/browse/compare), attributes, link
+                     configurations, views, modules; New subproject,
                      Change parent and Save as template actions
+    BaselinePage.tsx read-only view of the project at a baseline
+                     ("Baseline <name> (read-only)"); no editing, no
+                     context menus (/projects/{id}/baselines/{name})
+    BaselineComparePage.tsx
+                     baseline ↔ baseline/current comparison: side pickers,
+                     summary, per-module requirement changes, attribute
+                     definition and link changes
+                     (/projects/{id}/baselines/compare?from=&to=)
     ModulePage.tsx   the requirements tree/table — the largest page;
                      owns the tree-flattening logic and renders the
                      right-click context menu from the action registry;

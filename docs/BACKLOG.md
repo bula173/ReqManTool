@@ -397,6 +397,67 @@
       and an isolated git config); suite runtime about 27 s → 90 s. Not
       covered (see backlog): baselines, the full project Git panel and
       the 2a follow-ups; the UI was not tried in a browser.
+- [x] Git integration, slice 2b: baselines + project Git panel.
+      (1) Create: `POST /projects/{id}/baselines` `{name, description}`
+      and WebSocket `baseline.create` (broadcasts `changed`, also after a
+      part-way failure); allowed only in state `ready` (otherwise 409 /
+      -32602; git off/missing → 400). Refusals run first and change
+      nothing: name rule (trimmed, 1–100 chars of `A-Za-z0-9._-`, starts
+      with a letter/digit, no `..`, not ending `.`/`.lock`, reserved
+      `current` and `compare`, verified with `git check-ref-format`),
+      duplicate tag → 409, and `baseline` must be an ancestor of
+      `current` (`merge-base --is-ancestor`) → otherwise 409. Then
+      pending data changes are committed (the baseline covers exactly
+      what is on disk; the squash window closes via ref containment),
+      the annotated tag `baseline/<name>` is created at HEAD (subject
+      `Baseline <name>`, description verbatim, trailers Reqman-Baseline,
+      Reqman-Baseline-Date, Reqman-Tool-Version, Reqman-Project-Format;
+      tagger = configured author), and `refs/heads/baseline` is
+      fast-forwarded with an `update-ref` compare-and-swap — if that
+      fails the tag is deleted again. Later failures → `BaselineFailed`
+      400 with `last_error` and a `changed` broadcast. (2) List: `GET
+      /projects/{id}/baselines` / WS `baseline.list`, newest first,
+      parsed from the raw tag objects in one `cat-file --batch`;
+      lightweight or foreign `baseline/*` tags are listed with
+      `annotated:false` and reduced info (a "tag" badge in the UI).
+      (3) Browse read-only: `GET /projects/{id}/baselines/{name}` and
+      `.../modules/{m}/requirements` / WS `baseline.get`,
+      `baseline.requirements` — the project at the tag's commit, read in
+      memory via `ls-tree -r` + `cat-file --batch` filtered to the data
+      pathspecs (no checkout), parsed through the format upgrade +
+      `Project.from_dict`; a newer-format baseline → 409; broken
+      committed module/requirement files are skipped, a broken
+      project.json → a clear 400; no mutation accepts a baseline.
+      (4) Compare: `GET /projects/{id}/baselines/compare?from=&to=` / WS
+      `baseline.compare`, requirement-level semantics via pure
+      `build_snapshot`/`compare_snapshots` in `history.py`: per module
+      added/removed/modified with per-attribute, parent and order diffs;
+      link pair changes per configuration (link-mirror attributes
+      excluded from per-requirement diffs); modules added/removed and
+      attribute-definition changes at summary level, plus a numeric
+      summary; `current` on either side = the working files including
+      uncommitted changes. (5) Git log: `GET /projects/{id}/git/log?
+      limit=` (default 20, cap 200) / WS `project.git_log`. Frontend:
+      `GitStatusPanel.tsx` is now the full project Git panel (state/
+      branch/pending badges, warnings, Enable, last 10 commits,
+      baselines table with Create/Browse/Compare); new
+      `CreateBaselineModal.tsx` (client-side mirror of the name rule,
+      inline 400/409 errors), `BaselinePage.tsx` ("Baseline <name>
+      (read-only)" module view, no editing), `BaselineComparePage.tsx`
+      (from/to pickers URL-synced, summary + per-module change lists);
+      routes `/projects/:id/baselines/compare` and
+      `/projects/:id/baselines/:name`; API types and queries; baselines/
+      git log invalidated after mutations and via live sync. Data format
+      unchanged: baselines live only in git refs and tags.
+      `docs/ARCHITECTURE.md` updated. Backend tests 913 → 935
+      (`test_git_baselines.py`, `test_git_baselines_edge_cases.py`):
+      CAS rollback (tag deleted when the branch move fails), failure
+      broadcasts over REST and WS, paused/stub/missing-git refusals,
+      name limits and unicode rejection, list ordering, broken committed
+      files, compare current↔current and module removed, log limit
+      clamping, and that a squash never amends a baselined commit. Not
+      covered (see backlog): the 2a and review follow-ups; the UI was
+      not tried in a browser; no frontend unit tests (no test runner).
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -434,7 +495,9 @@ per-attribute blame in the detail panel), **baselines**
 (named, immutable snapshots of a module at a point in time, comparable to
 each other with a diff view) — this is DOORS' formal equivalent of "tag a
 commit," genuinely useful even with git underneath since it's project-data-
-aware (which requirements changed, not just which files) ❌.
+aware (which requirements changed, not just which files) ✅ via annotated
+`baseline/<name>` git tags + the `baseline` branch, with a
+requirement-level compare view.
 
 **Views, filtering & search** — sort/filter the requirements table by
 attribute value ❌, saved/named views (a stored filter + column set) ✅,
@@ -475,41 +538,36 @@ custom report templates ❌.
 Ordered roughly by how directly each was requested / how foundational it is
 to the categories above.
 
-- [ ] Git integration, slice 2b: baselines + project Git panel (slice 2a
-      — per-project repos, auto-commit, per-requirement history — is done,
-      see Done). Requested 2026-10-04 (replaces the 2026-09-16 "git
-      integration" placeholder). Decisions (final, 2026-10-04): one repo
-      per project with modules as plain folders (no submodules);
-      auto-commit every change, squashed per editing session (10-minute
-      window, configurable; never amend a commit reachable from
-      `baseline` or tagged); `current` is the working branch; baselines
-      fast-forward a `baseline` branch (not merge) and add an annotated
-      `baseline/<name>` tag; per-requirement history and attribute blame.
-      (1) Baselines: "Create baseline" closes the squash window,
-      fast-forwards `baseline` to `current`, and creates an annotated tag
-      `baseline/<name>` (name, description, date, tool + format version).
-      Baselines are listed from the tags; a baseline is browsed read-only
-      at its tag; two baselines (or baseline ↔ current) are compared with
-      requirement-level semantics (added / removed / modified per
-      attribute and link). (2) UI: a project Git panel (branch, recent
-      commits, pending squash, baselines with create/browse/compare);
-      today `GitStatusPanel.tsx` shows only the state, warnings and the
-      Enable button. REST + WebSocket parity; reads are read-only.
-      (3) Follow-ups from 2a: git runs synchronously on the event loop
-      (about 11–12 git processes, ~80–200 ms per mutation; CSV import of
-      3000 requirements 17 s → 20 s) and sessions have no maximum length
-      — decide on a session cap and/or moving git work off the event
-      loop; `git merge --squash` (SQUASH_MSG) does not pause history;
-      separate git dirs and linked worktrees are refused (`foreign`),
-      supporting them is open; Windows: with no private hooks dir it
-      falls back to `/dev/null`, which resolves under the drive root
-      (report an error instead?), and `os.path.isjunction` needs Python
-      3.12+ (no `requires-python` pin); a settings UI and config keys for
-      the git settings (needs a CONFIG_FORMAT bump with migration); raw
+- [ ] Git integration follow-ups from slice 2a (2026-10-04): git runs
+      synchronously on the event loop (about 11–12 git processes,
+      ~80–200 ms per mutation; CSV import of 3000 requirements 17 s →
+      20 s) and sessions have no maximum length — decide on a session
+      cap and/or moving git work off the event loop; `git merge
+      --squash` (SQUASH_MSG) does not pause history; separate git dirs
+      and linked worktrees are refused (`foreign`), supporting them is
+      open; Windows: with no private hooks dir it falls back to
+      `/dev/null`, which resolves under the drive root (report an error
+      instead?), and `os.path.isjunction` needs Python 3.12+ (no
+      `requires-python` pin); a settings UI and config keys for the git
+      settings (needs a CONFIG_FORMAT bump with migration); raw
       `git blame` fallback; author from Cloudflare Access once user
-      handling exists; no remotes/push in-app (the user pushes). The
-      user's current data dir inside the ReqManTool checkout shows
-      `nested`, so it gets no history until moved.
+      handling exists (remotes/push are the separate "Git remotes" item
+      below). The user's current data dir inside the ReqManTool checkout
+      shows `nested`, so it gets no history until moved.
+- [ ] Git baselines: review follow-ups (2026-10-05, from the slice 2b
+      review). Browse reads the whole baseline tree into memory per
+      request — scope `ls-tree`/`cat-file` to the requested module;
+      hand-made nested tags like `baseline/x/y` are listed but not
+      browsable (filter or mark them); a committed data file with a
+      newline in its name silently vanishes from browse/compare
+      (`cat-file --batch` line protocol; also affects 2a's
+      pending-changes specs) — exclude control characters or use `-z`;
+      a hand commit whose subject contains `\x1f`/`\x1e` corrupts that
+      git-log entry; `moduleId` is not URL-encoded in the baseline
+      requirements query; mutations refetch active immutable baseline
+      snapshots despite `staleTime: Infinity`; a description whose final
+      paragraph looks like `Reqman-*:` trailers is swallowed when
+      listing.
 - [ ] Git remotes: share projects between local tool instances (e.g. via
       GitLab/GitHub). Requested 2026-10-05; builds on the git-integration
       item. Each user runs their own local ReqManTool; a project's repo

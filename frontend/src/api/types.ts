@@ -165,6 +165,96 @@ export interface GitStatus {
   author: { name: string; email: string } | null;
 }
 
+/**
+ * One baseline (GET /projects/{id}/baselines, WS `baseline.list`): an
+ * annotated `baseline/<name>` tag made by ReqManTool, or a lightweight /
+ * foreign `baseline/*` tag the user made by hand (then `annotated` is false
+ * or the `Reqman-*` fields are null).
+ */
+export interface Baseline {
+  name: string;
+  commit: string;
+  annotated: boolean;
+  description: string | null;
+  /** The baseline's date (the tag's `Reqman-Baseline-Date` trailer, else the tag/creator date). */
+  date: string | null;
+  tagger: { name: string; email: string } | null;
+  tagger_date: string | null;
+  tool_version: string | null;
+  format_version: number | null;
+}
+
+export interface BaselineList {
+  available: boolean;
+  reason: string | null;
+  /** Newest first. */
+  baselines: Baseline[];
+}
+
+/** GET /projects/{id}/baselines/{name} (WS `baseline.get`): the project at that baseline, read-only. */
+export interface BaselineSnapshot {
+  name: string;
+  commit: string;
+  project: Project;
+  modules: Module[];
+}
+
+/** One side of a baseline comparison: a baseline name, or `current` (the working files on disk). */
+export interface BaselineCompareSide {
+  name: string;
+  commit: string | null;
+}
+
+export interface BaselineModuleDiff {
+  module_id: string;
+  name: string;
+  /** The module itself was added/removed between the two sides; null when present on both. */
+  change: 'added' | 'removed' | null;
+  added: string[];
+  removed: string[];
+  modified: { id: string; diffs: HistoryDiff[] }[];
+}
+
+export interface BaselineLinkDiff {
+  config_id: string;
+  name: string;
+  source_id: string;
+  target_id: string;
+}
+
+/** GET /projects/{id}/baselines/compare?from=&to= (WS `baseline.compare`). */
+export interface BaselineCompare {
+  from: BaselineCompareSide;
+  to: BaselineCompareSide;
+  modules: BaselineModuleDiff[];
+  attributes: {
+    added: { id: string; name: string }[];
+    removed: { id: string; name: string }[];
+    changed: { id: string; name: string }[];
+  };
+  links: { added: BaselineLinkDiff[]; removed: BaselineLinkDiff[] };
+  summary: {
+    modules_added: number;
+    modules_removed: number;
+    requirements_added: number;
+    requirements_removed: number;
+    requirements_modified: number;
+    links_added: number;
+    links_removed: number;
+    attributes_added: number;
+    attributes_removed: number;
+    attributes_changed: number;
+  };
+}
+
+/** GET /projects/{id}/git/log (WS `project.git_log`): recent commits of `current`, newest first. */
+export interface GitLog {
+  available: boolean;
+  reason: string | null;
+  entries: HistoryCommit[];
+  truncated: boolean;
+}
+
 /** One difference of a history entry: an attribute value, the parent, or the sibling order. */
 export interface HistoryDiff {
   kind: 'attribute' | 'parent' | 'order';

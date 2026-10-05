@@ -2,7 +2,12 @@ import { useMutation, useQuery, useQueryClient, type QueryClient, type UseQueryR
 import { api } from './client';
 import type {
   AttributeDefinition,
+  Baseline,
+  BaselineCompare,
+  BaselineList,
+  BaselineSnapshot,
   CsvImportResult,
+  GitLog,
   GitStatus,
   LinkConfiguration,
   Module,
@@ -29,6 +34,13 @@ export const queryKeys = {
   requirementHistory: (projectId: string, moduleId: string, requirementId: string) =>
     ['projects', projectId, 'modules', moduleId, 'requirements', requirementId, 'history'] as const,
   gitStatus: (projectId: string) => ['projects', projectId, 'git'] as const,
+  gitLog: (projectId: string, limit: number) => ['projects', projectId, 'git', 'log', limit] as const,
+  baselines: (projectId: string) => ['projects', projectId, 'baselines'] as const,
+  baseline: (projectId: string, name: string) => ['projects', projectId, 'baselines', name] as const,
+  baselineRequirements: (projectId: string, name: string, moduleId: string) =>
+    ['projects', projectId, 'baselines', name, 'modules', moduleId, 'requirements'] as const,
+  baselineCompare: (projectId: string, from: string, to: string) =>
+    ['projects', projectId, 'baselines', 'compare', from, to] as const,
   /** Mutation key of "Enable history (git)", for pending indicators (`useIsMutating`). */
   enableHistory: (projectId: string) => ['enableHistory', projectId] as const,
   config: ['config'] as const,
@@ -215,13 +227,17 @@ export function useAddAttribute(projectId: string) {
 // --- history (git) -----------------------------------------------------------
 
 /**
- * Invalidates every project's git status. Called after any successful
- * mutation (see the QueryClient's MutationCache in main.tsx): each change may
- * add or amend a commit. Other clients' changes arrive through live sync,
- * which invalidates the whole project prefix.
+ * Invalidates every project's git status, git log and baseline queries.
+ * Called after any successful mutation (see the QueryClient's MutationCache
+ * in main.tsx): each change may add or amend a commit, and a comparison
+ * against `current` includes uncommitted changes. Other clients' changes
+ * arrive through live sync, which invalidates the whole project prefix.
  */
 export function invalidateGitStatus(qc: QueryClient): void {
-  qc.invalidateQueries({ predicate: (query) => query.queryKey[0] === 'projects' && query.queryKey[2] === 'git' });
+  qc.invalidateQueries({
+    predicate: (query) =>
+      query.queryKey[0] === 'projects' && (query.queryKey[2] === 'git' || query.queryKey[2] === 'baselines'),
+  });
 }
 
 export function useGitStatus(projectId: string | undefined): UseQueryResult<GitStatus> {
@@ -245,6 +261,83 @@ export function useEnableHistory(projectId: string) {
           query.queryKey[0] === 'projects' && query.queryKey[1] === projectId && query.queryKey[6] === 'history',
       });
     },
+  });
+}
+
+/** Recent commits of the project's `current` branch (first-parent, newest first). */
+export function useGitLog(projectId: string | undefined, limit = 20, enabled = true): UseQueryResult<GitLog> {
+  return useQuery({
+    queryKey: queryKeys.gitLog(projectId ?? '', limit),
+    queryFn: () => api.get<GitLog>(`/projects/${projectId}/git/log?limit=${limit}`),
+    enabled: enabled && !!projectId,
+  });
+}
+
+// --- baselines (git) -----------------------------------------------------------
+
+export function useBaselines(projectId: string | undefined): UseQueryResult<BaselineList> {
+  return useQuery({
+    queryKey: queryKeys.baselines(projectId ?? ''),
+    queryFn: () => api.get<BaselineList>(`/projects/${projectId}/baselines`),
+    enabled: !!projectId,
+  });
+}
+
+/**
+ * Creates a baseline: commits pending changes, tags `baseline/<name>` and
+ * fast-forwards the `baseline` branch. 400 for an invalid name, 409 for a
+ * duplicate name or a repository that is not recording.
+ */
+export function useCreateBaseline(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; description?: string }) =>
+      api.post<Baseline>(`/projects/${projectId}/baselines`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.baselines(projectId) });
+    },
+  });
+}
+
+/** The project and modules as they were at a baseline (read-only; the content never changes). */
+export function useBaseline(projectId: string | undefined, name: string | undefined): UseQueryResult<BaselineSnapshot> {
+  return useQuery({
+    queryKey: queryKeys.baseline(projectId ?? '', name ?? ''),
+    queryFn: () => api.get<BaselineSnapshot>(`/projects/${projectId}/baselines/${encodeURIComponent(name ?? '')}`),
+    enabled: !!projectId && !!name,
+    staleTime: Infinity,
+  });
+}
+
+export function useBaselineRequirements(
+  projectId: string | undefined,
+  name: string | undefined,
+  moduleId: string | undefined,
+): UseQueryResult<Requirement[]> {
+  return useQuery({
+    queryKey: queryKeys.baselineRequirements(projectId ?? '', name ?? '', moduleId ?? ''),
+    queryFn: () =>
+      api.get<Requirement[]>(
+        `/projects/${projectId}/baselines/${encodeURIComponent(name ?? '')}/modules/${moduleId}/requirements`,
+      ),
+    enabled: !!projectId && !!name && !!moduleId,
+    staleTime: Infinity,
+  });
+}
+
+/** Compares two baselines, or a baseline with `current` (the working files including uncommitted changes). */
+export function useBaselineCompare(
+  projectId: string | undefined,
+  from: string | undefined,
+  to: string | undefined,
+): UseQueryResult<BaselineCompare> {
+  return useQuery({
+    queryKey: queryKeys.baselineCompare(projectId ?? '', from ?? '', to ?? ''),
+    queryFn: () =>
+      api.get<BaselineCompare>(
+        `/projects/${projectId}/baselines/compare?from=${encodeURIComponent(from ?? '')}&to=${encodeURIComponent(to ?? '')}`,
+      ),
+    enabled: !!projectId && !!from && !!to,
   });
 }
 
