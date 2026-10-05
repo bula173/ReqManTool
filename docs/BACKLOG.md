@@ -677,6 +677,14 @@ to the categories above.
       tags); this item adds the UI glue — "lock after baseline", and
       baseline references from sign-off records, verification and test
       execution reports, and impact analysis.
+- [ ] Fixed layout: sticky table header, independently scrolling panels.
+      Requested 2026-10-05. The requirements table's header row stays
+      visible while the rows scroll (sticky header inside the table's own
+      scroll container, correct with the detail panel open and in
+      baseline/compare views); the left panel (tree) and right panel
+      (requirement detail) each have their own scroll area and never
+      scroll with the requirements table — the app shell (header, menu
+      bar, footer) stays fixed, only each panel's content scrolls.
 - [ ] Resizable table columns. Requested 2026-10-04. Drag a column header's
       right edge to resize (requirements table, detail-panel label column,
       report grids); double-click the edge to auto-fit to content; minimum
