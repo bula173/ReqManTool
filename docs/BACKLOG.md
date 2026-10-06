@@ -801,6 +801,18 @@ to the categories above.
       state and widths are remembered per browser (not in git-tracked
       data). On narrow screens both panels start collapsed and open as
       overlays. The requirements table uses the freed width.
+- [ ] Toolbar buttons → menu items: Import, Export, Purge. Requested
+      2026-10-06 (priority). Remove the "Import CSV", "Export ReqIF/CSV/
+      XLSX/DOCX" and "Purge Module" buttons from the module page toolbar
+      (and any purge/export buttons on the project page); every one of
+      them is reachable from the menu bar instead, as actions in the
+      shared registry: File → Import ▸ CSV…; File → Export ▸ ReqIF / CSV /
+      XLSX / DOCX (enabled whenever a project is open — exports cover the
+      whole project); Edit → Purge module… (module open) and Purge
+      project… (project open), red/destructive styling, the existing typed
+      confirmation dialogs, separated from other Edit entries. Same
+      actions also available to the later left/right-click menus. No
+      backend change.
 - [ ] Left panel tabs: Workspace / Project / Module. Requested 2026-10-04.
       The left panel gets three tabs that drill down: **Workspace** — all
       projects in the data directory (top-level projects with their
