@@ -622,13 +622,24 @@ to the categories above.
       logged-in user (name/email from the IdP), squash window per user;
       created_by / modified_by system attributes; identity in live-sync
       events; login/logout and admin actions in an audit log (append-only
-      JSON lines). (5) Editions/licensing: server-only features are
-      gated by a signed license file; **open question — the repository
-      is MIT-licensed today, so a paid tier needs an open-core split
-      (e.g. MIT core + separately licensed `reqman-server` package) or a
-      licence change; decide before implementing (5).** Depends on: the
+      JSON lines). (5) Editions/licensing — decided 2026-10-06: the
+      repository (community/local edition) is dual-licensed AGPL-3.0-only
+      + commercial (see `LICENSING.md`); the server-edition features live
+      in a separate, commercially licensed package/repo (`reqman-server`)
+      that plugs into the core through explicit extension points (auth
+      provider, request identity, permission guard, lock service), and is
+      gated by a signed licence file. The core must stay fully usable
+      without it. Depends on: the
       git integration (done), distribution package (server install),
       git remotes (server can mirror project repos to GitLab).
+- [ ] AGPL compliance in the app. Follow-up of the 2026-10-06 licence
+      change. AGPL §13: users interacting with the app over a network must
+      be offered the corresponding source — add a "Source code" link (repo
+      URL + exact version/commit from the version item) in Help → About
+      and the footer; licence notice in About; SPDX
+      `AGPL-3.0-only` in `frontend/package.json` and (with the
+      distribution item) `pyproject.toml`; a third-party licence list
+      generated at build time; `CONTRIBUTING.md` with the CLA requirement.
 - [ ] Left-click and right-click menus everywhere. Requested 2026-10-04.
       Two distinct menus, adapted to what was clicked: **left click** opens
       a navigation/view menu (open, open in new tab, detach, show links,

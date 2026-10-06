@@ -103,4 +103,6 @@ are implemented and tested. See `docs/BACKLOG.md` for what's next.
 
 ## License
 
-[MIT](LICENSE)
+Dual-licensed: [AGPL-3.0-only](LICENSE) for the community (local)
+edition, or a commercial licence. The server edition is commercial only.
+See [LICENSING.md](LICENSING.md).
