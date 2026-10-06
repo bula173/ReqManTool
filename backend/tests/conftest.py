@@ -21,6 +21,8 @@ def _isolated_git(monkeypatch):
     monkeypatch.setenv("GIT_AUTHOR_EMAIL", "author@example.com")
     monkeypatch.setenv("GIT_COMMITTER_NAME", "Test Author")
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "author@example.com")
+    # Test remotes are local bare repositories; production rejects local paths.
+    monkeypatch.setenv("REQMAN_GIT_ALLOW_FILE_REMOTES", "1")
     for name in ("REQMAN_GIT_AUTHOR_NAME", "REQMAN_GIT_AUTHOR_EMAIL", "REQMAN_GIT_SQUASH_MINUTES",
                  "REQMAN_GIT_EXECUTABLE", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"):
         monkeypatch.delenv(name, raising=False)

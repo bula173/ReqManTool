@@ -1,5 +1,14 @@
 import type { ComponentType } from 'react';
-import type { GitStatus, Module, Project, Requirement, TemplateSummary, View } from '../api/types';
+import type {
+  GitPullResult,
+  GitPushResult,
+  GitStatus,
+  Module,
+  Project,
+  Requirement,
+  TemplateSummary,
+  View,
+} from '../api/types';
 
 /**
  * The shared action registry's types.
@@ -60,6 +69,7 @@ export interface RequirementClipboard {
 /** Dialogs hosted once by the app shell, opened by actions and buttons. */
 export type DialogRequest =
   | { kind: 'newProject'; parentProjectId?: string | null; templateId?: string }
+  | { kind: 'addProjectFromRemote' }
   | { kind: 'dataDir' }
   | { kind: 'saveAsTemplate'; project: Project }
   | { kind: 'importTemplate' }
@@ -80,6 +90,9 @@ export interface AppCommands {
   setColorScheme: (scheme: 'light' | 'dark') => void;
   /** "Enable history (git)" for the open project; resolves with its new git status. */
   enableHistory: () => Promise<GitStatus>;
+  /** Push / Pull the open project's git remote (explicit sync; see the Git panel). */
+  gitPush: () => Promise<GitPushResult>;
+  gitPull: () => Promise<GitPullResult>;
   /** Starts a file download (export endpoints answer with Content-Disposition: attachment). */
   download: (url: string) => void;
   openExternal: (url: string) => void;

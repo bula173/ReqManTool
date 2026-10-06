@@ -209,6 +209,20 @@ class CreateBaselineBody(BaseModel):
     description: str = ""
 
 
+class SetGitRemoteBody(BaseModel):
+    """`url: null` (or empty) removes the configured remote."""
+
+    url: str | None = None
+
+
+class SetGitAutoPushBody(BaseModel):
+    enabled: bool
+
+
+class AddProjectFromRemoteBody(BaseModel):
+    url: str
+
+
 class AddAttributeBody(BaseModel):
     id: str
     name: str
@@ -394,6 +408,50 @@ async def enable_git_history(project_id: str):
 @app.get("/projects/{project_id}/git/log")
 def get_git_log(project_id: str, limit: int = Query(default=20, ge=1)):
     return _wrap(service.git_log, project_id, limit)
+
+
+# --- remotes (git) ----------------------------------------------------------
+
+
+@app.put("/projects/{project_id}/git/remote")
+async def set_git_remote(project_id: str, body: SetGitRemoteBody):
+    status = _wrap(service.set_git_remote, project_id, body.url)
+    await manager.broadcast(project_id)
+    return status
+
+
+@app.put("/projects/{project_id}/git/auto-push")
+async def set_git_auto_push(project_id: str, body: SetGitAutoPushBody):
+    status = _wrap(service.set_git_auto_push, project_id, body.enabled)
+    await manager.broadcast(project_id)
+    return status
+
+
+@app.post("/projects/{project_id}/git/push")
+async def git_push(project_id: str):
+    result = _wrap(service.git_push, project_id)
+    await manager.broadcast(project_id)
+    return result
+
+
+@app.post("/projects/{project_id}/git/pull")
+async def git_pull(project_id: str):
+    try:
+        result = _wrap(service.git_pull, project_id)
+    except HTTPException as exc:
+        # A diverged pull already fetched: the status now shows the sync conflict.
+        if _changed_despite_failure(exc.__cause__):
+            await manager.broadcast(project_id)
+        raise
+    await manager.broadcast(project_id)
+    return result
+
+
+@app.post("/projects/from-remote")
+async def add_project_from_remote(body: AddProjectFromRemoteBody):
+    project = _wrap(service.add_project_from_remote, body.url)
+    await manager.broadcast(project.id)
+    return project.to_dict()
 
 
 # --- baselines (git) ----------------------------------------------------------
@@ -712,6 +770,11 @@ RPC_METHODS = {
     "project.git_status": lambda p: service.git_status(p["id"]),
     "project.git_enable": lambda p: service.enable_history(p["id"]),
     "project.git_log": lambda p: service.git_log(p["id"], p.get("limit")),
+    "project.git_set_remote": lambda p: service.set_git_remote(p["id"], p.get("url")),
+    "project.git_set_auto_push": lambda p: service.set_git_auto_push(p["id"], p["enabled"]),
+    "project.git_push": lambda p: service.git_push(p["id"]),
+    "project.git_pull": lambda p: service.git_pull(p["id"]),
+    "project.create_from_remote": lambda p: service.add_project_from_remote(p["url"]),
     "baseline.create": lambda p: service.create_baseline(
         p["project_id"], p["name"], p.get("description", "")
     ),
@@ -798,6 +861,8 @@ def _error_response(request_id, code: int, message: str) -> dict:
 
 MUTATING_METHODS = {
     "project.create", "project.set_parent", "project.purge", "project.git_enable", "baseline.create",
+    "project.git_set_remote", "project.git_set_auto_push", "project.git_push", "project.git_pull",
+    "project.create_from_remote",
     "attribute.add",
     "module.create", "module.purge", "module.reorder",
     "link_configuration.create", "link_configuration.remove",
@@ -813,8 +878,8 @@ TEMPLATE_MUTATING_METHODS = {"project.save_as_template", "template.import"}
 
 
 def _project_id_of(method_name: str, params: dict, result: Any) -> str | None:
-    if method_name == "project.create":
-        return result.id
+    if method_name in ("project.create", "project.create_from_remote"):
+        return getattr(result, "id", None)  # None after a failure: nothing to broadcast
     return params.get("project_id") if "project_id" in params else params.get("id")
 
 

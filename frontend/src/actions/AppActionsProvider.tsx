@@ -7,6 +7,8 @@ import {
   useConfig,
   useCopyRequirement,
   useEnableHistory,
+  useGitPull,
+  useGitPush,
   useGitStatus,
   useModule,
   useMoveRequirement,
@@ -47,6 +49,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const templatesQuery = useTemplates();
   const gitStatusQuery = useGitStatus(projectId ?? undefined);
   const enableHistory = useEnableHistory(projectId ?? '');
+  const gitPush = useGitPush(projectId ?? '');
+  const gitPull = useGitPull(projectId ?? '');
   // The data folder the clipboard and selection belong to (null until known).
   const dataDir = useConfig().data?.data_dir ?? null;
 
@@ -108,6 +112,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       setDetailPanelOpen,
       setColorScheme,
       enableHistory: () => enableHistory.mutateAsync(),
+      gitPush: () => gitPush.mutateAsync(),
+      gitPull: () => gitPull.mutateAsync(),
       download: (url) => {
         const link = document.createElement('a');
         link.href = url;
@@ -141,6 +147,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       reorderRequirement.mutateAsync,
       removeRequirement.mutateAsync,
       enableHistory.mutateAsync,
+      gitPush.mutateAsync,
+      gitPull.mutateAsync,
     ],
   );
 

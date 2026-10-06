@@ -7,19 +7,37 @@ import {
   Group,
   Loader,
   Stack,
+  Switch,
   Table,
   Text,
+  TextInput,
   Title,
   Tooltip,
 } from '@mantine/core';
-import { IconAlertTriangle, IconCamera, IconGitCompare, IconHistory } from '@tabler/icons-react';
+import {
+  IconAlertTriangle,
+  IconCamera,
+  IconCloudDownload,
+  IconCloudUpload,
+  IconGitCompare,
+  IconHistory,
+} from '@tabler/icons-react';
 import { useIsMutating } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAppActions } from '../actions/context';
 import { ApiError } from '../api/client';
-import { queryKeys, useBaselines, useGitLog, useGitStatus } from '../api/queries';
-import type { GitState } from '../api/types';
+import {
+  queryKeys,
+  useBaselines,
+  useGitLog,
+  useGitPull,
+  useGitPush,
+  useGitStatus,
+  useSetGitAutoPush,
+  useSetGitRemote,
+} from '../api/queries';
+import type { GitRemoteStatus, GitState } from '../api/types';
 import { CreateBaselineModal } from './CreateBaselineModal';
 
 const STATE_LABELS: Record<GitState, { label: string; color: string }> = {
@@ -82,6 +100,151 @@ function RecentCommits({ projectId }: { projectId: string }) {
       {log.truncated && (
         <Text size="xs" c="dimmed">
           Older commits are not shown (git log in the project folder lists them all).
+        </Text>
+      )}
+    </Stack>
+  );
+}
+
+/**
+ * The project's remote: URL (set / change / remove, validated server-side
+ * with `git ls-remote`), explicit Push and Pull, ahead/behind, the auto-push
+ * opt-in and the sync-conflict warning. Credentials stay with the user's git
+ * (ssh agent / credential helper); ReqManTool never stores them.
+ */
+function RemoteSync({ projectId, remote }: { projectId: string; remote: GitRemoteStatus }) {
+  const setRemote = useSetGitRemote(projectId);
+  const setAutoPush = useSetGitAutoPush(projectId);
+  const push = useGitPush(projectId);
+  const pull = useGitPull(projectId);
+  const [editing, setEditing] = useState(false);
+  const [url, setUrl] = useState(remote.url ?? '');
+  // Derived, not snapshotted: a live-sync removal of the remote must show the
+  // URL form, not stale Push/Pull controls.
+  const showForm = editing || remote.url === null;
+  const busy = setRemote.isPending || setAutoPush.isPending || push.isPending || pull.isPending;
+
+  const save = () => {
+    setRemote.mutate(url.trim() || null, { onSuccess: () => setEditing(false) });
+  };
+
+  return (
+    <Stack gap="xs">
+      <Title order={5}>Remote</Title>
+      {remote.sync_conflict && (
+        <Alert color="red" title="Sync conflict" icon={<IconAlertTriangle size={16} />} p="xs">
+          <Text size="sm" style={{ wordBreak: 'break-word' }}>
+            {remote.conflict_message ??
+              'The local history and the remote’s have diverged; changes are blocked until they are reconciled in git.'}
+          </Text>
+        </Alert>
+      )}
+      {showForm ? (
+        <Group gap="xs" align="flex-end" wrap="nowrap">
+          <TextInput
+            label="Remote URL"
+            description="SSH or HTTPS; credentials stay with your git setup (ssh agent / credential helper)"
+            placeholder="git@example.com:team/project.git"
+            value={url}
+            onChange={(event) => setUrl(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') save();
+            }}
+            style={{ flex: 1 }}
+            disabled={busy}
+          />
+          <Button size="xs" onClick={save} loading={setRemote.isPending} disabled={busy && !setRemote.isPending}>
+            Save
+          </Button>
+          {remote.url !== null && (
+            <Button
+              size="xs"
+              variant="default"
+              disabled={busy}
+              onClick={() => {
+                setUrl(remote.url ?? '');
+                setEditing(false);
+              }}
+            >
+              Cancel
+            </Button>
+          )}
+        </Group>
+      ) : (
+        <Group gap="xs" wrap="nowrap">
+          <Text size="sm" ff="monospace" lineClamp={1} style={{ flex: 1, wordBreak: 'break-all' }}>
+            {remote.url}
+          </Text>
+          {remote.ahead !== null && remote.behind !== null && (
+            <Tooltip label="Commits to push / fetched commits to pull (since the last push or pull)" withArrow>
+              <Badge variant="outline" color={remote.sync_conflict ? 'red' : 'gray'}>
+                ↑{remote.ahead} ↓{remote.behind}
+              </Badge>
+            </Tooltip>
+          )}
+          <Button
+            size="xs"
+            variant="default"
+            leftSection={<IconCloudUpload size={14} />}
+            loading={push.isPending}
+            disabled={busy && !push.isPending}
+            onClick={() => push.mutate()}
+          >
+            Push
+          </Button>
+          <Button
+            size="xs"
+            variant="default"
+            leftSection={<IconCloudDownload size={14} />}
+            loading={pull.isPending}
+            disabled={busy && !pull.isPending}
+            onClick={() => pull.mutate()}
+          >
+            Pull
+          </Button>
+          <Button size="xs" variant="subtle" disabled={busy} onClick={() => setEditing(true)}>
+            Change…
+          </Button>
+        </Group>
+      )}
+      {remote.url !== null && (
+        <Switch
+          size="xs"
+          label="Push automatically after each change and baseline"
+          checked={remote.auto_push}
+          disabled={busy}
+          onChange={(event) => setAutoPush.mutate(event.currentTarget.checked)}
+        />
+      )}
+      {setRemote.isError && (
+        <Text size="sm" c="red">
+          {errorMessage(setRemote.error, 'Failed to set the remote')}
+        </Text>
+      )}
+      {setAutoPush.isError && (
+        <Text size="sm" c="red">
+          {errorMessage(setAutoPush.error, 'Failed to change auto-push')}
+        </Text>
+      )}
+      {push.isError && (
+        <Text size="sm" c="red">
+          Push failed: {errorMessage(push.error, 'Unknown error')}
+        </Text>
+      )}
+      {push.isSuccess && !push.isPending && (
+        <Text size="sm" c="green">
+          Pushed {push.data.pushed.length} ref{push.data.pushed.length === 1 ? '' : 's'}.
+        </Text>
+      )}
+      {pull.isError && (
+        <Text size="sm" c="red">
+          Pull failed: {errorMessage(pull.error, 'Unknown error')}
+        </Text>
+      )}
+      {pull.isSuccess && !pull.isPending && (
+        <Text size="sm" c={pull.data.updated ? 'green' : 'dimmed'}>
+          {pull.data.updated ? 'Pulled: the project was updated.' : 'Already up to date.'}
+          {pull.data.notes.length > 0 ? ` ${pull.data.notes.join(' ')}` : ''}
         </Text>
       )}
     </Stack>
@@ -288,6 +451,7 @@ export function GitStatusPanel({ projectId }: { projectId: string }) {
               </Text>
             </Alert>
           )}
+          {hasRepo && status.remote && <RemoteSync projectId={projectId} remote={status.remote} />}
           {hasRepo && status.head && (
             <>
               <Title order={5}>Last commits</Title>

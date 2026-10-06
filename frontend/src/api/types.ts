@@ -145,6 +145,28 @@ export interface GitCommitInfo {
   date: string;
 }
 
+/**
+ * The project's configured git remote (part of `GitStatus`). The URL and the
+ * auto-push opt-in live in the repository's own `.git/config` (per instance,
+ * never in the shared data files); credentials stay with the user's git
+ * (ssh agent / credential helper) and are never stored by ReqManTool.
+ */
+export interface GitRemoteStatus {
+  url: string | null;
+  /** Push automatically after each commit/baseline (per-project opt-in). */
+  auto_push: boolean;
+  /** Commits on `current` the remote does not have (null before the first fetch/push). */
+  ahead: number | null;
+  /** Fetched remote commits not on `current` (null before the first fetch/push). */
+  behind: number | null;
+  /**
+   * `current` and the remote's have diverged: mutations are blocked (409)
+   * until the user reconciles the branches in git, then pulls again.
+   */
+  sync_conflict: boolean;
+  conflict_message: string | null;
+}
+
 export interface GitStatus {
   state: GitState;
   /** Why history is not recorded (or how to resume it); null when all is well. */
@@ -163,6 +185,25 @@ export interface GitStatus {
   squash_window_minutes: number;
   /** The identity commits are made with. */
   author: { name: string; email: string } | null;
+  /** The configured remote; null while the project has no readable repository. */
+  remote: GitRemoteStatus | null;
+}
+
+/** POST /projects/{id}/git/push (WS `project.git_push`). */
+export interface GitPushResult {
+  url: string;
+  /** The refs published: `refs/heads/current`, `refs/heads/baseline`, `refs/tags/baseline/*`. */
+  pushed: string[];
+}
+
+/** POST /projects/{id}/git/pull (WS `project.git_pull`). */
+export interface GitPullResult {
+  url: string;
+  /** Whether `current` was fast-forwarded (the project's files changed). */
+  updated: boolean;
+  head: string | null;
+  /** Non-fatal remarks (diverged baseline branch or tags, remote not published yet). */
+  notes: string[];
 }
 
 /**

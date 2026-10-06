@@ -93,6 +93,21 @@ WORKING_REF = f"refs/heads/{WORKING_BRANCH}"
 BASELINE_BRANCH = "baseline"
 BASELINE_REF = f"refs/heads/{BASELINE_BRANCH}"
 BASELINE_TAG_PREFIX = "baseline/"
+# Remotes: each project repository may have one configured remote (named
+# ``origin``, as ``git clone`` creates it). The URL and the auto-push opt-in
+# live in the repository's own ``.git/config`` — per instance, never in the
+# shared data files, and credentials stay with the user's git (ssh agent,
+# credential helper); ReqManTool never stores or reads them.
+REMOTE_NAME = "origin"
+REMOTE_WORKING_REF = f"refs/remotes/{REMOTE_NAME}/{WORKING_BRANCH}"
+REMOTE_BASELINE_REF = f"refs/remotes/{REMOTE_NAME}/{BASELINE_BRANCH}"
+AUTO_PUSH_CONFIG_KEY = "reqman.autopush"
+SYNC_CONFLICT_MESSAGE = (
+    f"Sync conflict: the local '{WORKING_BRANCH}' branch and the remote's have diverged "
+    "(another instance pushed other changes). Changes to this project are blocked until the "
+    f"histories are reconciled in git (e.g. 'git pull --no-rebase {REMOTE_NAME} {WORKING_BRANCH}' "
+    "in the project folder, resolve any conflicts, commit), then Pull again."
+)
 # Conservative baseline names: they appear in tag refs, URLs and the UI.
 # ``git check-ref-format`` is run as well (belt and braces).
 BASELINE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -142,6 +157,25 @@ _OPERATIONS_IN_PROGRESS = (
 DEFAULT_SQUASH_MINUTES = 10.0
 HISTORY_LIMIT = 200
 _TIMEOUT_SECONDS = 60
+# Auto-push runs inside the per-project lock after every mutation: a hanging
+# remote must not freeze edits for the full default timeout.
+_AUTO_PUSH_TIMEOUT_SECONDS = 10
+# Remote URLs come from the user (REST/WebSocket): only real network
+# transports. ``<transport>::<address>`` remote helpers (``ext::``, ``fd::``)
+# run commands from the URL itself. Local paths and ``file://`` URLs are
+# for tests only (opt-in, read at call time).
+ALLOW_FILE_REMOTES_ENV = "REQMAN_GIT_ALLOW_FILE_REMOTES"
+_REMOTE_PROTOCOLS = "ssh:git:https"
+_REMOTE_HELPER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*::")
+_REMOTE_SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*)://")
+_REMOTE_SCHEMES = ("ssh", "git+ssh", "ssh+git", "git", "https")
+# scp-like SSH syntax ``[user@]host:path``: a colon before any slash. A
+# single-letter host would be a Windows drive (``C:\...``), not a host.
+_REMOTE_SCP_RE = re.compile(r"^(?:[^@/:\s]+@)?[^@/:\s]{2,}:[^\s]")
+
+
+def _file_remotes_allowed() -> bool:
+    return os.environ.get(ALLOW_FILE_REMOTES_ENV, "").strip().lower() in ("1", "true", "yes", "on")
 # How long a resolved commit identity (``git var GIT_AUTHOR_IDENT``) is reused.
 _IDENTITY_TTL_SECONDS = 30.0
 
@@ -206,6 +240,17 @@ class EnableFailed(ValueError):
     have changed (e.g. created, but the initial commit failed), so callers
     broadcast a project change even though the request failed
     (``project_changed``).
+    """
+
+    project_changed = True
+
+
+class PullDiverged(RepoConflict):
+    """Pull found diverged histories (REST 409).
+
+    The fetch already updated the remote-tracking refs, so the project's
+    status now shows the sync conflict: callers broadcast a project change
+    even though the request failed (``project_changed``).
     """
 
     project_changed = True
@@ -397,6 +442,10 @@ def _clean_env(extra: Mapping[str, str] | None = None, read_only: bool = False) 
             "GIT_PAGER": "cat",
         }
     )
+    # Only real transports for user-supplied remote URLs (see
+    # ``_check_remote_url``): ``ext::``/``fd::`` run arbitrary commands.
+    # Always our allowlist, never one inherited from the environment.
+    env["GIT_ALLOW_PROTOCOL"] = _REMOTE_PROTOCOLS + (":file" if _file_remotes_allowed() else "")
     if read_only:
         env["GIT_OPTIONAL_LOCKS"] = "0"
     if extra:
@@ -507,6 +556,7 @@ class GitHistory:
         env: Mapping[str, str] | None = None,
         check: bool = True,
         read_only: bool = False,
+        timeout: float = _TIMEOUT_SECONDS,
     ) -> subprocess.CompletedProcess:
         # No hooks, ever: ``--no-verify`` alone still runs prepare-commit-msg,
         # post-commit, post-rewrite, post-checkout, reference-transaction, ...
@@ -523,6 +573,12 @@ class GitHistory:
             "gc.auto=0",
             "-c",
             "maintenance.auto=false",
+            # Belt and braces next to GIT_ALLOW_PROTOCOL (see ``_clean_env``):
+            # these transports execute commands from the URL itself.
+            "-c",
+            "protocol.ext.allow=never",
+            "-c",
+            "protocol.fd.allow=never",
             *args,
         ]
         try:
@@ -532,7 +588,7 @@ class GitHistory:
                 input=input,
                 capture_output=True,
                 env=_clean_env(env, read_only),
-                timeout=_TIMEOUT_SECONDS,
+                timeout=timeout,
                 check=False,
             )
         except FileNotFoundError as exc:
@@ -949,8 +1005,10 @@ class GitHistory:
                 info = self.detect(project_dir)
                 if info.state != STATE_READY:
                     return
-                self._commit_pending(info, describe)
+                committed = self._commit_pending(info, describe)
                 self._record(project_dir, None)
+                if committed:
+                    self._auto_push_if_enabled(project_dir, info)
             except Exception as exc:  # noqa: BLE001 - the files are saved; never fail the mutation
                 if not isinstance(exc, (GitError, OSError)):
                     logger.exception("Unexpected auto-commit error for %s", project_dir)
@@ -1193,6 +1251,7 @@ class GitHistory:
                 self._record(project_dir, f"Creating baseline '{name}' failed: {exc}")
                 raise BaselineFailed(f"Creating baseline '{name}' failed: {exc}") from exc
             self._record(project_dir, None)
+            self._auto_push_if_enabled(project_dir, info)
             return {
                 "name": name,
                 "commit": head.commit,
@@ -1332,6 +1391,372 @@ class GitHistory:
         except GitError as exc:
             return {**empty, "reason": f"The log cannot be read: {exc}"}
 
+    # --- remotes ----------------------------------------------------------------
+
+    def _require_enabled(self) -> None:
+        if not self.settings.enabled:
+            raise ValueError(
+                "Git history is turned off for this server (REQMAN_GIT=off); remotes need history"
+            )
+
+    def _usable_repo(self, project_dir: Path) -> RepoInfo:
+        """The project's repository for a remote operation, or a refusal.
+
+        ``ValueError`` when git is off/missing or cannot inspect the folder,
+        ``RepoConflict`` (409) when the project has no own repository
+        (no_repo, nested, foreign).
+        """
+        info = self.detect(project_dir)
+        if info.state in (STATE_OFF, STATE_GIT_MISSING, STATE_ERROR):
+            raise ValueError(info.message or "git is not available")
+        if info.state not in (STATE_READY, STATE_PAUSED):
+            raise RepoConflict(
+                info.message or "The project has no git repository; use “Enable history (git)” first"
+            )
+        return info
+
+    @staticmethod
+    def _check_remote_url(url: str) -> str:
+        url = (url or "").strip()
+        if not url:
+            raise ValueError("The remote URL must not be empty")
+        if url.startswith("-"):
+            raise ValueError(f"Invalid remote URL '{url}': it must not start with '-'")
+        if _REMOTE_HELPER_RE.match(url):
+            raise ValueError(
+                f"Invalid remote URL '{url}': '<transport>::' remote helpers are not allowed"
+            )
+        scheme = _REMOTE_SCHEME_RE.match(url)
+        if scheme is not None:
+            name = scheme.group(1).lower()
+            if name in _REMOTE_SCHEMES or (name == "file" and _file_remotes_allowed()):
+                return url
+            raise ValueError(
+                f"Invalid remote URL '{url}': use an ssh://, git:// or https:// URL "
+                "(or the user@host:path SSH syntax)"
+            )
+        if _REMOTE_SCP_RE.match(url) or _file_remotes_allowed():
+            return url
+        raise ValueError(
+            f"Invalid remote URL '{url}': local paths are not allowed; use an ssh://, git:// "
+            "or https:// URL (or the user@host:path SSH syntax)"
+        )
+
+    def _remote_url(self, info: RepoInfo) -> str | None:
+        result = self._repo(
+            info, ["config", "--get", f"remote.{REMOTE_NAME}.url"], check=False, read_only=True
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout.decode("utf-8", "replace").strip() or None
+
+    def _auto_push_enabled(self, info: RepoInfo) -> bool:
+        result = self._repo(
+            info, ["config", "--get", "--type=bool", AUTO_PUSH_CONFIG_KEY], check=False, read_only=True
+        )
+        return result.returncode == 0 and result.stdout.strip() == b"true"
+
+    def _is_ancestor(self, info: RepoInfo, ancestor: str, descendant: str) -> bool:
+        result = self._repo(
+            info, ["merge-base", "--is-ancestor", ancestor, descendant], check=False, read_only=True
+        )
+        if result.returncode == 0:
+            return True
+        if result.returncode == 1:
+            return False
+        raise GitError(f"git merge-base failed: {_stderr(result)}")
+
+    def _remote_info(self, info: RepoInfo) -> dict[str, Any]:
+        """The remote part of ``status()``: URL, auto-push, ahead/behind, sync conflict."""
+        url = self._remote_url(info)
+        result: dict[str, Any] = {
+            "url": url,
+            "auto_push": False,
+            "ahead": None,
+            "behind": None,
+            "sync_conflict": False,
+            "conflict_message": None,
+        }
+        if url is None:
+            return result
+        result["auto_push"] = self._auto_push_enabled(info)
+        local = self._rev(info, WORKING_REF)
+        remote = self._rev(info, REMOTE_WORKING_REF)
+        if local is None or remote is None:
+            return result
+        counts = self._repo(
+            info,
+            ["rev-list", "--left-right", "--count", f"{WORKING_REF}...{REMOTE_WORKING_REF}"],
+            read_only=True,
+        )
+        fields = counts.stdout.decode("utf-8", "replace").split()
+        if len(fields) == 2:
+            result["ahead"], result["behind"] = int(fields[0]), int(fields[1])
+            if result["ahead"] > 0 and result["behind"] > 0:
+                result["sync_conflict"] = True
+                result["conflict_message"] = SYNC_CONFLICT_MESSAGE
+        return result
+
+    def sync_conflict_message(self, project_dir: Path) -> str | None:
+        """The sync-conflict message blocking mutations, or ``None``. Cheap; never raises.
+
+        Checked before every mutation: a project whose ``current`` branch has
+        diverged from the configured remote's (both ahead and behind, from
+        the last fetch) must not drift further apart. Derived from the refs
+        alone — no flag file — so resolving the divergence in git (merge or
+        rebase, then Pull) unblocks the project by itself. A git failure
+        never blocks a mutation.
+        """
+        if not self.settings.enabled:
+            return None
+        folder = project_dir.resolve()
+        git_dir = folder / ".git"
+        if not git_dir.is_dir():
+            return None
+        info = RepoInfo(STATE_READY, git_dir=str(git_dir), work_tree=folder)
+        try:
+            if self._remote_url(info) is None:
+                return None
+            remote = self._rev(info, REMOTE_WORKING_REF)
+            if remote is None:
+                return None
+            local = self._rev(info, WORKING_REF)
+            if local is None or local == remote:
+                return None
+            if self._is_ancestor(info, remote, local) or self._is_ancestor(info, local, remote):
+                return None
+            return SYNC_CONFLICT_MESSAGE
+        except (GitError, OSError):
+            return None
+
+    def set_remote(self, project_dir: Path, url: str | None) -> dict[str, Any]:
+        """Configure (or remove, with ``None``/empty) the project's remote URL.
+
+        A new URL is validated with ``git ls-remote`` first: an unreachable
+        remote (bad URL, no access, missing credentials in the user's git
+        setup) is a ``ValueError`` and nothing is changed. Returns the new
+        remote info (see ``_remote_info``).
+        """
+        self._require_enabled()
+        with self._lock(project_dir):
+            info = self._usable_repo(project_dir)
+            cleaned = (url or "").strip()
+            if not cleaned:
+                if self._remote_url(info) is not None:
+                    self._repo(info, ["remote", "remove", REMOTE_NAME])
+                    # Auto-push is an opt-in per remote: a later remote must
+                    # not inherit it silently.
+                    self._repo(info, ["config", "--unset", AUTO_PUSH_CONFIG_KEY], check=False)
+                return self._remote_info(info)
+            cleaned = self._check_remote_url(cleaned)
+            probe = self._repo(info, ["ls-remote", "--", cleaned], check=False, read_only=True)
+            if probe.returncode != 0:
+                raise ValueError(
+                    f"The remote '{cleaned}' cannot be reached (git ls-remote failed: {_stderr(probe)}). "
+                    "Check the URL and that your git credentials (ssh agent / credential helper) have access."
+                )
+            if self._remote_url(info) is None:
+                # A new remote starts with auto-push off, even if a stale
+                # setting survived (e.g. the remote was removed outside the app).
+                self._repo(info, ["config", "--unset", AUTO_PUSH_CONFIG_KEY], check=False)
+                self._repo(info, ["remote", "add", REMOTE_NAME, cleaned])
+            else:
+                self._repo(info, ["remote", "set-url", REMOTE_NAME, cleaned])
+            return self._remote_info(info)
+
+    def set_auto_push(self, project_dir: Path, enabled: bool) -> dict[str, Any]:
+        """Turn the per-project auto-push opt-in on or off (stored in ``.git/config``)."""
+        self._require_enabled()
+        with self._lock(project_dir):
+            info = self._usable_repo(project_dir)
+            if enabled and self._remote_url(info) is None:
+                raise ValueError("Auto-push needs a configured remote URL")
+            self._repo(info, ["config", AUTO_PUSH_CONFIG_KEY, "true" if enabled else "false"])
+            return self._remote_info(info)
+
+    def _push_refspecs(self, info: RepoInfo) -> list[str]:
+        """The refs a push publishes: ``current``, ``baseline`` and the ``baseline/*`` tags that exist."""
+        refspecs = []
+        if self._rev(info, WORKING_REF) is not None:
+            refspecs.append(WORKING_REF)
+        if self._rev(info, BASELINE_REF) is not None:
+            refspecs.append(BASELINE_REF)
+        tags = self._repo(
+            info,
+            ["for-each-ref", "--format=%(refname)", f"refs/tags/{BASELINE_TAG_PREFIX}"],
+            read_only=True,
+        )
+        refspecs.extend(tags.stdout.decode("utf-8", "replace").split())
+        return refspecs
+
+    @staticmethod
+    def _is_non_fast_forward(output: str) -> bool:
+        return "non-fast-forward" in output or "fetch first" in output or "[rejected]" in output
+
+    def _push_refs(self, info: RepoInfo, url: str, timeout: float = _TIMEOUT_SECONDS) -> dict[str, Any]:
+        """Push the project's refs (see ``_push_refspecs``); raises on failure."""
+        refspecs = self._push_refspecs(info)
+        if not refspecs:
+            raise RepoConflict("The project has no commit yet; nothing to push")
+        result = self._repo(info, ["push", "--quiet", REMOTE_NAME, *refspecs], check=False, timeout=timeout)
+        if result.returncode != 0:
+            error = _stderr(result)
+            if self._is_non_fast_forward(error):
+                raise RepoConflict(
+                    "The remote has commits this instance does not have (another instance pushed "
+                    f"first): the push was rejected and nothing was changed. Pull first, resolve "
+                    f"any sync conflict, then push again. (git: {error})"
+                )
+            raise GitError(f"git push failed: {error}")
+        return {"url": url, "pushed": refspecs}
+
+    def push(self, project_dir: Path) -> dict[str, Any]:
+        """Explicit Push: publish ``current``, ``baseline`` and the ``baseline/*`` tags.
+
+        Never forced. A non-fast-forward rejection (the other instance pushed
+        first) is a ``RepoConflict`` (409) telling the user to pull first;
+        nothing is changed then. ``ValueError`` without a configured remote.
+        """
+        self._require_enabled()
+        with self._lock(project_dir):
+            info = self._usable_repo(project_dir)
+            url = self._remote_url(info)
+            if url is None:
+                raise ValueError("No remote is configured for this project; set a remote URL first")
+            result = self._push_refs(info, url)
+            self._record(project_dir, None)
+            return result
+
+    def _auto_push_if_enabled(self, project_dir: Path, info: RepoInfo) -> None:
+        """Push after a commit/baseline if the per-project opt-in is on. Never raises.
+
+        A failure (offline, rejected: pull first) is recorded as
+        ``last_error``; the commit itself already succeeded.
+        """
+        try:
+            url = self._remote_url(info)
+            if url is None or not self._auto_push_enabled(info):
+                return
+            self._push_refs(info, url, timeout=_AUTO_PUSH_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001 - the commit succeeded; pushing can be retried
+            if not isinstance(exc, (GitError, OSError, ValueError)):
+                logger.exception("Unexpected auto-push error for %s", project_dir)
+            self._record(
+                project_dir,
+                f"Auto-push failed (the commit is recorded locally; use Push after fixing the cause): {exc}",
+            )
+
+    def pull(
+        self, project_dir: Path, describe: Callable[[list[FileChange]], list[str]]
+    ) -> dict[str, Any]:
+        """Explicit Pull: fetch the remote and fast-forward ``current`` — never a merge commit.
+
+        Pending data changes are committed first (exactly the commit the next
+        auto-commit would have made), so the fast-forward never touches
+        unsaved work. The remote's ``baseline`` branch is fast-forwarded too
+        (skipped with a note when it diverged), and ``baseline/*`` tags are
+        fetched without overwriting differing local ones. Diverged
+        ``current`` histories are never merged: ``PullDiverged`` (409) flags
+        the sync conflict (mutations are blocked until the user reconciles
+        the branches in git). ``RepoConflict`` when the repository is paused;
+        ``ValueError`` without a configured remote.
+        """
+        self._require_enabled()
+        with self._lock(project_dir):
+            info = self.detect(project_dir)
+            if info.state in (STATE_OFF, STATE_GIT_MISSING, STATE_ERROR):
+                raise ValueError(info.message or "git is not available")
+            if info.state != STATE_READY:
+                raise RepoConflict(
+                    info.message
+                    or "The project repository is not on its working branch; pulling would change the wrong state"
+                )
+            url = self._remote_url(info)
+            if url is None:
+                raise ValueError("No remote is configured for this project; set a remote URL first")
+            notes: list[str] = []
+            self._commit_pending(info, describe)
+            listing = self._repo(info, ["ls-remote", "--", url], read_only=True)
+            remote_refs = {
+                line.split("\t", 1)[1]
+                for line in listing.stdout.decode("utf-8", "replace").splitlines()
+                if "\t" in line
+            }
+            branch_specs = [
+                f"+{ref}:refs/remotes/{REMOTE_NAME}/{ref.removeprefix('refs/heads/')}"
+                for ref in (WORKING_REF, BASELINE_REF)
+                if ref in remote_refs
+            ]
+            if branch_specs:
+                self._repo(info, ["fetch", "--quiet", REMOTE_NAME, *branch_specs])
+            if any(ref.startswith(f"refs/tags/{BASELINE_TAG_PREFIX}") for ref in remote_refs):
+                # Non-forced: a local baseline/* tag that differs is kept, with a note.
+                tags = self._repo(
+                    info,
+                    [
+                        "fetch",
+                        "--quiet",
+                        REMOTE_NAME,
+                        f"refs/tags/{BASELINE_TAG_PREFIX}*:refs/tags/{BASELINE_TAG_PREFIX}*",
+                    ],
+                    check=False,
+                )
+                if tags.returncode != 0:
+                    notes.append(
+                        f"Some baseline tags differ from the remote's and were not changed: {_stderr(tags)}"
+                    )
+            updated = False
+            remote_commit = self._rev(info, REMOTE_WORKING_REF)
+            if remote_commit is None:
+                notes.append(
+                    f"The remote has no '{WORKING_BRANCH}' branch yet; Push publishes this project."
+                )
+            else:
+                local = self._rev(info, "HEAD")
+                if local is None:
+                    # Unborn branch with nothing to commit: take the remote state.
+                    self._repo(info, ["reset", "-q", "--hard", remote_commit])
+                    updated = True
+                elif local == remote_commit or self._is_ancestor(info, remote_commit, local):
+                    pass  # up to date, or ahead: nothing to merge
+                elif self._is_ancestor(info, local, remote_commit):
+                    self._repo(info, ["merge", "--ff-only", "-q", remote_commit])
+                    updated = True
+                else:
+                    raise PullDiverged(SYNC_CONFLICT_MESSAGE)
+            remote_baseline = self._rev(info, REMOTE_BASELINE_REF)
+            if remote_baseline is not None:
+                old = self._rev(info, BASELINE_REF)
+                if old is None or (old != remote_baseline and self._is_ancestor(info, old, remote_baseline)):
+                    self._repo(info, ["update-ref", BASELINE_REF, remote_baseline, old or ""], check=False)
+                elif old != remote_baseline and not self._is_ancestor(info, remote_baseline, old):
+                    notes.append(
+                        f"The local '{BASELINE_BRANCH}' branch and the remote's have diverged; it was not moved."
+                    )
+            self._record(project_dir, None)
+            return {"url": url, "updated": updated, "head": self._rev(info, "HEAD"), "notes": notes}
+
+    def clone(self, url: str, target: Path) -> None:
+        """Clone ``url``'s '``current``' branch into ``target`` ("Add project from remote").
+
+        No template (no hooks land in the new repository) and the usual
+        hook/fsmonitor overrides apply to the checkout. The result must be a
+        usable project repository on ``current`` (``GitError`` otherwise). A
+        remote without a ``current`` branch is rejected by git itself.
+        """
+        self._require_enabled()
+        if self.git_version() is None:
+            raise ValueError(f"git was not found ('{self.settings.executable}')")
+        cleaned = self._check_remote_url(url)
+        self._run(
+            ["clone", "--quiet", "--template=", "--branch", WORKING_BRANCH, "--", cleaned, str(target)],
+            target.parent,
+        )
+        info = self.detect(target)
+        if info.state != STATE_READY:
+            raise GitError(f"the cloned repository is not usable ({info.message})")
+        self._ensure_excludes(info)
+
     # --- reading ----------------------------------------------------------------
 
     def status(self, project_dir: Path) -> dict[str, Any]:
@@ -1349,6 +1774,7 @@ class GitHistory:
             "can_enable": info.state == STATE_NO_REPO,
             "squash_window_minutes": self.settings.squash_window_seconds / 60,
             "author": None,
+            "remote": None,
         }
         if info.state not in (STATE_READY, STATE_PAUSED):
             return result
@@ -1365,6 +1791,7 @@ class GitHistory:
             result["pending_changes"] = len(self._changed_paths(info, read_only=True))
             name, email = self._identity(info)
             result["author"] = {"name": name, "email": email}
+            result["remote"] = self._remote_info(info)
             if info.state == STATE_PAUSED and not (info.detached or info.in_progress):
                 exists = self._repo(info, ["show-ref", "--verify", "-q", WORKING_REF], check=False, read_only=True)
                 result["can_enable"] = exists.returncode != 0

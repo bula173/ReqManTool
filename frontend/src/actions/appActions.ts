@@ -1,5 +1,8 @@
 import {
   IconBook,
+  IconCloudDownload,
+  IconCloudPlus,
+  IconCloudUpload,
   IconFileExport,
   IconFileImport,
   IconFolderOpen,
@@ -110,6 +113,16 @@ export const appActions: Action<'app'>[] = [
     },
   },
   {
+    // Clones a remote git repository into the data directory as a project.
+    id: 'file.addProjectFromRemote',
+    element: 'app',
+    label: 'Add project from remote',
+    icon: IconCloudPlus,
+    opensDialog: true,
+    isAvailable: () => true,
+    run: (ctx) => ctx.commands.openDialog({ kind: 'addProjectFromRemote' }),
+  },
+  {
     id: 'file.openFolder',
     element: 'app',
     label: 'Open project folder',
@@ -168,6 +181,52 @@ export const appActions: Action<'app'>[] = [
         (err) =>
           notifications.show({
             message: err instanceof ApiError ? err.message : 'Failed to enable history',
+            color: 'red',
+          }),
+      );
+    },
+  },
+  {
+    // Explicit push of the open project to its configured remote (Git panel parity).
+    id: 'project.gitPush',
+    element: 'app',
+    label: 'Push to remote',
+    icon: IconCloudUpload,
+    isAvailable: (ctx) => ctx.project !== null && ctx.gitStatus?.remote?.url != null,
+    run: (ctx) => {
+      ctx.commands.gitPush().then(
+        (result) =>
+          notifications.show({
+            message: `Pushed ${result.pushed.length} ref${result.pushed.length === 1 ? '' : 's'} to ${result.url}`,
+            color: 'green',
+          }),
+        (err) =>
+          notifications.show({
+            message: err instanceof ApiError ? err.message : 'Push failed',
+            color: 'red',
+          }),
+      );
+    },
+  },
+  {
+    // Explicit fetch + fast-forward of the open project from its remote.
+    id: 'project.gitPull',
+    element: 'app',
+    label: 'Pull from remote',
+    icon: IconCloudDownload,
+    isAvailable: (ctx) => ctx.project !== null && ctx.gitStatus?.remote?.url != null,
+    run: (ctx) => {
+      ctx.commands.gitPull().then(
+        (result) =>
+          notifications.show({
+            message: result.updated
+              ? 'Pulled: the project was updated'
+              : `Already up to date${result.notes.length > 0 ? ` (${result.notes.join(' ')})` : ''}`,
+            color: result.updated ? 'green' : 'gray',
+          }),
+        (err) =>
+          notifications.show({
+            message: err instanceof ApiError ? err.message : 'Pull failed',
             color: 'red',
           }),
       );

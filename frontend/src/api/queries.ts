@@ -8,6 +8,8 @@ import type {
   BaselineSnapshot,
   CsvImportResult,
   GitLog,
+  GitPullResult,
+  GitPushResult,
   GitStatus,
   LinkConfiguration,
   Module,
@@ -43,6 +45,9 @@ export const queryKeys = {
     ['projects', projectId, 'baselines', 'compare', from, to] as const,
   /** Mutation key of "Enable history (git)", for pending indicators (`useIsMutating`). */
   enableHistory: (projectId: string) => ['enableHistory', projectId] as const,
+  /** Mutation keys of Push / Pull, for pending indicators (`useIsMutating`). */
+  gitPush: (projectId: string) => ['gitPush', projectId] as const,
+  gitPull: (projectId: string) => ['gitPull', projectId] as const,
   config: ['config'] as const,
   version: ['version'] as const,
   templates: ['templates'] as const,
@@ -260,6 +265,82 @@ export function useEnableHistory(projectId: string) {
         predicate: (query) =>
           query.queryKey[0] === 'projects' && query.queryKey[1] === projectId && query.queryKey[6] === 'history',
       });
+    },
+  });
+}
+
+/**
+ * Sets (or removes, with null/empty) the project's git remote URL. The server
+ * validates the URL with `git ls-remote` (400 when unreachable) and answers
+ * with the new git status.
+ */
+export function useSetGitRemote(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (url: string | null) => api.put<GitStatus>(`/projects/${projectId}/git/remote`, { url }),
+    onSuccess: (status) => {
+      qc.setQueryData(queryKeys.gitStatus(projectId), status);
+    },
+  });
+}
+
+/** Turns the per-project auto-push opt-in on or off; answers with the new git status. */
+export function useSetGitAutoPush(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (enabled: boolean) => api.put<GitStatus>(`/projects/${projectId}/git/auto-push`, { enabled }),
+    onSuccess: (status) => {
+      qc.setQueryData(queryKeys.gitStatus(projectId), status);
+    },
+  });
+}
+
+/**
+ * Pushes `current`, `baseline` and the `baseline/*` tags to the project's
+ * remote. 409 when the remote has other commits (pull first), 400 without a
+ * configured remote or when git fails (network, access).
+ */
+export function useGitPush(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: queryKeys.gitPush(projectId),
+    mutationFn: () => api.post<GitPushResult>(`/projects/${projectId}/git/push`),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.gitStatus(projectId) });
+    },
+  });
+}
+
+/**
+ * Fetches the project's remote and fast-forwards `current` (never a merge
+ * commit): the project's data may change. Diverged histories are 409: the
+ * status then shows the sync conflict and mutations are blocked until the
+ * user reconciles the branches in git.
+ */
+export function useGitPull(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: queryKeys.gitPull(projectId),
+    mutationFn: () => api.post<GitPullResult>(`/projects/${projectId}/git/pull`),
+    onSettled: () => {
+      // A fast-forward may have changed any of the project's files; a failed
+      // pull still fetched (the status now shows the sync conflict).
+      qc.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+    },
+  });
+}
+
+/**
+ * "Add project from remote": clones a repository into the data directory and
+ * lists it as a project. 409 when its project id is already taken, 400 for an
+ * unreachable URL or an invalid clone.
+ */
+export function useAddProjectFromRemote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (url: string) => api.post<Project>('/projects/from-remote', { url }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.projects });
     },
   });
 }

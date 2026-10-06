@@ -22,6 +22,7 @@ project gets its repository right after it is created.
 from __future__ import annotations
 
 import functools
+import inspect
 import json
 import logging
 import re
@@ -31,10 +32,10 @@ from typing import Any, Callable
 
 from .csv_import import RESERVED_COLUMNS
 from .formats import PROJECT_FORMAT, NewerFormatError, upgrade
-from .git_repo import DEFAULT_LOG_LIMIT, LOG_LIMIT, GitHistory, RepoConflict
+from .git_repo import DEFAULT_LOG_LIMIT, LOG_LIMIT, GitError, GitHistory, RepoConflict
 from .history import FileChange, build_snapshot, compare_snapshots, describe_changes
 from .models import AttributeDefinition, LinkConfiguration, LinkPair, Module, Project, Requirement, View
-from .store import ProjectStore, validate_prefix
+from .store import PROJECT_SLUG_PATTERN, ProjectStore, validate_prefix
 from .templates import (
     BUILTIN_SOURCE,
     BUILTIN_TEMPLATES_DIR,
@@ -81,12 +82,24 @@ def _records_history(method: Callable) -> Callable:
     Applied to every public method that writes project files. Nested calls
     commit once, after the outermost one. A failed operation commits
     nothing; whatever it already wrote is included in the next commit.
+
+    A method whose first parameter is ``project_id`` (every mutation of an
+    existing project) is also refused with ``ConflictError`` (409), before
+    anything is written, while that project has a git sync conflict — its
+    ``current`` branch and the configured remote's have diverged (see
+    ``GitHistory.sync_conflict_message``); the user resolves it in git.
     """
+    parameters = list(inspect.signature(method).parameters)
+    guards_project = len(parameters) > 1 and parameters[1] == "project_id"
 
     @functools.wraps(method)
     def wrapper(self: "ProjectService", *args: Any, **kwargs: Any) -> Any:
         if self.store.is_recording():
             return method(self, *args, **kwargs)
+        if guards_project:
+            project_id = args[0] if args else kwargs.get("project_id")
+            if isinstance(project_id, str):
+                self._require_no_sync_conflict(project_id)
         with self.store.recording_writes() as touched:
             result = method(self, *args, **kwargs)
         for project_id in sorted(touched):
@@ -260,6 +273,107 @@ class ProjectService:
             raise ValueError(f"Invalid limit {limit!r}: expected an integer >= 1")
         return self.history.log(self.store.project_path(project_id), min(limit, LOG_LIMIT))
 
+    # --- remotes (git) -----------------------------------------------------------
+
+    def _require_no_sync_conflict(self, project_id: str) -> None:
+        """Refuse a mutation (409) while the project's git sync conflict is unresolved."""
+        if not self.history.enabled:
+            return
+        try:
+            project_dir = self.store.project_path(project_id)
+        except FileNotFoundError:
+            return  # the mutation itself reports the missing project
+        message = self.history.sync_conflict_message(project_dir)
+        if message is not None:
+            raise ConflictError(message)
+
+    def _git_remote_call(self, call: Callable[[], Any]) -> Any:
+        """Run a remote git operation, mapping its errors to the service's.
+
+        ``RepoConflict`` becomes ``ConflictError`` (409), carrying over
+        ``project_changed`` (a failed pull that already fetched: broadcast
+        anyway); ``GitError`` (network, access, git itself) becomes
+        ``ValueError`` (400).
+        """
+        try:
+            return call()
+        except RepoConflict as exc:
+            error = ConflictError(str(exc))
+            if getattr(exc, "project_changed", False):
+                error.project_changed = True  # type: ignore[attr-defined]
+            raise error from exc
+        except GitError as exc:
+            raise ValueError(str(exc)) from exc
+
+    def set_git_remote(self, project_id: str, url: str | None) -> dict[str, Any]:
+        """Set (or remove, with ``None``/empty) the project's remote URL; returns the new git status.
+
+        The URL is validated with ``git ls-remote`` (400 when unreachable).
+        Credentials are never stored: they stay with the user's git (ssh
+        agent / credential helper).
+        """
+        self.store.load_project(project_id)
+        project_dir = self.store.project_path(project_id)
+        self._git_remote_call(lambda: self.history.set_remote(project_dir, url))
+        return self.history.status(project_dir)
+
+    def set_git_auto_push(self, project_id: str, enabled: bool) -> dict[str, Any]:
+        """Turn the per-project auto-push opt-in on or off; returns the new git status."""
+        self.store.load_project(project_id)
+        project_dir = self.store.project_path(project_id)
+        self._git_remote_call(lambda: self.history.set_auto_push(project_dir, bool(enabled)))
+        return self.history.status(project_dir)
+
+    def git_push(self, project_id: str) -> dict[str, Any]:
+        """Push ``current``, ``baseline`` and the ``baseline/*`` tags to the project's remote.
+
+        A non-fast-forward rejection (another instance pushed first) is 409:
+        pull first. 400 without a configured remote or when git fails.
+        """
+        self.store.load_project(project_id)
+        return self._git_remote_call(lambda: self.history.push(self.store.project_path(project_id)))
+
+    def git_pull(self, project_id: str) -> dict[str, Any]:
+        """Fetch the project's remote and fast-forward ``current`` (never a merge commit).
+
+        Diverged histories are 409 with ``project_changed`` (the fetch
+        already happened, so the status now shows the sync conflict and
+        mutations are blocked until the user reconciles the branches in git).
+        """
+        self.store.load_project(project_id)
+        return self._git_remote_call(
+            lambda: self.history.pull(self.store.project_path(project_id), self._describer(project_id))
+        )
+
+    def add_project_from_remote(self, url: str) -> Project:
+        """Clone a remote repository into the data directory as a project ("Add project from remote").
+
+        The clone goes into a staging directory first and is validated like
+        any loaded project (its project.json must load); only then is it
+        moved into place under the id stored in its project.json, in one
+        rename. A taken id is 409 and an invalid clone is 400; either way
+        nothing is left behind.
+        """
+        cleaned = (url or "").strip()
+        with self.store.staging_store() as staging:
+            incoming = staging.root / "incoming"
+            self._git_remote_call(lambda: self.history.clone(cleaned, incoming))
+            project = staging.load_project("incoming")
+            project_id = project.id
+            if not isinstance(project_id, str) or not PROJECT_SLUG_PATTERN.fullmatch(project_id):
+                raise ValueError(
+                    f"The cloned repository's project.json has an unusable project id {project_id!r}"
+                )
+            # The staged project's folder must carry its final id for the rename.
+            incoming.rename(staging.root / project_id)
+            try:
+                self.store.publish_staged_project(staging, project_id)
+            except FileExistsError as exc:
+                raise ConflictError(
+                    f"A project '{project_id}' already exists in this data directory: {exc}"
+                ) from exc
+        return self.store.load_project(project_id)
+
     # --- baselines (git) ---------------------------------------------------------
 
     def create_baseline(self, project_id: str, name: str, description: str = "") -> dict[str, Any]:
@@ -271,6 +385,7 @@ class ProjectService:
         git off/missing is ``ValueError`` (400).
         """
         self.store.load_project(project_id)
+        self._require_no_sync_conflict(project_id)
         from . import __version__
 
         try:

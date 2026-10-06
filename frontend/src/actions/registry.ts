@@ -99,6 +99,7 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
     label: 'File',
     entries: [
       action('file.newProject'),
+      action('file.addProjectFromRemote'),
       action('file.openFolder'),
       divider,
       {
@@ -109,6 +110,8 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
       },
       action('file.saveAsTemplate'),
       action('project.enableHistory'),
+      action('project.gitPush'),
+      action('project.gitPull'),
       divider,
       action('file.importCsv'),
       {

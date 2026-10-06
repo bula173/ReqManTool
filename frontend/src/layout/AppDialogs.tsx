@@ -1,5 +1,6 @@
 import type { DialogRequest } from '../actions/types';
 import { AboutModal } from '../components/AboutModal';
+import { AddProjectFromRemoteModal } from '../components/AddProjectFromRemoteModal';
 import { DataDirModal } from '../components/DataDirSettings';
 import { ImportCsvModal } from '../components/ImportCsvModal';
 import { ImportTemplateModal } from '../components/ImportTemplateModal';
@@ -24,6 +25,8 @@ export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; 
           defaultTemplateId={dialog.templateId}
         />
       );
+    case 'addProjectFromRemote':
+      return <AddProjectFromRemoteModal opened onClose={onClose} />;
     case 'dataDir':
       return <DataDirModal opened onClose={onClose} />;
     case 'saveAsTemplate':

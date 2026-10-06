@@ -458,6 +458,59 @@
       clamping, and that a squash never amends a baselined commit. Not
       covered (see backlog): the 2a and review follow-ups; the UI was
       not tried in a browser; no frontend unit tests (no test runner).
+- [x] Git remotes: share projects between local tool instances (all four
+      parts of the 2026-10-05 item). (1) Configure: a per-project remote
+      URL stored as git remote `origin` in the project's own
+      `.git/config` (per instance; no project.json or data format change;
+      credentials never stored — the user's ssh agent / credential
+      helper), set via `PUT /projects/{id}/git/remote` (`url`, or `null`
+      to remove) and WS `project.git_set_remote`, validated with `git
+      ls-remote`. URL safety: only `ssh://`, `git+ssh`, `git://`,
+      `https://` and scp-like `user@host:path`; `<transport>::` helpers
+      (`ext::`, `fd::`), a leading `-` and `http://` are rejected;
+      `file://` and local paths are rejected unless
+      `REQMAN_GIT_ALLOW_FILE_REMOTES=1` (set by the backend tests only);
+      git itself is restricted with `GIT_ALLOW_PROTOCOL=ssh:git:https`
+      (+`file` with the opt-in) and `protocol.ext/fd.allow=never`. The
+      git status gained a `remote` field (url, auto_push, ahead/behind,
+      sync_conflict, last_error). (2) Sync: `POST
+      /projects/{id}/git/push` / WS `project.git_push` pushes `current`,
+      `baseline` and all `baseline/*` tags, never forced; a
+      non-fast-forward → 409 "Pull first". `POST /projects/{id}/git/pull`
+      / WS `project.git_pull` commits pending changes first, then
+      fast-forward only; the local `baseline` is fast-forwarded when
+      possible, differing baseline tags are kept with notes. A diverged
+      `current` is never merged: 409 and the project is in "sync
+      conflict", derived from refs (self-heals once the user resolves it
+      in git); while conflicted all mutations and baseline creation are
+      blocked with 409. Opt-in auto-push per project (`PUT
+      /projects/{id}/git/auto-push` / WS `project.git_set_auto_push`,
+      `reqman.autopush` in `.git/config`, cleared when the remote is
+      removed or replaced) after each auto-commit and baseline, 10 s
+      timeout, failures recorded as `last_error` and never raised;
+      auto-pushed commits are never amended, so auto-push effectively
+      disables session squashing. (3) Clone: `POST /projects/from-remote`
+      / WS `project.create_from_remote` clones `--branch current` into
+      staging, validates it like any loaded project (format upgrade,
+      newer-format check, slug id) and publishes it atomically under the
+      project.json id; id taken → 409, invalid/unreachable → 400, no
+      leftovers; `origin` stays configured. (4) Concurrency: instances
+      meet at push time (rejection + pull first); live sync stays per
+      instance. All five WS methods are mutating and broadcast `changed`
+      (a failed diverged pull too); all git calls go through
+      `git_repo.py`. Backend: `git_repo.py`, `service.py`, `app.py`.
+      Frontend: `GitStatusPanel.tsx` "Remote" section (set/change/remove
+      URL, Push/Pull, ahead/behind, auto-push switch, sync-conflict
+      alert, last error); new `AddProjectFromRemoteModal.tsx` (also a
+      button in the home-page empty state); File menu actions
+      `project.gitPush`, `project.gitPull` and `file.addProjectFromRemote`;
+      API types and queries (pull invalidates the whole project). Backend
+      tests 935 → 997 (`test_git_remotes.py`,
+      `test_git_remotes_edge_cases.py`, `test_git_remote_security.py`;
+      `conftest.py` sets the file-remote opt-in for local bare repos).
+      Not covered: real credential-requiring remotes (the tests are
+      offline by design); the review follow-ups (see backlog); the UI was
+      not tried in a browser; no frontend unit tests (no test runner).
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -568,28 +621,22 @@ to the categories above.
       snapshots despite `staleTime: Infinity`; a description whose final
       paragraph looks like `Reqman-*:` trailers is swallowed when
       listing.
-- [ ] Git remotes: share projects between local tool instances (e.g. via
-      GitLab/GitHub). Requested 2026-10-05; builds on the git-integration
-      item. Each user runs their own local ReqManTool; a project's repo
-      gets a configurable remote. (1) Configure: per project set remote
-      URL (SSH or HTTPS; credentials stay with the user's git — ssh agent
-      / credential helper, never stored by ReqManTool), shown in the Git
-      panel; validated with `git ls-remote`. (2) Sync: explicit Push and
-      Pull/Fetch actions in the Git panel (and menu bar) — push `current`
-      and `baseline` branches plus `baseline/*` tags; pull with
-      fast-forward; a non-fast-forward or merge conflict is NOT
-      auto-merged: the project is flagged "sync conflict", mutations are
-      blocked until resolved (resolve in git by the user; a later item
-      may add in-app requirement-level merge). Auto-push after each
-      commit/baseline is an opt-in per-project setting. (3) Clone: "Add
-      project from remote" clones a repo into the data directory and
-      lists it as a project (validated like any loaded project).
-      (4) Concurrency: two instances editing the same project meet at
-      push time (reject + pull first); live-sync stays per-instance;
-      the user-handling item's ETag protection covers same-instance
-      conflicts. REST + WebSocket parity; all git calls via the existing
-      git_repo subprocess wrapper; remote operations never run
-      automatically without the opt-in.
+- [ ] Git remotes: review follow-ups (2026-10-06), all nits. The
+      remote-URL validator regexes require a letter first, but git also
+      allows a digit (`1abc::x`, `1foo://x` pass validation and are only
+      blocked by `GIT_ALLOW_PROTOCOL` with git's raw error) — use
+      `^[A-Za-z0-9][A-Za-z0-9+.-]*` and add tests; a local/`file://`
+      remote set outside the app now fails Push/Pull/auto-push with git's
+      raw "transport 'file' not allowed" — map it to a clear message
+      (only ssh/git/https remotes are supported; use Change… to set one);
+      `GitStatusPanel` RemoteSync keeps its `editing`/`url` local state
+      when live sync changes the remote while the form is open — reset on
+      a `remote.url` change (cosmetic); auto-push runs synchronously
+      inside the mutation (10 s timeout) — consider pushing in the
+      background so an unreachable remote never stalls edits. Product
+      decisions to confirm: local paths / shared-filesystem remotes are
+      rejected in production (only allowed via the test opt-in), and
+      auto-push disables session squashing.
 - [ ] Server edition: login (GitLab / OIDC / LDAP), users, project
       membership, module edit locks. Requested 2026-10-06 (replaces the
       2026-10-04 "User handling" item; scope change confirmed by the user).
