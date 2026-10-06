@@ -11,7 +11,7 @@ Use evidence from the smallest relevant check first, then widen only as needed.
 
 - Backend domain or persistence change: run the closest `backend/tests/test_service.py` tests, then `cd backend && pytest -q`.
 - REST or WebSocket change: run `backend/tests/test_api.py`, then the full backend suite.
-- Frontend component/API change: run `cd frontend && npm run build` and `npm run lint`.
+- Frontend component/API change: run `cd frontend && npm test`, then `npm run build` and `npm run lint`.
 - Cross-stack feature: run focused backend tests, frontend build/lint, then both full suites.
 
 ## Review points
