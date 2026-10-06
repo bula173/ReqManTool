@@ -513,6 +513,165 @@ def test_move_requirement_after_removal_does_not_reuse_an_existing_order(service
     assert moved.order == 2
 
 
+# --- move_requirement with an index ------------------------------------------
+
+
+def _children(service, project_id, module_id, parent_id):
+    """``[(id, order), ...]`` of ``parent_id``'s children, sorted by (order, id)."""
+    reqs = service.list_requirements(project_id, module_id)
+    return sorted(((r.id, r.order) for r in reqs if r.parent_id == parent_id), key=lambda t: (t[1], t[0]))
+
+
+def _tree(service, count=3):
+    """A project/module with a top-level ``target`` holding ``count`` children and a top-level ``mover``."""
+    project = create_project(service)
+    module = create_module(service, project.id)
+    target = service.add_requirement(project.id, module.id, {"object_text": "Target"})
+    children = [
+        service.add_requirement(project.id, module.id, {"object_text": f"C{i}"}, parent_id=target.id)
+        for i in range(count)
+    ]
+    mover = service.add_requirement(project.id, module.id, {"object_text": "Mover"})
+    return project, module, target, [c.id for c in children], mover
+
+
+def test_move_requirement_without_index_still_appends_and_leaves_siblings_untouched(service):
+    project, module, target, kids, mover = _tree(service)
+    service.remove_requirement(project.id, module.id, kids[0])  # leaves a gap at order 0
+
+    moved = service.move_requirement(project.id, module.id, mover.id, target.id)
+
+    assert moved.order == 3
+    assert _children(service, project.id, module.id, target.id) == [(kids[1], 1), (kids[2], 2), (mover.id, 3)]
+
+
+@pytest.mark.parametrize(
+    "index, position",
+    [(0, 0), (1, 1), (2, 2), (3, 3)],
+)
+def test_move_requirement_with_index_places_and_renumbers(service, index, position):
+    project, module, target, kids, mover = _tree(service)
+
+    moved = service.move_requirement(project.id, module.id, mover.id, target.id, index)
+
+    expected = list(kids)
+    expected.insert(position, mover.id)
+    assert moved.parent_id == target.id
+    assert moved.order == position
+    assert _children(service, project.id, module.id, target.id) == [(rid, i) for i, rid in enumerate(expected)]
+    # The returned requirement matches what was persisted.
+    assert service.get_requirement(project.id, module.id, mover.id).order == position
+
+
+def test_move_requirement_index_past_the_end_is_clamped_to_append(service):
+    project, module, target, kids, mover = _tree(service)
+
+    moved = service.move_requirement(project.id, module.id, mover.id, target.id, 99)
+
+    assert moved.order == 3
+    assert _children(service, project.id, module.id, target.id) == [(kids[0], 0), (kids[1], 1), (kids[2], 2), (mover.id, 3)]
+
+
+@pytest.mark.parametrize("bad", [-1, 1.5, "1", True, False, [0], {"i": 0}])
+def test_move_requirement_rejects_an_invalid_index_without_writing(service, bad):
+    project, module, target, kids, mover = _tree(service)
+    before = _children(service, project.id, module.id, None)
+
+    with pytest.raises(ValueError, match="must be a non-negative integer"):
+        service.move_requirement(project.id, module.id, mover.id, target.id, bad)
+
+    assert service.get_requirement(project.id, module.id, mover.id).parent_id is None
+    assert _children(service, project.id, module.id, None) == before
+
+
+def test_move_requirement_same_parent_with_index_repositions(service):
+    project, module, target, kids, mover = _tree(service, count=4)
+
+    moved = service.move_requirement(project.id, module.id, kids[3], target.id, 0)
+    assert moved.order == 0
+    assert [rid for rid, _ in _children(service, project.id, module.id, target.id)] == [kids[3], kids[0], kids[1], kids[2]]
+
+    service.move_requirement(project.id, module.id, kids[3], target.id, 2)
+    assert _children(service, project.id, module.id, target.id) == [
+        (kids[0], 0), (kids[1], 1), (kids[3], 2), (kids[2], 3)
+    ]
+
+    # Moving to its current position changes nothing.
+    service.move_requirement(project.id, module.id, kids[3], target.id, 2)
+    assert _children(service, project.id, module.id, target.id) == [
+        (kids[0], 0), (kids[1], 1), (kids[3], 2), (kids[2], 3)
+    ]
+
+
+def test_move_requirement_to_root_with_index(service):
+    project, module, target, kids, mover = _tree(service)
+
+    moved = service.move_requirement(project.id, module.id, kids[1], None, 1)
+
+    assert moved.parent_id is None
+    assert _children(service, project.id, module.id, None) == [(target.id, 0), (kids[1], 1), (mover.id, 2)]
+    # The old parent keeps its remaining children in order (the gap is not renumbered).
+    assert _children(service, project.id, module.id, target.id) == [(kids[0], 0), (kids[2], 2)]
+
+
+def test_move_requirement_with_index_renumbers_duplicate_legacy_orders(service, tmp_path):
+    project, module, target, kids, mover = _tree(service)
+    # Simulate hand-edited/legacy data: every child of target has order 0.
+    for rid in kids:
+        req = service.get_requirement(project.id, module.id, rid)
+        req.order = 0
+        service.store.save_requirement(project.id, module.id, req)
+
+    service.move_requirement(project.id, module.id, mover.id, target.id, 1)
+
+    # Ties are broken by id, deterministically; the result is contiguous.
+    ordered = sorted(kids)
+    assert _children(service, project.id, module.id, target.id) == [
+        (ordered[0], 0), (mover.id, 1), (ordered[1], 2), (ordered[2], 3)
+    ]
+
+
+def test_move_requirement_with_index_writes_one_history_record(service, monkeypatch):
+    project, module, target, kids, mover = _tree(service)
+    calls = []
+    monkeypatch.setattr(service, "_auto_commit", lambda project_id: calls.append(project_id))
+
+    service.move_requirement(project.id, module.id, mover.id, target.id, 0)
+
+    assert calls == [project.id]
+
+
+def test_move_requirement_with_index_keeps_parent_constraints(service):
+    project, module, target, kids, mover = _tree(service)
+    other = create_module(service, project.id, "Other", "OTH")
+    foreign = service.add_requirement(project.id, other.id, {"object_text": "Foreign"})
+    before = _children(service, project.id, module.id, target.id)
+
+    with pytest.raises(FileNotFoundError):
+        service.move_requirement(project.id, module.id, mover.id, foreign.id, 0)
+    with pytest.raises(ValueError):
+        service.move_requirement(project.id, module.id, target.id, kids[0], 0)
+    with pytest.raises(ValueError):
+        service.move_requirement(project.id, module.id, target.id, target.id, 0)
+
+    assert service.get_requirement(project.id, module.id, mover.id).parent_id is None
+    assert service.get_requirement(project.id, module.id, target.id).parent_id is None
+    assert _children(service, project.id, module.id, target.id) == before
+
+
+def test_move_requirement_with_index_keeps_json_format(service, tmp_path):
+    project, module, target, kids, mover = _tree(service)
+
+    service.move_requirement(project.id, module.id, mover.id, target.id, 0)
+
+    files = list(tmp_path.rglob(f"{mover.id}.json"))
+    assert len(files) == 1
+    text = files[0].read_text()
+    data = json.loads(text)
+    assert text == json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    assert list(data) == list(service.get_requirement(project.id, module.id, kids[0]).to_dict())
+
+
 def test_copy_requirement_after_removal_does_not_reuse_an_existing_order(service):
     project = create_project(service)
     module = create_module(service, project.id)

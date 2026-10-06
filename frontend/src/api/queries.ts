@@ -620,9 +620,11 @@ export function useAddRequirement(projectId: string, moduleId: string) {
 export function useMoveRequirement(projectId: string, moduleId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, parentId }: { id: string; parentId: string | null }) =>
+    /** `index`: 0-based position among the new parent's children; omitted = append as the last child. */
+    mutationFn: ({ id, parentId, index }: { id: string; parentId: string | null; index?: number }) =>
       api.put<Requirement>(`/projects/${projectId}/modules/${moduleId}/requirements/${id}/parent`, {
         parent_id: parentId,
+        ...(index !== undefined ? { index } : {}),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.requirements(projectId, moduleId) });

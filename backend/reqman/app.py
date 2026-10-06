@@ -249,6 +249,9 @@ class UpdateRequirementBody(BaseModel):
 
 class MoveRequirementBody(BaseModel):
     parent_id: str | None = None
+    # Optional 0-based position among the new parent's children; the service
+    # validates it (non-negative int) so REST and WebSocket reject alike.
+    index: Any = None
 
 
 class ReorderRequirementBody(BaseModel):
@@ -706,7 +709,7 @@ async def remove_requirement(project_id: str, module_id: str, requirement_id: st
 @app.put("/projects/{project_id}/modules/{module_id}/requirements/{requirement_id}/parent")
 async def move_requirement(project_id: str, module_id: str, requirement_id: str, body: MoveRequirementBody):
     requirement = _wrap(
-        service.move_requirement, project_id, module_id, requirement_id, body.parent_id
+        service.move_requirement, project_id, module_id, requirement_id, body.parent_id, body.index
     )
     await manager.broadcast(project_id)
     return requirement.to_dict()
@@ -825,7 +828,7 @@ RPC_METHODS = {
         {"id": p["id"], "removed": True},
     )[1],
     "requirement.move": lambda p: service.move_requirement(
-        p["project_id"], p["module_id"], p["id"], p.get("parent_id")
+        p["project_id"], p["module_id"], p["id"], p.get("parent_id"), p.get("index")
     ),
     "requirement.reorder": lambda p: service.reorder_requirement(
         p["project_id"], p["module_id"], p["id"], p["direction"]

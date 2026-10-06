@@ -511,6 +511,47 @@
       Not covered: real credential-requiring remotes (the tests are
       offline by design); the review follow-ups (see backlog); the UI was
       not tried in a browser; no frontend unit tests (no test runner).
+- [x] Left panel tabs: Workspace / Project / Module (2026-10-04 item). The
+      left panel (`Sidebar.tsx`) has three drill-down tabs; the active tab
+      (`reqman.leftPanel.tab`) and the last chosen project
+      (`reqman.leftPanel.projectId`) are remembered per browser.
+      **Workspace**: the project tree (projects, subprojects, stub
+      projects, loading/error/empty states, "New project"), no longer
+      listing modules; a separate chevron expands a project in place,
+      clicking a project opens it and switches to the Project tab.
+      **Project** (new `ProjectTab.tsx`): the project from the URL or the
+      last pick, "Up to <parent>", subprojects (drill down), "New
+      subproject", modules with their prefix and "New module"; clicking a
+      module opens it and switches to the Module tab; loading, error,
+      empty, not-found and stub states. **Module** (new
+      `ModuleOutline.tsx` + pure helpers in `requirementOutline.ts`): a
+      collapsible outline of the open module — each node shows id, start
+      of ObjectText and an Object Type icon (attribute id `object_type`
+      or name "Object Type"); expand/collapse all; a filter on id/text
+      showing matches with their ancestors expanded; clicking a node
+      selects it and scrolls the table via `?highlight=`, a selection
+      made elsewhere opens and scrolls the outline; right-click opens the
+      existing requirement context menu; keyboard Up/Down, Enter/Space,
+      Left/Right; drag-and-drop reorders or reparents within the module
+      (before, after, inside, first child of an expanded node, end of the
+      top level), one server call per drop. Server: move takes an
+      optional `index` (`PUT /projects/{p}/modules/{m}/requirements/{r}/
+      parent` body / WS `requirement.move`, via
+      `ProjectService.move_requirement`) — the 0-based position among the
+      new parent's children, clamped past the end, invalid → 400 /
+      -32602; without it the move appends as before; with it the new
+      parent's children are renumbered 0..n-1 (repairing duplicate legacy
+      orders); one commit and one broadcast per move. Module page: the
+      scroll to a revealed row waits until the row has rendered.
+      `docs/ARCHITECTURE.md` documents `index`. Backend tests 997 → 1025
+      (`test_service.py`, `test_api.py`, `test_git_history.py`). Browser
+      smoke test against a scratch backend passed (drill-down, filter,
+      drag-and-drop, context menu, live sync, reload). Not covered: the
+      outline selection is not in the URL (only tab and last project, per
+      browser); project references in Workspace, module folders, the
+      collapsed rail and context menus on project/module nodes wait for
+      those items; no frontend unit tests (no test runner; `planDrop`
+      checked with a throwaway script); review follow-ups (see backlog).
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -604,8 +645,8 @@ to the categories above.
       `requires-python` pin); a settings UI and config keys for the git
       settings (needs a CONFIG_FORMAT bump with migration); raw
       `git blame` fallback; author from Cloudflare Access once user
-      handling exists (remotes/push are the separate "Git remotes" item
-      below). The user's current data dir inside the ReqManTool checkout
+      handling exists (remotes/push: done, see "Git remotes" in Done).
+      The user's current data dir inside the ReqManTool checkout
       shows `nested`, so it gets no history until moved.
 - [ ] Git baselines: review follow-ups (2026-10-05, from the slice 2b
       review). Browse reads the whole baseline tree into memory per
@@ -813,23 +854,22 @@ to the categories above.
       confirmation dialogs, separated from other Edit entries. Same
       actions also available to the later left/right-click menus. No
       backend change.
-- [ ] Left panel tabs: Workspace / Project / Module. Requested 2026-10-04.
-      The left panel gets three tabs that drill down: **Workspace** — all
-      projects in the data directory (top-level projects with their
-      subproject tree, project references visible), picking one selects it
-      for the next tab; **Project** — the chosen project's subprojects and
-      its modules (inside module folders once that item lands), picking a
-      module opens it; **Module** — a collapsible outline of the open
-      module's requirement tree (headings / parent requirements expand and
-      collapse, each node shows id + start of ObjectText, Object Type
-      icon once templates set it), clicking a node selects and scrolls to
-      that requirement in the table and detail panel; expand/collapse all;
-      filter box. Selection and the active tab are kept in the URL /
-      per browser; live sync refreshes all three. Left-click/right-click
-      menus apply to every node; drag-and-drop in the Module outline
-      reorders/reparents within the module (same rules as Move/Cut-Paste).
-      Works with the collapsible-panel item (the tab strip stays visible
-      on the collapsed rail).
+- [ ] Left panel tabs: review follow-ups (2026-10-06). (1) The Module
+      outline filter is O(n²): `ancestorIdsOf` rebuilds a Map per match
+      (about 1.3 s per keystroke at 5,000 requirements) — memoize, build
+      the index once, consider `useDeferredValue`. (2) Keyboard tree gaps:
+      the roving tabindex follows the selection, not the focus; no
+      ArrowLeft-to-parent, ArrowRight-to-first-child, Home or End; the
+      root drop zone sits inside `role="tree"`; a keyboard-opened context
+      menu appears at 0,0. (3) The outline selection is not kept in the
+      URL; the spec asks for it (e.g. `?selected=`). (4) "Expand all"
+      stays enabled when stale collapsed ids remain. (5) The table
+      (`ModulePage.tsx:67`, `actions/requirementActions.tsx:38`) sorts
+      siblings by `order` only, without the id tie-break the outline and
+      the server use — with duplicate legacy orders the two views may
+      differ. (6) The `ExpandToggle` span nests interactive content inside
+      the NavLink. (7) `planDrop` needs frontend unit tests once a runner
+      exists (see the frontend test runner item).
 - [ ] Module templates + heading skeletons in project and module templates.
       Requested 2026-10-04 (extends the delivered project templates).
       (1) Module templates: JSON files (built-in + user, like project

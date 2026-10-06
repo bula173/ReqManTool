@@ -1063,8 +1063,26 @@ class ProjectService:
 
     @_records_history
     def move_requirement(
-        self, project_id: str, module_id: str, requirement_id: str, parent_id: str | None
+        self,
+        project_id: str,
+        module_id: str,
+        requirement_id: str,
+        parent_id: str | None,
+        index: Any = None,
     ) -> Requirement:
+        """Make ``requirement_id`` a child of ``parent_id`` (``None``: top level).
+
+        Without ``index`` the requirement is appended after the new parent's
+        last child and no other requirement is touched. With ``index`` (a
+        non-negative int) it is placed at that 0-based position among the new
+        parent's children after the move; an index past the end appends. The
+        new parent's children are then renumbered ``0..n-1`` in their current
+        order (ties by id), which also repairs duplicate or gapped orders. Moving
+        within the same parent with an index repositions the requirement.
+        """
+        if index is not None and (isinstance(index, bool) or not isinstance(index, int) or index < 0):
+            raise ValueError(f"Invalid index {index!r}: must be a non-negative integer")
+
         requirements = self.store.load_all_requirements(project_id, module_id)
         if not any(r.id == requirement_id for r in requirements):
             raise FileNotFoundError(f"Requirement '{requirement_id}' not found in module '{module_id}'")
@@ -1079,10 +1097,22 @@ class ProjectService:
 
         requirement = self.store.load_requirement(project_id, module_id, requirement_id)
         requirement.parent_id = parent_id
-        requirement.order = self._next_sibling_order(
-            [r for r in requirements if r.id != requirement_id], parent_id
+        if index is None:
+            requirement.order = self._next_sibling_order(
+                [r for r in requirements if r.id != requirement_id], parent_id
+            )
+            self.store.save_requirement(project_id, module_id, requirement)
+            return requirement
+
+        siblings = sorted(
+            (r for r in requirements if r.parent_id == parent_id and r.id != requirement_id),
+            key=lambda r: (r.order, r.id),
         )
-        self.store.save_requirement(project_id, module_id, requirement)
+        siblings.insert(min(index, len(siblings)), requirement)
+        for position, sibling in enumerate(siblings):
+            if sibling is requirement or sibling.order != position:
+                sibling.order = position
+                self.store.save_requirement(project_id, module_id, sibling)
         return requirement
 
     @_records_history

@@ -119,6 +119,8 @@ export function ModulePage() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map());
+  // A row to scroll to once it is rendered (its ancestors may just have been expanded).
+  const scrollTargetRef = useRef<string | null>(null);
 
   const highlightId = searchParams.get('highlight');
 
@@ -134,9 +136,7 @@ export function ModulePage() {
       return next;
     });
     commands.selectRequirement(highlightId);
-
-    const row = rowRefs.current.get(highlightId);
-    row?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    scrollTargetRef.current = highlightId;
 
     setSearchParams(
       (prev) => {
@@ -148,6 +148,16 @@ export function ModulePage() {
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlightId, requirementsQuery.data]);
+
+  // After every render: scroll to the pending row once it exists.
+  useEffect(() => {
+    const targetId = scrollTargetRef.current;
+    if (!targetId) return;
+    const row = rowRefs.current.get(targetId);
+    if (!row) return;
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    scrollTargetRef.current = null;
+  });
 
   if (!projectId || !moduleId) return null;
 
@@ -202,7 +212,7 @@ export function ModulePage() {
           return next;
         });
         commands.selectRequirement(targetId);
-        rowRefs.current.get(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        scrollTargetRef.current = targetId;
       } else {
         navigate(`/projects/${projectId}/modules/${result.module_id}?highlight=${targetId}`);
       }

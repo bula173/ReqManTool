@@ -941,3 +941,83 @@ def test_add_attribute_rejects_unknown_type_and_blank_required_default_on_rest_a
         response = _rpc(ws, "attribute.add", {"project_id": project_id, **body})
     assert response["error"] == {"code": -32602, "message": expected}
     assert [a["id"] for a in client.get(f"/projects/{project_id}").json()["attributes"]] == ["object_text"]
+
+
+# --- requirement move with an index ----------------------------------------------
+
+
+def _move_fixture(client):
+    """A module with a top-level ``target`` holding three children and a top-level ``mover``."""
+    project_id, module_id = _project_and_module(client)
+    url = f"/projects/{project_id}/modules/{module_id}/requirements"
+    target = client.post(url, json={"attributes": {"object_text": "Target"}}).json()["id"]
+    kids = [
+        client.post(url, json={"attributes": {"object_text": f"C{i}"}, "parent_id": target}).json()["id"]
+        for i in range(3)
+    ]
+    mover = client.post(url, json={"attributes": {"object_text": "Mover"}}).json()["id"]
+    return project_id, module_id, target, kids, mover
+
+
+def _child_ids(client, project_id, module_id, parent_id):
+    reqs = client.get(f"/projects/{project_id}/modules/{module_id}/requirements").json()
+    children = sorted((r for r in reqs if r["parent_id"] == parent_id), key=lambda r: (r["order"], r["id"]))
+    return [(r["id"], r["order"]) for r in children]
+
+
+def test_move_requirement_rest_with_index_places_and_broadcasts_once(client):
+    project_id, module_id, target, kids, mover = _move_fixture(client)
+    url = f"/projects/{project_id}/modules/{module_id}/requirements/{mover}/parent"
+
+    with client.websocket_connect("/ws") as ws:
+        resp = client.put(url, json={"parent_id": target, "index": 1})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["parent_id"] == target
+        assert resp.json()["order"] == 1
+        assert json.loads(ws.receive_text()) == {"event": "changed", "project_id": project_id}
+        # The next event is a later, distinguishable mutation: the move broadcast once.
+        client.post("/projects", json={"name": "Other"})
+        assert json.loads(ws.receive_text()) == {"event": "changed", "project_id": "other"}
+
+    assert _child_ids(client, project_id, module_id, target) == [(kids[0], 0), (mover, 1), (kids[1], 2), (kids[2], 3)]
+
+    # Without an index the move still appends, as before.
+    resp = client.put(url, json={"parent_id": None})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["parent_id"] is None
+    assert resp.json()["order"] == 1
+
+
+def test_move_requirement_ws_with_index_places_and_broadcasts_once(client):
+    project_id, module_id, target, kids, mover = _move_fixture(client)
+
+    with client.websocket_connect("/ws") as ws1, client.websocket_connect("/ws") as ws2:
+        response = _rpc(ws1, "requirement.move", {
+            "project_id": project_id, "module_id": module_id, "id": mover, "parent_id": target, "index": 0,
+        })
+        assert response["result"]["parent_id"] == target
+        assert response["result"]["order"] == 0
+        assert json.loads(ws2.receive_text()) == {"event": "changed", "project_id": project_id}
+        client.post("/projects", json={"name": "Other"})
+        assert json.loads(ws2.receive_text()) == {"event": "changed", "project_id": "other"}
+        # The sender got no broadcast of its own move.
+        assert json.loads(ws1.receive_text()) == {"event": "changed", "project_id": "other"}
+
+    assert _child_ids(client, project_id, module_id, target) == [(mover, 0), (kids[0], 1), (kids[1], 2), (kids[2], 3)]
+
+
+@pytest.mark.parametrize("bad", [-1, 1.5, "1", "abc", True, [0]])
+def test_move_requirement_invalid_index_is_rejected_alike_via_rest_and_ws(client, bad):
+    project_id, module_id, target, kids, mover = _move_fixture(client)
+    body = {"parent_id": target, "index": bad}
+
+    resp = client.put(f"/projects/{project_id}/modules/{module_id}/requirements/{mover}/parent", json=body)
+    assert resp.status_code == 400, resp.text
+    assert "must be a non-negative integer" in resp.json()["detail"]
+
+    with client.websocket_connect("/ws") as ws:
+        response = _rpc(ws, "requirement.move", {"project_id": project_id, "module_id": module_id, "id": mover, **body})
+    assert response["error"]["code"] == -32602
+    assert response["error"]["message"] == resp.json()["detail"]
+
+    assert _child_ids(client, project_id, module_id, target) == [(kids[0], 0), (kids[1], 1), (kids[2], 2)]

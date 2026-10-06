@@ -220,6 +220,23 @@ def test_every_mutation_leaves_a_clean_tree(service, root, clock):
     assert service.git_status(project.id)["last_error"] is None
 
 
+def test_positional_move_is_one_commit_with_every_renumbered_sibling(service, root, clock):
+    project, module, req = _project_with_requirement(service)
+    folder = root / project.id
+    first = service.add_requirement(project.id, module.id, {"object_text": "First"}, parent_id=req.id)
+    second = service.add_requirement(project.id, module.id, {"object_text": "Second"}, parent_id=req.id)
+    mover = service.add_requirement(project.id, module.id, {"object_text": "Mover"})
+    clock.offset = 3600
+    before = len(commits(folder))
+
+    service.move_requirement(project.id, module.id, mover.id, req.id, 0)
+
+    assert len(commits(folder)) == before + 1
+    assert git(folder, "status", "--porcelain") == ""
+    changed = {Path(p).stem for p in git(folder, "show", "--name-only", "--format=", "HEAD").split()}
+    assert changed == {mover.id, first.id, second.id}
+
+
 def test_user_staged_files_are_never_committed(service, root, clock):
     project, module, req = _project_with_requirement(service)
     folder = root / project.id

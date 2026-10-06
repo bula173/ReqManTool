@@ -214,7 +214,13 @@ Removing a requirement with children **promotes** them one level (their
 cascading the delete or leaving orphans. Siblings carry an explicit `order`
 (see `reorder_requirement`, `move_requirement`, `copy_requirement` — all
 three keep it consistent: append-at-end on move/copy, adjacent swap on
-reorder).
+reorder). Move also takes an optional `index` (REST body field and
+`requirement.move` param; a non-negative int, else 400 / -32602): the
+0-based position among the new parent's children after the move, clamped
+to the end. With it, that parent's children are renumbered `0..n-1` in
+(`order`, id) order — one write set, one commit, one broadcast; the Module
+outline's drag-and-drop uses it. Without it the requirement is appended and
+nothing else is rewritten.
 
 ### Link configurations ("link modules")
 
@@ -769,7 +775,7 @@ resource:
 | Attributes | `POST /projects/{id}/attributes` |
 | Link configurations | `POST/GET /projects/{id}/link-configurations`, `DELETE .../link-configurations/{config_id}` |
 | Modules | `POST/GET /projects/{id}/modules`, `GET .../modules/{id}`, `POST .../modules/{id}/purge`, `POST /projects/{project_id}/modules/{module_id}/reorder` (`{"direction": "up" \| "down"}`; WS: `module.reorder`) |
-| Requirements | `POST/GET .../requirements`, `GET/PUT/DELETE .../requirements/{id}`, `PUT .../requirements/{id}/parent` (move), `POST .../requirements/{id}/reorder`, `POST .../requirements/{id}/copy` |
+| Requirements | `POST/GET .../requirements`, `GET/PUT/DELETE .../requirements/{id}`, `PUT .../requirements/{id}/parent` (move; body `parent_id`, optional `index`), `POST .../requirements/{id}/reorder`, `POST .../requirements/{id}/copy` |
 | Links | `POST/DELETE /projects/{id}/links` |
 | Export | `GET /projects/{id}/export/reqif`, `GET /projects/{id}/export/csv` |
 | Import | `POST /projects/{id}/modules/{module_id}/import/csv` (raw UTF-8 CSV request body, `Content-Type: text/csv` required (415 otherwise), at most 10 MiB (413); WS: `requirement.import_csv`) |
