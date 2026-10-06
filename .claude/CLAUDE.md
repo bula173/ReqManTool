@@ -23,7 +23,7 @@ ReqManTool is a local requirements-management application with a Python/FastAPI 
 4. Preserve the JSON data format, stable field order, two-space indentation, and trailing newline. Treat user data as version-controlled.
 5. Requirement IDs, project/module IDs, parent constraints, ordering, link configuration, system attributes, and purge semantics are server-owned rules.
 6. Keep frontend API types, query invalidation, loading/error states, and live-sync behavior aligned with backend changes.
-7. Do not add authentication, multi-user permissions, or a database unless the user explicitly changes the project scope.
+7. Authentication, users, roles and edit locks belong to the **server edition** only (backlog item "Server edition"); the **local edition** must keep working with no login. Never add a database: persistence stays JSON files + one git repo per project.
 8. Prefer small, focused changes. Do not rewrite unrelated code or erase existing user changes.
 9. Add or update focused tests for changed behavior before broad refactoring.
 10. Commit each completed backlog item locally as its own commit (stage paths explicitly; never `rbc/`-style user data or `CLAUDE.original.md`). Never push, and do not create branches, unless the user explicitly asks.

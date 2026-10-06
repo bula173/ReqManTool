@@ -590,6 +590,45 @@ to the categories above.
       conflicts. REST + WebSocket parity; all git calls via the existing
       git_repo subprocess wrapper; remote operations never run
       automatically without the opt-in.
+- [ ] Server edition: login (GitLab / OIDC / LDAP), users, project
+      membership, module edit locks. Requested 2026-10-06 (replaces the
+      2026-10-04 "User handling" item; scope change confirmed by the user).
+      Two editions from one codebase: **local** (free) — today's single-
+      user mode, no login, identity from git config, must keep working
+      unchanged; **server** (paid) — one shared instance in the company,
+      every user logs in, works on assigned projects. `mode: local|server`
+      in the app config. Persistence stays JSON + one git repo per
+      project (no database); the single server process allocates all ids,
+      so the distributed-id problem disappears in server mode.
+      (1) Authentication, pluggable providers: GitLab OAuth2/OIDC first
+      (users must have a GitLab account), then generic OIDC (Keycloak,
+      Entra ID), LDAP/Active Directory bind, and trusted reverse-proxy
+      header (Cloudflare Access / oauth2-proxy); HTTP-only secure session
+      cookie, CSRF protection, logout; every REST route and the WebSocket
+      handshake require a session in server mode. (2) Users and roles:
+      user registry in the server's config dir (`users.json`: id, name,
+      email, provider subject, server-admin flag, active) — auto-created
+      on first login; optional group → role mapping from GitLab groups /
+      LDAP groups; per-project membership with roles viewer / editor /
+      project-admin, enforced in `ProjectService` (one guard, REST + WS
+      parity); admin pages for users and memberships; users only see
+      projects they belong to. (3) Module edit locks: an editor checks out
+      a module (exclusive lock: owner, since, optional reason, auto-expiry
+      on inactivity, admin "break lock"); other users get read-only plus a
+      "locked by X" badge; writes to a module locked by someone else are
+      rejected (423); live sync shows lock changes. Optional per-
+      requirement ETag still protects against stale writes by the lock
+      owner's own tabs. (4) Attribution: git commits authored as the
+      logged-in user (name/email from the IdP), squash window per user;
+      created_by / modified_by system attributes; identity in live-sync
+      events; login/logout and admin actions in an audit log (append-only
+      JSON lines). (5) Editions/licensing: server-only features are
+      gated by a signed license file; **open question — the repository
+      is MIT-licensed today, so a paid tier needs an open-core split
+      (e.g. MIT core + separately licensed `reqman-server` package) or a
+      licence change; decide before implementing (5).** Depends on: the
+      git integration (done), distribution package (server install),
+      git remotes (server can mirror project repos to GitLab).
 - [ ] Left-click and right-click menus everywhere. Requested 2026-10-04.
       Two distinct menus, adapted to what was clicked: **left click** opens
       a navigation/view menu (open, open in new tab, detach, show links,
@@ -989,22 +1028,6 @@ to the categories above.
       logic (`frontend/src/actions/`), like earlier frontend work, is
       untested; add Vitest + Testing Library and cover the registry
       availability rules and the shortcut focus guards.
-- [ ] User handling. Requested 2026-10-04; scope not yet narrowed down
-      with the user. Changes the project scope (today: single-user local
-      tool, no auth), so `.claude/CLAUDE.md` rule 7 must be lifted before
-      implementation. Candidate pieces, roughly in dependency order:
-      (1) identity — preferably taken from a fronting reverse proxy (e.g.
-      Cloudflare Access: verify the `Cf-Access-Jwt-Assertion` JWT, read the
-      user's email) rather than built-in accounts/passwords, with a
-      configurable "local single user" fallback; (2) attribution —
-      server-maintained `created_by`/`modified_by` (+ timestamps) system
-      attributes on requirements, and identity in live-sync events;
-      (3) roles per project (viewer / editor / admin) enforced in
-      `ProjectService`, with REST/WebSocket parity; (4) concurrent-edit
-      protection — a per-requirement version/ETag, stale writes rejected
-      with 409 and a conflict prompt in the UI instead of today's
-      last-write-wins; (5) `user` attribute type (assignee/owner), see the
-      `date`/`user` item below.
 - [ ] Sort/filter the requirements table by attribute value, plus a simple
       full-text search box (module or project scope). Table-stakes for any
       module with more than a screenful of requirements. Not yet requested.
