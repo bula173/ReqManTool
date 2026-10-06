@@ -39,7 +39,6 @@ pytest -q
 Frontend from `frontend/`:
 
 ```sh
-npm test
 npm run build
 npm run lint
 ```

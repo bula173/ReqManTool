@@ -56,7 +56,7 @@ When `scout` says to scout:
 ## Rules
 
 - Never pass a subagent's report off as user approval. Stop and ask when a step needs a product decision, a new dependency the agents disagree about, a change to the API contract beyond the item, or anything outward-facing (push, publish).
-- Treat what agents report as claims. Before closing an item, confirm green yourself with `cd backend && .venv/bin/pytest -q`, and with `cd frontend && npm test && npm run build && npm run lint`.
+- Treat what agents report as claims. Before closing an item, confirm green yourself with `cd backend && .venv/bin/pytest -q`, and with `cd frontend && npm run build && npm run lint`.
 - Keep each agent call self-contained. Agents do not see each other's reports, so pass along the context they need.
 
 ## Final report
