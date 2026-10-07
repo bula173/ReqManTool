@@ -109,7 +109,9 @@ function RecentCommits({ projectId }: { projectId: string }) {
 /**
  * The project's remote: URL (set / change / remove, validated server-side
  * with `git ls-remote`), explicit Push and Pull, ahead/behind, the auto-push
- * opt-in and the sync-conflict warning. Credentials stay with the user's git
+ * opt-in and the sync-conflict warning. The remote is an SSH/HTTPS URL or a
+ * local folder (absolute path or file:// URL, e.g. a network share).
+ * Credentials stay with the user's git
  * (ssh agent / credential helper); ReqManTool never stores them.
  */
 function RemoteSync({ projectId, remote }: { projectId: string; remote: GitRemoteStatus }) {
@@ -143,8 +145,8 @@ function RemoteSync({ projectId, remote }: { projectId: string; remote: GitRemot
         <Group gap="xs" align="flex-end" wrap="nowrap">
           <TextInput
             label="Remote URL"
-            description="SSH or HTTPS; credentials stay with your git setup (ssh agent / credential helper)"
-            placeholder="git@example.com:team/project.git"
+            description="SSH, HTTPS or a local folder / network share (absolute path or file:// URL); credentials stay with your git setup (ssh agent / credential helper)"
+            placeholder="git@example.com:team/project.git or /Volumes/nas/project.git"
             value={url}
             onChange={(event) => setUrl(event.currentTarget.value)}
             onKeyDown={(event) => {

@@ -25,6 +25,7 @@ import functools
 import inspect
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,7 +33,7 @@ from typing import Any, Callable
 
 from .csv_import import RESERVED_COLUMNS
 from .formats import PROJECT_FORMAT, NewerFormatError, upgrade
-from .git_repo import DEFAULT_LOG_LIMIT, LOG_LIMIT, GitError, GitHistory, RepoConflict
+from .git_repo import DEFAULT_LOG_LIMIT, LOG_LIMIT, GitError, GitHistory, RepoConflict, local_remote_path
 from .history import FileChange, build_snapshot, compare_snapshots, describe_changes
 from .models import AttributeDefinition, LinkConfiguration, LinkPair, Module, Project, Requirement, View
 from .store import PROJECT_SLUG_PATTERN, ProjectStore, validate_prefix
@@ -312,6 +313,34 @@ class ProjectService:
         except GitError as exc:
             raise ValueError(str(exc)) from exc
 
+    def _refuse_remote_in_data_dir(self, url: str | None) -> None:
+        """Refuse (400) a local-folder remote in the data directory (or the directory itself).
+
+        Pushing there would write another project's refs outside its lock,
+        and a project cloned from there would push back into it. Symlinks
+        are resolved; ssh/git/https remotes are never checked.
+        """
+        path = local_remote_path(url or "")
+        if path is None or not path.is_absolute():
+            return  # a relative path is refused by the URL validator
+        data_dir = os.path.realpath(self.store.root)
+        target = Path(os.path.realpath(path))
+        inside = target == Path(data_dir) or target.is_relative_to(data_dir)
+        if not inside:
+            # Case-insensitive file systems, bind mounts: compare the folders themselves.
+            for folder in (target, *target.parents):
+                try:
+                    if os.path.samefile(folder, data_dir):
+                        inside = True
+                        break
+                except OSError:
+                    continue
+        if inside:
+            raise ValueError(
+                f"Invalid remote URL '{(url or '').strip()}': a local-folder remote must not be "
+                f"inside the data directory ({data_dir}); use a repository outside it"
+            )
+
     def set_git_remote(self, project_id: str, url: str | None) -> dict[str, Any]:
         """Set (or remove, with ``None``/empty) the project's remote URL; returns the new git status.
 
@@ -321,6 +350,7 @@ class ProjectService:
         """
         self.store.load_project(project_id)
         project_dir = self.store.project_path(project_id)
+        self._refuse_remote_in_data_dir(url)
         self._git_remote_call(lambda: self.history.set_remote(project_dir, url))
         return self.history.status(project_dir)
 
@@ -362,6 +392,7 @@ class ProjectService:
         nothing is left behind.
         """
         cleaned = (url or "").strip()
+        self._refuse_remote_in_data_dir(cleaned)
         with self.store.staging_store() as staging:
             incoming = staging.root / "incoming"
             self._git_remote_call(lambda: self.history.clone(cleaned, incoming))

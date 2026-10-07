@@ -688,8 +688,40 @@ so a project's repository never contains another project's files.
   per-requirement change list. Baseline and git-log queries live under the
   project's query-key prefix, so live sync refreshes them; every local
   mutation invalidates the `git` and `baselines` keys.
-- Not yet (later slices): remotes/push, `merge --squash` of user branches,
-  a settings UI.
+- **Remote URLs** (set remote, "Add project from remote"; validated in
+  `GitHistory._check_remote_url` before git runs): `ssh://`,
+  `git+ssh://`/`ssh+git://`, `git://` and `https://` URLs, the scp-like
+  `[user@]host:path` SSH syntax, and local folders such as a NAS mount or
+  network share — an absolute path or a `file://` URL with an absolute
+  path. Refused: `<transport>::` remote helpers (`ext::`, `fd::` run
+  commands from the URL; like git, the name may start with a digit), a
+  leading `-`, other schemes (`http://`, ...), upper-case schemes (git
+  matches them case-sensitively: `FILE://` would be a remote helper) and
+  relative paths. `ProjectService` also refuses a local folder (symlinks
+  resolved) inside the data directory or equal to it, for set remote and
+  for "Add project from remote": pushing there would write another
+  project's refs outside its lock. A push to a local folder runs
+  `--receive-pack="git -c core.hooksPath=<no hooks> -c ... receive-pack"`:
+  git drops our `-c` overrides when it spawns receive-pack in the target
+  repository, whose hooks and config would otherwise run programs on this
+  machine. Besides the hooks, the command overrides
+  `core.alternateRefsCommand=true` (run to list an alternate's refs),
+  `receive.denyCurrentBranch=refuse` and `core.fsmonitor=false` (an
+  `updateInstead` checkout in a non-bare target runs its filters and
+  fsmonitor; a push to its checked-out branch is now rejected, 400), and
+  `receive.autogc=false`, `gc.auto=0`, `maintenance.auto=false` (no gc or
+  maintenance in the target); see `_LOCAL_RECEIVE_PACK_CONFIG`. Never for
+  ssh/git/https, where the command would run on the server; push URLs
+  mixing a local folder and a network remote are refused (400). On Windows
+  a `C:`-prefixed URL is always a local path. git
+  itself is restricted too: every command runs with
+  `GIT_ALLOW_PROTOCOL=ssh:git:https` (never inherited) and `-c
+  protocol.ext.allow=never -c protocol.fd.allow=never`; only the remote
+  operations (ls-remote, fetch, push, clone) widen the allowlist to
+  `ssh:git:https:file`. git's "transport 'x' not allowed" (e.g. a remote
+  configured outside the app) is reported as "Remote transport 'x' is not
+  supported; use an ssh, git, https or local-folder remote".
+- Not yet (later slices): `merge --squash` of user branches, a settings UI.
 
 ## Backend layering
 

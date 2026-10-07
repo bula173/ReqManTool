@@ -471,7 +471,8 @@
       `file://` and local paths are rejected unless
       `REQMAN_GIT_ALLOW_FILE_REMOTES=1` (set by the backend tests only);
       git itself is restricted with `GIT_ALLOW_PROTOCOL=ssh:git:https`
-      (+`file` with the opt-in) and `protocol.ext/fd.allow=never`. The
+      (+`file` with the opt-in) and `protocol.ext/fd.allow=never`
+      (superseded 2026-10-07: local-folder remotes allowed, see below). The
       git status gained a `remote` field (url, auto_push, ahead/behind,
       sync_conflict, last_error). (2) Sync: `POST
       /projects/{id}/git/push` / WS `project.git_push` pushes `current`,
@@ -646,6 +647,37 @@
       values), so it is unchanged (left to "Collapsible (and resizable)
       side panels"); no frontend tests (no test runner); touch input and
       dark mode not tried; review follow-ups (see backlog).
+- [x] **Local-folder / network-share remotes** (2026-10-07 decision,
+      follow-up of Git remotes). Absolute local paths and `file:///abs`
+      URLs (e.g. a NAS mount) are accepted as project remotes in normal
+      operation; the `REQMAN_GIT_ALLOW_FILE_REMOTES` test opt-in is
+      removed. Still rejected: `<scheme>::` helpers (`ext::`, `fd::`, also
+      with a leading digit like `1abc::`), a leading `-`, relative paths,
+      `file://host/...`, `http://` and other schemes, and non-lower-case
+      schemes (git matches them case-sensitively). Local remotes inside or
+      equal to the data directory are refused for both set-remote and
+      clone (realpath/samefile; symlinks and percent-encoding handled), so
+      one project cannot push into another. `GIT_ALLOW_PROTOCOL` is
+      `ssh:git:https` for every git call; `:file` is added only for the
+      remote operations (ls-remote, push, fetch, clone). Git's "transport
+      'x' not allowed" maps to a clear 400 message. Security for pushes to
+      a local remote: receive-pack runs with `core.hooksPath` pointed at
+      an empty dir, plus `core.alternateRefsCommand=true`,
+      `core.fsmonitor=false`, `receive.denyCurrentBranch=refuse`,
+      `receive.autogc=false`, `gc.auto=0`, `maintenance.auto=false`, so
+      the target repo's hooks and config cannot run programs on this
+      machine; mixed local/network push URLs are refused; a push to a
+      checked-out branch is rejected (400). The Git panel and "Add project
+      from remote" hints mention local folders / network shares;
+      `docs/ARCHITECTURE.md` gained a "Remote URLs" bullet. Files:
+      `backend/reqman/{git_repo.py, service.py}`,
+      `backend/tests/{conftest.py, test_git_remote_security.py}`,
+      `docs/ARCHITECTURE.md`,
+      `frontend/src/components/{GitStatusPanel.tsx,
+      AddProjectFromRemoteModal.tsx}`. Backend tests 1044 → 1096. Fix
+      rounds: 2 (receive-side hooks, then target-config command vectors).
+      Not covered: Windows drive/UNC paths were tested only via a flag;
+      not tried in a browser.
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -756,22 +788,24 @@ to the categories above.
       snapshots despite `staleTime: Infinity`; a description whose final
       paragraph looks like `Reqman-*:` trailers is swallowed when
       listing.
-- [ ] Git remotes: review follow-ups (2026-10-06), all nits. The
-      remote-URL validator regexes require a letter first, but git also
-      allows a digit (`1abc::x`, `1foo://x` pass validation and are only
-      blocked by `GIT_ALLOW_PROTOCOL` with git's raw error) — use
-      `^[A-Za-z0-9][A-Za-z0-9+.-]*` and add tests; a local/`file://`
-      remote set outside the app now fails Push/Pull/auto-push with git's
-      raw "transport 'file' not allowed" — map it to a clear message
-      (only ssh/git/https remotes are supported; use Change… to set one);
-      `GitStatusPanel` RemoteSync keeps its `editing`/`url` local state
-      when live sync changes the remote while the form is open — reset on
-      a `remote.url` change (cosmetic); auto-push runs synchronously
-      inside the mutation (10 s timeout) — consider pushing in the
-      background so an unreachable remote never stalls edits. Product
-      decisions to confirm: local paths / shared-filesystem remotes are
-      rejected in production (only allowed via the test opt-in), and
-      auto-push disables session squashing.
+- [ ] Git remotes: review follow-ups (2026-10-06), all nits. (1) Done
+      2026-10-07: the remote-URL validator regexes required a letter
+      first, but git also allows a digit (`1abc::x`, `1foo://x` passed
+      validation and were only blocked by `GIT_ALLOW_PROTOCOL` with git's
+      raw error) — use `^[A-Za-z0-9][A-Za-z0-9+.-]*` and add tests.
+      (2) Done 2026-10-07: a local/`file://` remote set outside the app
+      failed Push/Pull/auto-push with git's raw "transport 'file' not
+      allowed" — map it to a clear message. (3) `GitStatusPanel`
+      RemoteSync keeps its `editing`/`url` local state when live sync
+      changes the remote while the form is open — reset on a `remote.url`
+      change (cosmetic). (4) Auto-push runs synchronously inside the
+      mutation (10 s timeout) — consider pushing in the background so an
+      unreachable remote never stalls edits. (5) Product decisions:
+      local paths / shared-filesystem remotes — resolved 2026-10-07,
+      allowed (see "Local-folder / network-share remotes" in Done);
+      auto-push disabling session squashing — accepted as is.
+      (6) `_is_non_fast_forward` matches "[rejected]" but not "[remote
+      rejected]", so some remote rejections map to 400 instead of 409.
 - [ ] Row styling by Object Type (and other enum values). Requested
       2026-10-07. Per-project style rules: for an enum attribute value
       (default attribute: Object Type) set row font color and background

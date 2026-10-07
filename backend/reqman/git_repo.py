@@ -70,11 +70,13 @@ import getpass
 import logging
 import os
 import re
+import shlex
 import subprocess
 import tempfile
 import threading
 import time
 import uuid
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -160,22 +162,30 @@ _TIMEOUT_SECONDS = 60
 # Auto-push runs inside the per-project lock after every mutation: a hanging
 # remote must not freeze edits for the full default timeout.
 _AUTO_PUSH_TIMEOUT_SECONDS = 10
-# Remote URLs come from the user (REST/WebSocket): only real network
-# transports. ``<transport>::<address>`` remote helpers (``ext::``, ``fd::``)
-# run commands from the URL itself. Local paths and ``file://`` URLs are
-# for tests only (opt-in, read at call time).
-ALLOW_FILE_REMOTES_ENV = "REQMAN_GIT_ALLOW_FILE_REMOTES"
-_REMOTE_PROTOCOLS = "ssh:git:https"
-_REMOTE_HELPER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*::")
-_REMOTE_SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*)://")
+# Remote URLs come from the user (REST/WebSocket): ssh, git and https URLs,
+# and local folders (an absolute path or a ``file://`` URL with an absolute
+# path, e.g. a network share). ``<transport>::<address>`` remote helpers
+# (``ext::``, ``fd::``) run commands from the URL itself and are refused;
+# like git, a scheme or helper name may start with a digit.
+# Every git command runs with ``_PROTOCOLS`` as ``GIT_ALLOW_PROTOCOL``; the
+# remote operations (ls-remote, fetch, push, clone) get ``_REMOTE_PROTOCOLS``,
+# which adds the local ``file`` transport (``_REMOTE_ENV``).
+_PROTOCOLS = "ssh:git:https"
+_REMOTE_PROTOCOLS = _PROTOCOLS + ":file"
+_REMOTE_ENV = {"GIT_ALLOW_PROTOCOL": _REMOTE_PROTOCOLS}
+_REMOTE_HELPER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+.-]*::")
+_REMOTE_SCHEME_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9+.-]*)://")
 _REMOTE_SCHEMES = ("ssh", "git+ssh", "ssh+git", "git", "https")
+_FILE_SCHEME = "file"
 # scp-like SSH syntax ``[user@]host:path``: a colon before any slash. A
 # single-letter host would be a Windows drive (``C:\...``), not a host.
 _REMOTE_SCP_RE = re.compile(r"^(?:[^@/:\s]+@)?[^@/:\s]{2,}:[^\s]")
-
-
-def _file_remotes_allowed() -> bool:
-    return os.environ.get(ALLOW_FILE_REMOTES_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+# git's refusal of a transport outside ``GIT_ALLOW_PROTOCOL`` (e.g. a remote
+# configured outside the app): mapped to ``REMOTE_TRANSPORT_MESSAGE``.
+_TRANSPORT_NOT_ALLOWED_RE = re.compile(r"transport '([^']*)' not allowed")
+REMOTE_TRANSPORT_MESSAGE = (
+    "Remote transport '{transport}' is not supported; use an ssh, git, https or local-folder remote"
+)
 # How long a resolved commit identity (``git var GIT_AUTHOR_IDENT``) is reused.
 _IDENTITY_TTL_SECONDS = 30.0
 
@@ -442,10 +452,11 @@ def _clean_env(extra: Mapping[str, str] | None = None, read_only: bool = False) 
             "GIT_PAGER": "cat",
         }
     )
-    # Only real transports for user-supplied remote URLs (see
-    # ``_check_remote_url``): ``ext::``/``fd::`` run arbitrary commands.
-    # Always our allowlist, never one inherited from the environment.
-    env["GIT_ALLOW_PROTOCOL"] = _REMOTE_PROTOCOLS + (":file" if _file_remotes_allowed() else "")
+    # Only the supported transports (see ``_check_remote_url``):
+    # ``ext::``/``fd::`` run arbitrary commands. Always our allowlist, never
+    # one inherited from the environment; the remote operations widen it to
+    # local folders through ``extra`` (``_REMOTE_ENV``).
+    env["GIT_ALLOW_PROTOCOL"] = _PROTOCOLS
     if read_only:
         env["GIT_OPTIONAL_LOCKS"] = "0"
     if extra:
@@ -527,6 +538,79 @@ def _stderr(result: subprocess.CompletedProcess) -> str:
     return text or f"exit status {result.returncode}"
 
 
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+
+# ``-c`` overrides of the receive-pack command of a local push (besides
+# ``core.hooksPath``): settings of the target repository that would make
+# receive-pack (or a git it spawns, which inherits ``-c``) run a program on
+# this machine. Command-line ``-c`` wins over the target's own config files
+# (and anything they include).
+# - core.alternateRefsCommand: run to advertise the refs of an alternate
+#   (``objects/info/alternates``); ``true`` prints none.
+# - receive.denyCurrentBranch=refuse: ``updateInstead`` checks out the pushed
+#   branch in a non-bare target, running its filters (``filter.*.smudge``/
+#   ``process`` via ``.git/info/attributes``) and ``core.fsmonitor``.
+# - core.fsmonitor=false: also read by the work-tree commands above.
+# - receive.autogc, gc.auto, maintenance.auto: no ``git gc --auto`` /
+#   ``git maintenance run --auto`` in the target after the push.
+# Not needed: push-certificate verification (``gpg.program``, with
+# ``receive.certNonceSeed``) and ``receive.procReceiveRefs`` only run for
+# hooks, which are disabled; ``receive.fsckObjects`` and the unpack limits run
+# no external program; ``core.sshCommand``/``core.gitProxy`` are for outgoing
+# connections, which receive-pack never makes.
+_LOCAL_RECEIVE_PACK_CONFIG = (
+    "core.alternateRefsCommand=true",
+    "core.fsmonitor=false",
+    "receive.denyCurrentBranch=refuse",
+    "receive.autogc=false",
+    "gc.auto=0",
+    "maintenance.auto=false",
+)
+
+
+def _is_local_remote(url: str) -> bool:
+    """Whether git reaches ``url`` through its local transport (a folder, not ssh/git/https).
+
+    git's own rules: ``<scheme>://`` is local only for ``file``; a
+    ``<transport>::`` remote helper is not; otherwise a colon before any
+    slash is the scp-like SSH syntax, except a Windows drive (``C:\\``).
+    """
+    if os.path.isabs(url):
+        return True
+    if _WINDOWS and _WINDOWS_DRIVE_RE.match(url):
+        return True  # ``C:repo`` too: git never reads a drive letter as an ssh host
+    if _REMOTE_HELPER_RE.match(url):
+        return False
+    scheme = _REMOTE_SCHEME_RE.match(url)
+    if scheme is not None:
+        return scheme.group(1) == _FILE_SCHEME
+    colon, slash = url.find(":"), url.find("/")
+    return colon < 0 or 0 <= slash < colon
+
+
+def local_remote_path(url: str) -> Path | None:
+    """The folder a local remote URL names (not resolved), or ``None`` for ssh/git/https.
+
+    Like git, a ``file://`` URL is percent-decoded and its path is whatever
+    follows ``file://``; on Windows ``file:///C:/x`` names ``C:/x``.
+    """
+    url = (url or "").strip()
+    if not url or not _is_local_remote(url):
+        return None
+    if url.startswith(f"{_FILE_SCHEME}://"):
+        path = urllib.parse.unquote(url[len(_FILE_SCHEME) + 3 :])
+        if _WINDOWS and re.match(r"^/[A-Za-z]:", path):
+            path = path[1:]
+        return Path(path)
+    return Path(url)
+
+
+def _transport_error(output: str) -> str | None:
+    """The clear message for git's "transport '<x>' not allowed" in ``output``, else ``None``."""
+    match = _TRANSPORT_NOT_ALLOWED_RE.search(output)
+    return REMOTE_TRANSPORT_MESSAGE.format(transport=match.group(1)) if match else None
+
+
 class GitHistory:
     """Git operations on project folders, with per-folder locking and error bookkeeping."""
 
@@ -605,6 +689,23 @@ class GitHistory:
         return self._run(
             [f"--git-dir={info.git_dir}", f"--work-tree={info.work_tree}", *args], info.work_tree, **kwargs
         )
+
+    def _remote_run(
+        self, run: Callable[..., subprocess.CompletedProcess], *args: Any, **kwargs: Any
+    ) -> subprocess.CompletedProcess:
+        """Run a remote operation (ls-remote, fetch, push, clone) through ``run`` (``_run``/``_repo``).
+
+        Only these calls may use the local ``file`` transport (``_REMOTE_ENV``).
+        git's refusal of another transport ("transport 'x' not allowed", e.g.
+        for a remote configured outside the app) becomes a clear ``GitError``.
+        """
+        try:
+            return run(*args, env=_REMOTE_ENV, **kwargs)
+        except GitError as exc:
+            message = _transport_error(str(exc))
+            if message is None:
+                raise
+            raise GitError(message) from exc
 
     def git_version(self) -> str | None:
         """``git --version`` output, or ``None`` if git cannot run (checked once per process)."""
@@ -1417,7 +1518,20 @@ class GitHistory:
 
     @staticmethod
     def _check_remote_url(url: str) -> str:
+        """The trimmed remote URL, or ``ValueError`` explaining what is accepted.
+
+        Accepted: ``ssh://``, ``git+ssh://``, ``ssh+git://``, ``git://`` and
+        ``https://`` URLs, the scp-like ``[user@]host:path`` SSH syntax, and
+        local folders (e.g. a network share): an absolute path or a
+        ``file://`` URL whose path is absolute (``file:///srv/repo.git``).
+        Refused: ``<transport>::`` remote helpers, a leading ``-``, other
+        schemes (``http://``, ...) and relative paths.
+        """
         url = (url or "").strip()
+        rule = (
+            "use an ssh://, git:// or https:// URL, the user@host:path SSH syntax, or a local "
+            "folder (an absolute path or a file:// URL)"
+        )
         if not url:
             raise ValueError("The remote URL must not be empty")
         if url.startswith("-"):
@@ -1428,18 +1542,27 @@ class GitHistory:
             )
         scheme = _REMOTE_SCHEME_RE.match(url)
         if scheme is not None:
-            name = scheme.group(1).lower()
-            if name in _REMOTE_SCHEMES or (name == "file" and _file_remotes_allowed()):
+            name = scheme.group(1)
+            if name != name.lower():
+                # git matches schemes case-sensitively: ``FILE://`` would be a remote helper.
+                raise ValueError(
+                    f"Invalid remote URL '{url}': the scheme '{name}' must be lower-case "
+                    f"('{name.lower()}://')"
+                )
+            if name in _REMOTE_SCHEMES:
                 return url
-            raise ValueError(
-                f"Invalid remote URL '{url}': use an ssh://, git:// or https:// URL "
-                "(or the user@host:path SSH syntax)"
-            )
-        if _REMOTE_SCP_RE.match(url) or _file_remotes_allowed():
+            if name == _FILE_SCHEME:
+                if url[scheme.end() :].startswith("/"):
+                    return url
+                raise ValueError(
+                    f"Invalid remote URL '{url}': a file:// URL needs an absolute path "
+                    "(file:///path/to/repo.git)"
+                )
+            raise ValueError(f"Invalid remote URL '{url}': unsupported scheme '{name}'; {rule}")
+        if _REMOTE_SCP_RE.match(url) or os.path.isabs(url):
             return url
         raise ValueError(
-            f"Invalid remote URL '{url}': local paths are not allowed; use an ssh://, git:// "
-            "or https:// URL (or the user@host:path SSH syntax)"
+            f"Invalid remote URL '{url}': relative local paths are not allowed; {rule}"
         )
 
     def _remote_url(self, info: RepoInfo) -> str | None:
@@ -1549,8 +1672,13 @@ class GitHistory:
                     self._repo(info, ["config", "--unset", AUTO_PUSH_CONFIG_KEY], check=False)
                 return self._remote_info(info)
             cleaned = self._check_remote_url(cleaned)
-            probe = self._repo(info, ["ls-remote", "--", cleaned], check=False, read_only=True)
+            probe = self._remote_run(
+                self._repo, info, ["ls-remote", "--", cleaned], check=False, read_only=True
+            )
             if probe.returncode != 0:
+                transport = _transport_error(_stderr(probe))
+                if transport is not None:
+                    raise ValueError(transport)
                 raise ValueError(
                     f"The remote '{cleaned}' cannot be reached (git ls-remote failed: {_stderr(probe)}). "
                     "Check the URL and that your git credentials (ssh agent / credential helper) have access."
@@ -1593,14 +1721,50 @@ class GitHistory:
     def _is_non_fast_forward(output: str) -> bool:
         return "non-fast-forward" in output or "fetch first" in output or "[rejected]" in output
 
+    def _receive_pack_options(self, info: RepoInfo) -> list[str]:
+        """``--receive-pack`` that runs no hooks of a local target repository; ``[]`` otherwise.
+
+        Over the local transport git spawns ``git-receive-pack`` in the target
+        repository itself, without our ``-c`` overrides (it drops
+        ``GIT_CONFIG_PARAMETERS``): its pre-receive/update/post-receive hooks
+        would run on this machine, and so would commands named in the target's
+        config. The receive-pack command (run through the shell) overrides
+        them itself (``_LOCAL_RECEIVE_PACK_CONFIG``). Never for ssh/git/https:
+        there the command would run on the server. Push URLs mixing both are
+        refused.
+        """
+        result = self._repo(
+            info, ["remote", "get-url", "--push", "--all", REMOTE_NAME], check=False, read_only=True
+        )
+        urls = result.stdout.decode("utf-8", "replace").splitlines() if result.returncode == 0 else []
+        local = [_is_local_remote(url) for url in urls if url]
+        if not any(local):
+            return []
+        if not all(local):
+            raise GitError(
+                "The remote mixes local-folder and network push URLs; configure only one kind"
+            )
+        config = (f"core.hooksPath={_no_hooks_dir()}", *_LOCAL_RECEIVE_PACK_CONFIG)
+        options = " ".join(f"-c {shlex.quote(item)}" for item in config)
+        return [f"--receive-pack={shlex.quote(self.settings.executable)} {options} receive-pack"]
+
     def _push_refs(self, info: RepoInfo, url: str, timeout: float = _TIMEOUT_SECONDS) -> dict[str, Any]:
         """Push the project's refs (see ``_push_refspecs``); raises on failure."""
         refspecs = self._push_refspecs(info)
         if not refspecs:
             raise RepoConflict("The project has no commit yet; nothing to push")
-        result = self._repo(info, ["push", "--quiet", REMOTE_NAME, *refspecs], check=False, timeout=timeout)
+        result = self._remote_run(
+            self._repo,
+            info,
+            ["push", "--quiet", *self._receive_pack_options(info), REMOTE_NAME, *refspecs],
+            check=False,
+            timeout=timeout,
+        )
         if result.returncode != 0:
             error = _stderr(result)
+            transport = _transport_error(error)
+            if transport is not None:
+                raise GitError(transport)
             if self._is_non_fast_forward(error):
                 raise RepoConflict(
                     "The remote has commits this instance does not have (another instance pushed "
@@ -1676,7 +1840,7 @@ class GitHistory:
                 raise ValueError("No remote is configured for this project; set a remote URL first")
             notes: list[str] = []
             self._commit_pending(info, describe)
-            listing = self._repo(info, ["ls-remote", "--", url], read_only=True)
+            listing = self._remote_run(self._repo, info, ["ls-remote", "--", url], read_only=True)
             remote_refs = {
                 line.split("\t", 1)[1]
                 for line in listing.stdout.decode("utf-8", "replace").splitlines()
@@ -1688,10 +1852,11 @@ class GitHistory:
                 if ref in remote_refs
             ]
             if branch_specs:
-                self._repo(info, ["fetch", "--quiet", REMOTE_NAME, *branch_specs])
+                self._remote_run(self._repo, info, ["fetch", "--quiet", REMOTE_NAME, *branch_specs])
             if any(ref.startswith(f"refs/tags/{BASELINE_TAG_PREFIX}") for ref in remote_refs):
                 # Non-forced: a local baseline/* tag that differs is kept, with a note.
-                tags = self._repo(
+                tags = self._remote_run(
+                    self._repo,
                     info,
                     [
                         "fetch",
@@ -1748,7 +1913,8 @@ class GitHistory:
         if self.git_version() is None:
             raise ValueError(f"git was not found ('{self.settings.executable}')")
         cleaned = self._check_remote_url(url)
-        self._run(
+        self._remote_run(
+            self._run,
             ["clone", "--quiet", "--template=", "--branch", WORKING_BRANCH, "--", cleaned, str(target)],
             target.parent,
         )

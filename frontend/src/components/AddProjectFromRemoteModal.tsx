@@ -6,7 +6,8 @@ import { ApiError } from '../api/client';
 import { useAddProjectFromRemote } from '../api/queries';
 
 /**
- * "Add project from remote": clones a git repository (SSH or HTTPS URL) into
+ * "Add project from remote": clones a git repository (SSH or HTTPS URL, or a
+ * local folder / network share given as an absolute path or file:// URL) into
  * the data directory and opens it as a project. The clone is validated
  * server-side like any loaded project; credentials stay with the user's git
  * setup (ssh agent / credential helper) and are never stored by ReqManTool.
@@ -50,8 +51,8 @@ function AddProjectFromRemoteForm({ onClose }: { onClose: () => void }) {
       <Stack gap="sm">
         <TextInput
           label="Remote URL"
-          description="A git repository of a ReqManTool project (SSH or HTTPS)"
-          placeholder="git@example.com:team/project.git"
+          description="A git repository of a ReqManTool project: SSH, HTTPS or a local folder / network share (absolute path or file:// URL)"
+          placeholder="git@example.com:team/project.git or /Volumes/nas/project.git"
           required
           data-autofocus
           {...form.getInputProps('url')}
