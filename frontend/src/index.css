@@ -209,3 +209,16 @@ th:hover > div > .reqman-col-menu-button,
 .reqman-resizable-table tbody tr:has(> td > .reqman-row-resize-handle[data-resizing]) > td {
   box-shadow: inset 0 -2px 0 var(--mantine-color-blue-filled);
 }
+
+/*
+ * Row styling by enum attribute value (project row_styles; see components/rowStyles.ts).
+ * Font and background colors are inline styles on the row; bold is a data
+ * attribute here because Mantine's Text sets its own (regular) font weight.
+ */
+[data-row-bold],
+[data-row-bold] p,
+[data-row-bold] span,
+[data-row-bold] div,
+[data-row-bold] a {
+  font-weight: 700;
+}

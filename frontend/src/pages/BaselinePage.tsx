@@ -8,6 +8,7 @@ import { useBaseline, useBaselineRequirements } from '../api/queries';
 import type { Requirement } from '../api/types';
 import { ResizableHeaderCell } from '../components/ResizableHeaderCell';
 import { RowResizeHandle } from '../components/RowResizeHandle';
+import { useRowAppearance } from '../components/rowStyles';
 import {
   DEFAULT_ID_COLUMN_WIDTH,
   ID_COLUMN,
@@ -66,6 +67,8 @@ export function BaselinePage() {
   const { tableRef, colRef } = columns;
   const rowSizes = useResizableRows(tableKey);
   const { tbodyRef } = rowSizes;
+  // The baseline's own row styling rules (none if its project.json predates them).
+  const rowAppearance = useRowAppearance(snapshot?.project.row_styles, snapshot?.project.attributes);
 
   if (!projectId || !baselineName) return null;
   if (baselineQuery.isLoading) {
@@ -209,47 +212,51 @@ export function BaselinePage() {
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody ref={tbodyRef}>
-                {rows.map(({ requirement, depth }) => (
-                  <Table.Tr
-                    key={requirement.id}
-                    data-row-height={rowSizes.heightOf(requirement.id)}
-                    style={rowSizes.rowStyle(requirement.id)}
-                  >
-                    <Table.Td data-column-key={ID_COLUMN} style={{ paddingLeft: 12 + depth * 20 }}>
-                      <div
-                        className="reqman-cell-clip"
-                        data-fade={columns.isSingleLine(ID_COLUMN) ? undefined : ''}
-                        style={{
-                          overflow: 'hidden',
-                          whiteSpace: columns.isSingleLine(ID_COLUMN) ? 'nowrap' : undefined,
-                          textOverflow: 'ellipsis',
-                        }}
-                      >
-                        {requirement.id}
-                      </div>
-                      <RowResizeHandle rowId={requirement.id} rows={rowSizes} focusable />
-                    </Table.Td>
-                    {attributes.map((attr) => {
-                      const text = formatValue(requirement.attributes[attr.id]);
-                      return (
-                        <Table.Td key={attr.id} data-column-key={attr.id}>
-                          <div className="reqman-cell-clip" data-fade={columns.isSingleLine(attr.id) ? undefined : ''}>
-                            {columns.isSingleLine(attr.id) ? (
-                              <Text size="sm" truncate="end" title={text}>
-                                {text}
-                              </Text>
-                            ) : (
-                              <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
-                                {text}
-                              </Text>
-                            )}
-                          </div>
-                          <RowResizeHandle rowId={requirement.id} rows={rowSizes} />
-                        </Table.Td>
-                      );
-                    })}
-                  </Table.Tr>
-                ))}
+                {rows.map(({ requirement, depth }) => {
+                  const appearance = rowAppearance(requirement.attributes);
+                  return (
+                    <Table.Tr
+                      key={requirement.id}
+                      data-row-height={rowSizes.heightOf(requirement.id)}
+                      data-row-bold={appearance.bold || undefined}
+                      style={{ ...rowSizes.rowStyle(requirement.id), ...appearance.style }}
+                    >
+                      <Table.Td data-column-key={ID_COLUMN} style={{ paddingLeft: 12 + depth * 20 }}>
+                        <div
+                          className="reqman-cell-clip"
+                          data-fade={columns.isSingleLine(ID_COLUMN) ? undefined : ''}
+                          style={{
+                            overflow: 'hidden',
+                            whiteSpace: columns.isSingleLine(ID_COLUMN) ? 'nowrap' : undefined,
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {requirement.id}
+                        </div>
+                        <RowResizeHandle rowId={requirement.id} rows={rowSizes} focusable />
+                      </Table.Td>
+                      {attributes.map((attr) => {
+                        const text = formatValue(requirement.attributes[attr.id]);
+                        return (
+                          <Table.Td key={attr.id} data-column-key={attr.id}>
+                            <div className="reqman-cell-clip" data-fade={columns.isSingleLine(attr.id) ? undefined : ''}>
+                              {columns.isSingleLine(attr.id) ? (
+                                <Text size="sm" truncate="end" title={text}>
+                                  {text}
+                                </Text>
+                              ) : (
+                                <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
+                                  {text}
+                                </Text>
+                              )}
+                            </div>
+                            <RowResizeHandle rowId={requirement.id} rows={rowSizes} />
+                          </Table.Td>
+                        );
+                      })}
+                    </Table.Tr>
+                  );
+                })}
               </Table.Tbody>
             </Table>
           </div>

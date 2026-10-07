@@ -17,6 +17,7 @@ import type {
   ProjectListEntry,
   Requirement,
   RequirementHistory,
+  RowStyle,
   SetAttributeModulesResult,
   TemplateSummary,
   VersionInfo,
@@ -245,6 +246,18 @@ export function useSetAttributeModules(projectId: string) {
         modules,
         drop_values: dropValues,
       }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+    },
+  });
+}
+
+/** Replaces the project's row styling rules (`[]` clears them). */
+export function useSetRowStyles(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (rowStyles: RowStyle[]) =>
+      api.put<Project>(`/projects/${projectId}/row-styles`, { row_styles: rowStyles }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.project(projectId) });
     },

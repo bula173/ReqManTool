@@ -169,6 +169,7 @@ def test_save_as_template_round_trips(service):
     data = json.loads(text)
     assert list(data) == [
         "format_version", "id", "name", "description", "attributes", "modules", "link_configurations", "views",
+        "row_styles",  # the RBC template's default row styles are kept
     ]
     assert "object_text" not in {a["id"] for a in data["attributes"]}
     assert "not saved" not in text

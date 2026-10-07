@@ -170,6 +170,8 @@ def _describe_project(old: Any, new: Any) -> list[str]:
     old_order, new_order = _list(old.get("module_order")), _list(new.get("module_order"))
     if old_order != new_order and sorted(map(str, old_order)) == sorted(map(str, new_order)):
         entries.append("Module order changed")
+    if _list(old.get("row_styles")) != _list(new.get("row_styles")):
+        entries.append("Row styles changed")
     if not entries:
         ignored = {"format_version", "id_counters", "module_order"}
         if {k: v for k, v in old.items() if k not in ignored} != {

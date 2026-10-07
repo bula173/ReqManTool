@@ -24,7 +24,8 @@ Format (``format_version`` 1)::
       "attributes": [{"id", "name", "type", "required", "default", "choices", "modules"?}],
       "modules": [{"key", "name", "prefix", "description"}],
       "link_configurations": [{"key", "name", "source_module", "target_module"}],
-      "views": [{"name", "attribute_ids"}]
+      "views": [{"name", "attribute_ids"}],
+      "row_styles"?: [{"attribute_id", "value", "font_color", "background_color", "bold"}]
     }
 
 ``attributes`` never lists the built-in ``object_text``: every project
@@ -39,6 +40,13 @@ ignores it and creates the attribute for every module. It is written only
 when non-empty. Only an optional attribute may have one: a required
 attribute applies to every module, so ``ProjectService`` reports a template
 with a required, scoped attribute as invalid.
+
+The optional ``row_styles`` list styles rows by enum attribute value: a
+template attribute ``attribute_id``, one of its choices as ``value``,
+``#rrggbb`` or null colors and a boolean ``bold`` (see
+``ProjectService.set_row_styles``). Like ``modules`` it was added without a
+``format_version`` bump (an older ReqManTool creates the project unstyled)
+and is written only when non-empty.
 
 Compatibility rules:
 
@@ -148,6 +156,24 @@ class TemplateView:
 
 
 @dataclass
+class TemplateRowStyle:
+    attribute_id: str
+    value: str
+    font_color: str | None = None
+    background_color: str | None = None
+    bold: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            "attribute_id": self.attribute_id,
+            "value": self.value,
+            "font_color": self.font_color,
+            "background_color": self.background_color,
+            "bold": self.bold,
+        }
+
+
+@dataclass
 class Template:
     id: str  # namespaced: "builtin:<stem>" or "user:<stem>"
     source: str
@@ -158,6 +184,7 @@ class Template:
     modules: list[TemplateModule] = field(default_factory=list)
     link_configurations: list[TemplateLinkConfiguration] = field(default_factory=list)
     views: list[TemplateView] = field(default_factory=list)
+    row_styles: list[TemplateRowStyle] = field(default_factory=list)
 
     @property
     def local_id(self) -> str:
@@ -165,7 +192,7 @@ class Template:
 
     def to_dict(self) -> dict:
         """The on-disk JSON shape (key order is the file's key order)."""
-        return {
+        data = {
             "format_version": self.format_version,
             "id": self.local_id,
             "name": self.name,
@@ -175,6 +202,9 @@ class Template:
             "link_configurations": [c.to_dict() for c in self.link_configurations],
             "views": [v.to_dict() for v in self.views],
         }
+        if self.row_styles:
+            data["row_styles"] = [s.to_dict() for s in self.row_styles]
+        return data
 
 
 def make_template_id(source: str, local_id: str) -> str:
@@ -430,6 +460,31 @@ def parse_template(data: Any, template_id: str) -> Template:
         view_names.add(view_name.casefold())
         views.append(TemplateView(name=view_name, attribute_ids=list(attribute_ids)))
 
+    row_styles: list[TemplateRowStyle] = []
+    for index, raw in enumerate(_list_of_dicts(data, "row_styles")):
+        where = f"row_styles[{index}]"
+        attr_id = raw.get("attribute_id")
+        if not _is_nonblank_str(attr_id):
+            raise ValueError(f"{where}: 'attribute_id' must be a non-empty string")
+        value = raw.get("value")
+        if not isinstance(value, str):
+            raise ValueError(f"{where}: 'value' must be a string")
+        for key in ("font_color", "background_color"):
+            if raw.get(key) is not None and not isinstance(raw.get(key), str):
+                raise ValueError(f"{where}: '{key}' must be a color string or null")
+        bold = raw.get("bold", False)
+        if not isinstance(bold, bool):
+            raise ValueError(f"{where}: 'bold' must be true or false")
+        row_styles.append(
+            TemplateRowStyle(
+                attribute_id=attr_id,
+                value=value,
+                font_color=raw.get("font_color"),
+                background_color=raw.get("background_color"),
+                bold=bold,
+            )
+        )
+
     return Template(
         id=template_id,
         source=source,
@@ -440,4 +495,5 @@ def parse_template(data: Any, template_id: str) -> Template:
         modules=modules,
         link_configurations=link_configurations,
         views=views,
+        row_styles=row_styles,
     )

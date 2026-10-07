@@ -33,6 +33,7 @@ import {
   type DropPosition,
   type OutlineRow,
 } from './requirementOutline';
+import { useRowAppearance } from './rowStyles';
 
 /** Icons of the Object Type values the built-in templates use; any other value gets a tag. */
 const OBJECT_TYPE_ICONS: Record<string, ComponentType<{ size?: number | string }>> = {
@@ -97,6 +98,8 @@ export function ModuleOutline({ projectId, moduleId }: { projectId: string; modu
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; requirement: Requirement } | null>(null);
   const nodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const pendingScrollRef = useRef<string | null>(null);
+  // Row styling rules (font/background color, bold) by enum attribute value.
+  const rowAppearance = useRowAppearance(projectQuery.data?.row_styles, projectQuery.data?.attributes);
 
   const requirements = requirementsQuery.data;
   // The selection belongs to the open module (AppActionsProvider scopes it).
@@ -330,6 +333,7 @@ export function ModuleOutline({ projectId, moduleId }: { projectId: string; modu
             const { requirement: req, depth, hasChildren, expanded } = row;
             const selected = req.id === selectedId;
             const insideDrop = dropTarget?.id === req.id && dropTarget.position === 'inside';
+            const appearance = rowAppearance(req.attributes);
             return (
               <div
                 key={req.id}
@@ -358,7 +362,9 @@ export function ModuleOutline({ projectId, moduleId }: { projectId: string; modu
                 onDragEnd={endDrag}
                 onDragOver={(event) => handleDragOver(event, { id: req.id, position: positionAt(event, row) })}
                 onDrop={handleDrop}
+                data-row-bold={appearance.bold || undefined}
                 style={{
+                  ...appearance.style,
                   display: 'flex',
                   alignItems: 'center',
                   gap: 4,
@@ -372,7 +378,7 @@ export function ModuleOutline({ projectId, moduleId }: { projectId: string; modu
                     ? 'var(--mantine-color-blue-light-hover)'
                     : selected
                       ? 'var(--mantine-color-blue-light)'
-                      : undefined,
+                      : appearance.style.backgroundColor,
                   boxShadow: dropShadow(dropTarget, req.id),
                   opacity: dragId === req.id ? 0.5 : 1,
                 }}
@@ -399,7 +405,12 @@ export function ModuleOutline({ projectId, moduleId }: { projectId: string; modu
                 <Text size="xs" fw={600} style={{ flex: 'none' }}>
                   {req.id}
                 </Text>
-                <Text size="xs" c="dimmed" truncate="end" style={{ flex: 1, minWidth: 0 }}>
+                <Text
+                  size="xs"
+                  c={appearance.style.color ? undefined : 'dimmed'}
+                  truncate="end"
+                  style={{ flex: 1, minWidth: 0 }}
+                >
                   {objectTextSnippet(req)}
                 </Text>
               </div>

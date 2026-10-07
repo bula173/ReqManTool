@@ -63,7 +63,7 @@ def test_scope_is_stored_in_module_order_and_unscoped_keeps_old_keys(service, sc
     assert attrs["both"].modules == [sys_id, test_id]
     assert attrs["note"].modules == []
     data = json.loads(service.store._project_file(project_id).read_text())
-    assert data["format_version"] == PROJECT_FORMAT.current == 2
+    assert data["format_version"] == PROJECT_FORMAT.current >= 2
     by_id = {a["id"]: a for a in data["attributes"]}
     assert "modules" not in by_id["note"]
     assert by_id["steps"]["modules"] == [test_id]
@@ -217,7 +217,7 @@ def test_v1_project_migrates_without_scopes_and_saves_as_v2(service):
 
     service.create_module(project.id, "M", "M")
     saved = json.loads(path.read_text())
-    assert saved["format_version"] == 2
+    assert saved["format_version"] == PROJECT_FORMAT.current
     assert "modules" not in next(a for a in saved["attributes"] if a["id"] == "x")
 
 

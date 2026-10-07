@@ -207,5 +207,9 @@
       "name": "Review",
       "attribute_ids": ["object_text", "status", "source", "rationale", "target_release"]
     }
+  ],
+  "row_styles": [
+    {"attribute_id": "object_type", "value": "Heading", "font_color": "#2f9e44", "background_color": null, "bold": false},
+    {"attribute_id": "object_type", "value": "Information", "font_color": "#1971c2", "background_color": null, "bold": false}
   ]
 }

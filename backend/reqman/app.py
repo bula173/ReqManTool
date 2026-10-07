@@ -199,6 +199,12 @@ class SetProjectParentBody(BaseModel):
     parent_project_id: str | None = None
 
 
+class SetRowStylesBody(BaseModel):
+    # The full list of rules (null or [] clears them). Typed loosely so the
+    # service validates it and REST/WebSocket reject alike.
+    row_styles: Any = None
+
+
 class SaveAsTemplateBody(BaseModel):
     name: str
     description: str = ""
@@ -538,6 +544,13 @@ async def set_attribute_modules(project_id: str, attr_id: str, body: SetAttribut
     return {"project": result["project"].to_dict(), "dropped_values": result["dropped_values"]}
 
 
+@app.put("/projects/{project_id}/row-styles")
+async def set_row_styles(project_id: str, body: SetRowStylesBody):
+    project = _wrap(service.set_row_styles, project_id, body.row_styles)
+    await manager.broadcast(project_id)
+    return project.to_dict()
+
+
 @app.post("/projects/{project_id}/link-configurations")
 async def create_link_configuration(project_id: str, body: CreateLinkConfigurationBody):
     config = _wrap(
@@ -793,6 +806,7 @@ RPC_METHODS = {
         p["name"], p.get("description", ""), p.get("template_id"), p.get("parent_project_id")
     ),
     "project.set_parent": lambda p: service.set_project_parent(p["id"], p.get("parent_project_id")),
+    "project.set_row_styles": lambda p: service.set_row_styles(p["id"], p.get("row_styles")),
     "project.save_as_template": lambda p: service.save_project_as_template(
         p["id"], p["name"], p.get("description", "")
     ),
@@ -901,6 +915,7 @@ def _error_response(request_id, code: int, message: str) -> dict:
 
 MUTATING_METHODS = {
     "project.create", "project.set_parent", "project.purge", "project.git_enable", "baseline.create",
+    "project.set_row_styles",
     "project.git_set_remote", "project.git_set_auto_push", "project.git_push", "project.git_pull",
     "project.create_from_remote",
     "attribute.add", "attribute.set_modules",

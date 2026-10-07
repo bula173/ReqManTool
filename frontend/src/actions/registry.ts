@@ -162,6 +162,7 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
       action('view.removeViewColumnWidths'),
       action('view.resetRowHeights'),
       divider,
+      action('view.rowStyles'),
       action('view.toggleDarkMode'),
     ],
   },

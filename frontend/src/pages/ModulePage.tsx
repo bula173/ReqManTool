@@ -46,6 +46,7 @@ import { RequirementDetailPanel } from '../components/RequirementDetailPanel';
 import { RequirementFormModal } from '../components/RequirementFormModal';
 import { ResizableHeaderCell } from '../components/ResizableHeaderCell';
 import { RowResizeHandle } from '../components/RowResizeHandle';
+import { useRowAppearance } from '../components/rowStyles';
 import {
   DEFAULT_ID_COLUMN_WIDTH,
   ID_COLUMN,
@@ -128,6 +129,8 @@ export function ModulePage() {
   const { tableRef, colRef } = columns;
   const rowSizes = useResizableRows(tableKey);
   const { tbodyRef } = rowSizes;
+  // Row styling rules (font/background color, bold) by enum attribute value.
+  const rowAppearance = useRowAppearance(projectQuery.data?.row_styles, projectQuery.data?.attributes);
 
   const [addParentId, setAddParentId] = useState<string | null | undefined>(undefined);
   const [linkSource, setLinkSource] = useState<Requirement | null>(null);
@@ -352,93 +355,103 @@ export function ModulePage() {
                 </Table.Td>
               </Table.Tr>
             )}
-            {rows.map(({ requirement: req, depth, hasChildren }) => (
-              <Table.Tr
-                key={req.id}
-                ref={(el) => {
-                  if (el) rowRefs.current.set(req.id, el);
-                  else rowRefs.current.delete(req.id);
-                }}
-                onClick={() => commands.selectRequirement(req.id)}
-                bg={selectedId === req.id ? 'var(--mantine-color-blue-light)' : undefined}
-                data-row-height={rowSizes.heightOf(req.id)}
-                style={{ cursor: 'pointer', ...rowSizes.rowStyle(req.id) }}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  commands.selectRequirement(req.id);
-                  setContextMenu({ x: e.clientX, y: e.clientY, requirement: req });
-                }}
-              >
-                <Table.Td data-column-key={ID_COLUMN}>
-                  <div className="reqman-cell-clip" data-fade={columns.isSingleLine(ID_COLUMN) ? undefined : ''}>
-                    <Text fw={600} truncate={columns.isSingleLine(ID_COLUMN) ? 'end' : undefined}>
-                      {req.id}
-                    </Text>
-                  </div>
-                  <RowResizeHandle rowId={req.id} rows={rowSizes} focusable />
-                </Table.Td>
-                {visibleAttributes.map((attr, attrIdx) => (
-                  <Table.Td key={attr.id} data-column-key={attr.id}>
-                    <div className="reqman-cell-clip" data-fade={columns.isSingleLine(attr.id) ? undefined : ''}>
-                      <Group gap={4} wrap="nowrap" pl={attrIdx === 0 ? depth * 20 : 0}>
-                        {attrIdx === 0 && hasChildren && (
-                          <ActionIcon variant="subtle" size="sm" onClick={() => toggleExpanded(req.id)}>
-                            {collapsed.has(req.id) ? (
-                              <IconChevronRight size={14} />
-                            ) : (
-                              <IconChevronDown size={14} />
-                            )}
+            {rows.map(({ requirement: req, depth, hasChildren }) => {
+              const appearance = rowAppearance(req.attributes);
+              const selected = selectedId === req.id;
+              return (
+                <Table.Tr
+                  key={req.id}
+                  ref={(el) => {
+                    if (el) rowRefs.current.set(req.id, el);
+                    else rowRefs.current.delete(req.id);
+                  }}
+                  onClick={() => commands.selectRequirement(req.id)}
+                  bg={selected ? 'var(--mantine-color-blue-light)' : undefined}
+                  data-row-height={rowSizes.heightOf(req.id)}
+                  data-row-bold={appearance.bold || undefined}
+                  style={{
+                    cursor: 'pointer',
+                    ...rowSizes.rowStyle(req.id),
+                    // The selection highlight wins over a rule's background.
+                    ...(selected ? { color: appearance.style.color } : appearance.style),
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    commands.selectRequirement(req.id);
+                    setContextMenu({ x: e.clientX, y: e.clientY, requirement: req });
+                  }}
+                >
+                  <Table.Td data-column-key={ID_COLUMN}>
+                    <div className="reqman-cell-clip" data-fade={columns.isSingleLine(ID_COLUMN) ? undefined : ''}>
+                      <Text fw={600} truncate={columns.isSingleLine(ID_COLUMN) ? 'end' : undefined}>
+                        {req.id}
+                      </Text>
+                    </div>
+                    <RowResizeHandle rowId={req.id} rows={rowSizes} focusable />
+                  </Table.Td>
+                  {visibleAttributes.map((attr, attrIdx) => (
+                    <Table.Td key={attr.id} data-column-key={attr.id}>
+                      <div className="reqman-cell-clip" data-fade={columns.isSingleLine(attr.id) ? undefined : ''}>
+                        <Group gap={4} wrap="nowrap" pl={attrIdx === 0 ? depth * 20 : 0}>
+                          {attrIdx === 0 && hasChildren && (
+                            <ActionIcon variant="subtle" size="sm" onClick={() => toggleExpanded(req.id)}>
+                              {collapsed.has(req.id) ? (
+                                <IconChevronRight size={14} />
+                              ) : (
+                                <IconChevronDown size={14} />
+                              )}
+                            </ActionIcon>
+                          )}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <EditableAttributeCell
+                              attr={attr}
+                              value={req.attributes[attr.id]}
+                              onSave={(value) => handleCellSave(req, attr.id, value)}
+                              disabled={updateRequirement.isPending}
+                              projectId={projectId}
+                              onNavigateToLinked={handleNavigateToLinked}
+                              wrap={!columns.isSingleLine(attr.id)}
+                            />
+                          </div>
+                        </Group>
+                      </div>
+                      <RowResizeHandle rowId={req.id} rows={rowSizes} />
+                    </Table.Td>
+                  ))}
+                  <Table.Td>
+                    <div className="reqman-cell-clip">
+                      <Group gap={4} wrap="nowrap">
+                        <Tooltip label="Add child">
+                          <ActionIcon variant="subtle" onClick={() => setAddParentId(req.id)}>
+                            <IconPlus size={16} />
                           </ActionIcon>
-                        )}
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <EditableAttributeCell
-                            attr={attr}
-                            value={req.attributes[attr.id]}
-                            onSave={(value) => handleCellSave(req, attr.id, value)}
-                            disabled={updateRequirement.isPending}
-                            projectId={projectId}
-                            onNavigateToLinked={handleNavigateToLinked}
-                            wrap={!columns.isSingleLine(attr.id)}
-                          />
-                        </div>
+                        </Tooltip>
+                        <Tooltip label="Move">
+                          <ActionIcon variant="subtle" onClick={() => setMoveSource(req)}>
+                            <IconArrowsMove size={16} />
+                          </ActionIcon>
+                        </Tooltip>
+                        <Tooltip label="Link">
+                          <ActionIcon variant="subtle" onClick={() => setLinkSource(req)}>
+                            <IconLink size={16} />
+                          </ActionIcon>
+                        </Tooltip>
+                        <Tooltip label="Remove">
+                          <ActionIcon
+                            variant="subtle"
+                            color="red"
+                            onClick={() => run('requirement.delete', { requirement: req })}
+                          >
+                            <IconTrash size={16} />
+                          </ActionIcon>
+                        </Tooltip>
                       </Group>
                     </div>
                     <RowResizeHandle rowId={req.id} rows={rowSizes} />
                   </Table.Td>
-                ))}
-                <Table.Td>
-                  <div className="reqman-cell-clip">
-                    <Group gap={4} wrap="nowrap">
-                      <Tooltip label="Add child">
-                        <ActionIcon variant="subtle" onClick={() => setAddParentId(req.id)}>
-                          <IconPlus size={16} />
-                        </ActionIcon>
-                      </Tooltip>
-                      <Tooltip label="Move">
-                        <ActionIcon variant="subtle" onClick={() => setMoveSource(req)}>
-                          <IconArrowsMove size={16} />
-                        </ActionIcon>
-                      </Tooltip>
-                      <Tooltip label="Link">
-                        <ActionIcon variant="subtle" onClick={() => setLinkSource(req)}>
-                          <IconLink size={16} />
-                        </ActionIcon>
-                      </Tooltip>
-                      <Tooltip label="Remove">
-                        <ActionIcon
-                          variant="subtle"
-                          color="red"
-                          onClick={() => run('requirement.delete', { requirement: req })}
-                        >
-                          <IconTrash size={16} />
-                        </ActionIcon>
-                      </Tooltip>
-                    </Group>
-                  </div>
-                  <RowResizeHandle rowId={req.id} rows={rowSizes} />
-                </Table.Td>
-              </Table.Tr>
-            ))}
+                </Table.Tr>
+              );
+            })}
           </Table.Tbody>
         </Table>
       </div>

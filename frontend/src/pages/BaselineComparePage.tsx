@@ -17,6 +17,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { useBaselineCompare, useBaselines, useProject } from '../api/queries';
 import type { BaselineModuleDiff, HistoryDiff } from '../api/types';
+import { useRowStyleCss } from '../components/rowStyles';
 
 const CURRENT = 'current';
 
@@ -43,6 +44,16 @@ function ModuleDiffCard({
   module: BaselineModuleDiff;
   attributeName: (id: string) => string;
 }) {
+  // Requirement ids take their row style (computed by the server per side).
+  const styleCss = useRowStyleCss();
+  const idText = (id: string) => {
+    const style = module.row_styles?.[id] ?? null;
+    return (
+      <Text span inherit fw={style?.bold ? 700 : undefined} style={styleCss(style)}>
+        {id}
+      </Text>
+    );
+  };
   return (
     <Card withBorder>
       <Group gap="xs" mb="xs">
@@ -59,7 +70,7 @@ function ModuleDiffCard({
             <Badge size="xs" color="green" variant="light" mr={6}>
               added
             </Badge>
-            {id}
+            {idText(id)}
           </Text>
         ))}
         {module.removed.map((id) => (
@@ -67,7 +78,7 @@ function ModuleDiffCard({
             <Badge size="xs" color="red" variant="light" mr={6}>
               removed
             </Badge>
-            {id}
+            {idText(id)}
           </Text>
         ))}
         {module.modified.map((entry) => (
@@ -76,7 +87,7 @@ function ModuleDiffCard({
               <Badge size="xs" color="yellow" variant="light" mr={6}>
                 modified
               </Badge>
-              {entry.id}
+              {idText(entry.id)}
             </Text>
             <Stack gap={0} pl="xl">
               {entry.diffs.map((diff, index) => (

@@ -752,6 +752,43 @@
       Headless Chrome smoke test passed. Review: 1 fix round. Not
       covered: no frontend tests; Safari/Firefox not tried; review
       follow-ups (see backlog).
+- [x] **Row styling by Object Type (and other enum values)** (requested
+      2026-10-07). Per-project rules in `project.json` `row_styles` (written
+      last, only when non-empty): `{attribute_id, value, font_color,
+      background_color, bold}`. PROJECT_FORMAT 2 → 3; the migration drops
+      any stray key, so existing projects start with no rules.
+      `ProjectService.set_row_styles` validates: known non-system enum
+      attribute, valid choice, `#rrggbb` or null colors (stored
+      lower-case), bool bold, no duplicates, at least one effect per rule,
+      at most 200 rules, no unknown keys. The first matching rule wins;
+      stale hand-edited rules are ignored everywhere. REST `PUT
+      /projects/{id}/row-styles`, WS `project.set_row_styles`, both
+      broadcast; history message "Row styles changed". Templates may
+      declare `row_styles`; RBC template defaults Heading `#2f9e44` font,
+      Information `#1971c2` font; save-as-template keeps the rules that
+      still resolve; blank projects get none. Applied in the requirements
+      table, the Module outline, the baseline view (from the snapshot's
+      own rules), baseline compare (per-module `row_styles`: the "to" side
+      for added/modified, the "from" side for removed) and the DOCX export
+      (font color, `w:shd` shading, bold). Dark mode adjusts colors for
+      display only; DOCX and storage keep them as given. UI:
+      `RowStylesModal` (attribute/value selects, ColorInput pickers, bold,
+      reorder, live light/dark preview, stale-rule warnings), opened from
+      View ▸ Row styles (registry action `view.rowStyles`) and a button on
+      the project page. `docs/ARCHITECTURE.md`: format 3, "Row styles"
+      section, routes. Files: `backend/reqman/{models.py, formats.py,
+      service.py, app.py, docx_export.py, history.py, templates.py,
+      templates/rbc_template.json}`, `backend/tests/{test_row_styles.py
+      (new, 24 tests), test_row_styles_edge_cases.py (new, 39 tests),
+      test_attribute_applicability.py, test_templates.py,
+      test_templates_edge_cases.py}`, `frontend/src/components/
+      {RowStylesModal.tsx (new), rowStyles.ts (new), ModuleOutline.tsx}`,
+      `pages/{ModulePage.tsx, BaselinePage.tsx, BaselineComparePage.tsx,
+      ProjectPage.tsx}`, `actions/{types.ts, appActions.ts, registry.ts}`,
+      `layout/AppDialogs.tsx`, `api/{types.ts, queries.ts}`, `index.css`.
+      Backend tests 1120 → 1183. Not covered: no frontend tests; not
+      tried in a browser; no styling in CSV/XLSX/ReqIF (not requested);
+      review follow-ups (see backlog).
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -880,18 +917,6 @@ to the categories above.
       auto-push disabling session squashing — accepted as is.
       (6) `_is_non_fast_forward` matches "[rejected]" but not "[remote
       rejected]", so some remote rejections map to 400 instead of 409.
-- [ ] Row styling by Object Type (and other enum values). Requested
-      2026-10-07. Per-project style rules: for an enum attribute value
-      (default attribute: Object Type) set row font color and background
-      color (optionally bold). Defaults for new projects and templates:
-      Heading → green font, Information → blue font. Rules live in
-      `project.json` (`row_styles`: attribute id, value, font_color,
-      background_color, bold; project format bump + migration), edited in
-      a project settings dialog with color pickers and a live preview;
-      applied in the requirements table, Module outline, baseline/compare
-      views and the DOCX export; theme-aware (readable in dark mode).
-      REST + WebSocket parity; validated server-side (known attribute and
-      value, `#rrggbb` colors).
 - [ ] Rich text in requirement text (bold, italic, underline, lists,
       font color, font size). Requested 2026-10-07. Text attributes
       (`text` type, incl. ObjectText) gain rich formatting: bold, italic,
@@ -1156,6 +1181,24 @@ to the categories above.
       its bullets; move it. (5) A required attribute with a hand-edited
       scope cannot be reset from the UI (the Modules button is
       disabled); only the API can clear it.
+- [ ] Row styling: review follow-ups (2026-10-08). (1) Data safety, do
+      first: a missing `row_styles` key in the REST body or WS params
+      clears every rule. Fix: make the key required; clearing needs an
+      explicit null or []. (2) Do first: `test_attribute_applicability.py:66`
+      had its format assertion deleted rather than updated; restore it as
+      `== PROJECT_FORMAT.current`. (3) `RowStylesModal` seeds from the
+      project captured when the dialog opened: reopening before the
+      refetch shows old rules, and concurrent edits are overwritten. Fix:
+      read the live `useProject`. (4) Dark mode: background-only rules do
+      not check the contrast of the default text (e.g. `#fff3bf` gives
+      about 3:1). Fix it, or correct the 4.5:1 claim in
+      `docs/ARCHITECTURE.md`. (5) On selected/hovered rows the rule's font
+      color sits on the selection tint with low contrast. Fix: drop the
+      color while the row is selected. (6) The Id cell's inline `fw=600`
+      beats the bold rule. (7) Precompute the per-rule appearance instead
+      of doing it per row. (8) `set_row_styles` saves (and commits) even
+      when nothing changed. (9) Frontend unit tests for `rowStyles.ts`
+      once a test runner exists.
 - [ ] Module templates + heading skeletons in project and module templates.
       Requested 2026-10-04 (extends the delivered project templates).
       (1) Module templates: JSON files (built-in + user, like project

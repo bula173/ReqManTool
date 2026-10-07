@@ -46,6 +46,20 @@ export interface View {
   column_widths?: Record<string, number>;
 }
 
+/**
+ * A row styling rule (project format 3): rows whose enum attribute
+ * `attribute_id` has `value` get this font color, background color and bold.
+ * Colors are `#rrggbb` (lower-case) or null. The first matching rule wins;
+ * see `components/rowStyles.ts`.
+ */
+export interface RowStyle {
+  attribute_id: string;
+  value: string;
+  font_color: string | null;
+  background_color: string | null;
+  bold: boolean;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -64,6 +78,11 @@ export interface Project {
    * `GET /projects/{id}/modules`, which applies it tolerantly.
    */
   module_order?: string[];
+  /**
+   * Row styling rules, in priority order. Omitted when the project has none.
+   * Set with `PUT /projects/{id}/row-styles` (WS `project.set_row_styles`).
+   */
+  row_styles?: RowStyle[];
 }
 
 /**
@@ -277,6 +296,12 @@ export interface BaselineModuleDiff {
   added: string[];
   removed: string[];
   modified: { id: string; diffs: HistoryDiff[] }[];
+  /**
+   * The row style of each listed requirement that has one (added/modified:
+   * the "to" side's rules and values; removed: the "from" side's). Omitted
+   * when none is styled.
+   */
+  row_styles?: Record<string, RowStyle>;
 }
 
 export interface BaselineLinkDiff {

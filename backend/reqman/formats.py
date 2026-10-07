@@ -84,7 +84,24 @@ def _project_v1_to_v2(data: dict) -> dict:
     return data
 
 
-PROJECT_FORMAT = FileFormat(name="project", current=2, migrations={1: _project_v1_to_v2})
+def _project_v2_to_v3(data: dict) -> dict:
+    """Project format 2 -> 3: projects gained ``row_styles``.
+
+    Version 3 adds ``Project.row_styles`` (row font/background color and bold
+    per enum attribute value; absent or empty = no styling). Version 2 had no
+    styling, so a migrated project has no rules: existing projects are not
+    given the defaults new template projects get. A stray ``row_styles`` key
+    in a hand-edited version 2 file was ignored then and is dropped here so
+    it keeps meaning nothing. Module, requirement and link-pair files are
+    unchanged.
+    """
+    data.pop("row_styles", None)
+    return data
+
+
+PROJECT_FORMAT = FileFormat(
+    name="project", current=3, migrations={1: _project_v1_to_v2, 2: _project_v2_to_v3}
+)
 CONFIG_FORMAT = FileFormat(name="config", current=1)
 
 

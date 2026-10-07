@@ -701,6 +701,7 @@ def test_saved_template_json_format_and_contents(service):
     assert text == json.dumps(data, indent=2) + "\n"
     assert list(data) == [
         "format_version", "id", "name", "description", "attributes", "modules", "link_configurations", "views",
+        "row_styles",  # the RBC template's default row styles are kept
     ]
     assert (data["format_version"], data["id"], data["name"], data["description"]) == (
         1, "saved", "Saved", "Saved description",

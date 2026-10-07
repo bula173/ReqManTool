@@ -72,6 +72,7 @@ export type DialogRequest =
   | { kind: 'addProjectFromRemote' }
   | { kind: 'dataDir' }
   | { kind: 'saveAsTemplate'; project: Project }
+  | { kind: 'rowStyles'; project: Project }
   | { kind: 'importTemplate' }
   | { kind: 'importCsv'; projectId: string; moduleId: string; moduleName: string }
   | { kind: 'shortcuts' }

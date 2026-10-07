@@ -16,6 +16,7 @@ import {
   IconLayoutSidebarRight,
   IconLineHeight,
   IconMoon,
+  IconPalette,
   IconTable,
   IconTemplate,
   IconUpload,
@@ -365,6 +366,18 @@ export const appActions: Action<'app'>[] = [
         () => notifications.show({ message: `Column widths removed from view "${view.name}"`, color: 'green' }),
         showError('Failed to remove the column widths'),
       );
+    },
+  },
+  {
+    // Project-wide row font/background colors by enum attribute value.
+    id: 'view.rowStyles',
+    element: 'app',
+    label: 'Row styles',
+    icon: IconPalette,
+    opensDialog: true,
+    isAvailable: (ctx) => ctx.project !== null,
+    run: (ctx) => {
+      if (ctx.project) ctx.commands.openDialog({ kind: 'rowStyles', project: ctx.project });
     },
   },
   {

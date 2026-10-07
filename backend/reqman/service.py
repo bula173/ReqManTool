@@ -35,7 +35,7 @@ from .csv_import import RESERVED_COLUMNS
 from .formats import PROJECT_FORMAT, NewerFormatError, upgrade
 from .git_repo import DEFAULT_LOG_LIMIT, LOG_LIMIT, GitError, GitHistory, RepoConflict, local_remote_path
 from .history import FileChange, build_snapshot, compare_snapshots, describe_changes
-from .models import AttributeDefinition, LinkConfiguration, LinkPair, Module, Project, Requirement, View
+from .models import AttributeDefinition, LinkConfiguration, LinkPair, Module, Project, Requirement, RowStyle, View
 from .store import PROJECT_SLUG_PATTERN, ProjectStore, validate_prefix
 from .templates import (
     BUILTIN_SOURCE,
@@ -47,6 +47,7 @@ from .templates import (
     TemplateAttribute,
     TemplateLinkConfiguration,
     TemplateModule,
+    TemplateRowStyle,
     TemplateView,
     list_builtin_template_ids,
     make_template_id,
@@ -70,6 +71,12 @@ ATTRIBUTE_TYPES = ("string", "text", "integer", "boolean", "enum")
 VIEW_ID_COLUMN = "@id"
 MIN_COLUMN_WIDTH = 40
 MAX_COLUMN_WIDTH = 4000
+
+# Row styling rules (``Project.row_styles``): the most a project may have,
+# the keys of one rule, and the color format.
+MAX_ROW_STYLES = 200
+ROW_STYLE_KEYS = ("attribute_id", "value", "font_color", "background_color", "bold")
+_HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 _SLUG_NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
@@ -570,7 +577,49 @@ class ProjectService:
 
         from_meta, from_snapshot = side(from_name)
         to_meta, to_snapshot = side(to_name)
-        return {"from": from_meta, "to": to_meta, **compare_snapshots(from_snapshot, to_snapshot)}
+        result = compare_snapshots(from_snapshot, to_snapshot)
+        self._add_compare_row_styles(result, from_snapshot, to_snapshot)
+        return {"from": from_meta, "to": to_meta, **result}
+
+    @classmethod
+    def _add_compare_row_styles(cls, result: dict[str, Any], old: dict[str, Any], new: dict[str, Any]) -> None:
+        """Give each compared module the row style of its listed requirements.
+
+        A module entry gains ``row_styles`` (requirement id -> rule) for the
+        styled ones only, and only when there is one: added and modified
+        requirements are styled by the "to" side's rules and values, removed
+        ones by the "from" side's. A side whose project.json predates row
+        styles, or cannot be read as a project, styles nothing.
+        """
+
+        def rules(snapshot: dict[str, Any]) -> list[RowStyle]:
+            try:
+                return cls._effective_row_styles(Project.from_dict(snapshot["project"]))
+            except (KeyError, TypeError, AttributeError, ValueError):
+                return []
+
+        old_rules, new_rules = rules(old), rules(new)
+        if not (old_rules or new_rules):
+            return
+        for module in result["modules"]:
+            module_id = module["module_id"]
+            styled: dict[str, Any] = {}
+            listed = [(i, new, new_rules) for i in module["added"]]
+            listed += [(m["id"], new, new_rules) for m in module["modified"]]
+            listed += [(i, old, old_rules) for i in module["removed"]]
+            for requirement_id, snapshot, side_rules in listed:
+                data = snapshot["requirements"].get(module_id, {}).get(requirement_id, {})
+                values = data.get("attributes") if isinstance(data, dict) else None
+                style = cls._row_style_of(side_rules, values if isinstance(values, dict) else {})
+                if style is not None:
+                    styled[requirement_id] = style.to_dict()
+            if styled:
+                module["row_styles"] = styled
+
+    @staticmethod
+    def _row_style_of(rules: list[RowStyle], values: dict[str, Any]) -> RowStyle | None:
+        """The first of ``rules`` whose attribute value ``values`` has (the DOCX export's rule)."""
+        return next((r for r in rules if values.get(r.attribute_id) == r.value), None)
 
     # --- projects ----------------------------------------------------------
 
@@ -977,6 +1026,104 @@ class ProjectService:
             if attr.name.strip().casefold() == folded:
                 raise ValueError(f"{kind} name '{stripped}' is already used by attribute '{attr.id}'")
         return stripped
+
+    # --- row styles ----------------------------------------------------------------
+
+    @_records_history
+    def set_row_styles(self, project_id: str, row_styles: Any) -> Project:
+        """Replace the project's row styling rules (None or ``[]`` clears them).
+
+        Each rule styles the rows whose enum attribute ``attribute_id`` has
+        ``value``: ``font_color``/``background_color`` (``#rrggbb``, stored
+        lower-case, or null) and ``bold``. Validated by ``_checked_row_styles``;
+        an invalid list raises ``ValueError`` and nothing is written.
+        """
+        project = self.store.load_project(project_id)
+        project.row_styles = self._checked_row_styles(project, row_styles)
+        self.store.save_project(project)
+        return project
+
+    @staticmethod
+    def _checked_row_styles(project: Project, row_styles: Any) -> list[RowStyle]:
+        """``row_styles`` as stored rules for ``project``, in the order given.
+
+        A list of at most ``MAX_ROW_STYLES`` objects with exactly the keys of
+        ``ROW_STYLE_KEYS`` (``font_color``, ``background_color`` and ``bold``
+        may be omitted). The attribute must be a (non-system) enum attribute
+        of the project and the value one of its choices; an (attribute,
+        value) pair may appear once, and a rule must set at least one of
+        font color, background color or bold. Rules are checked only when
+        written: attributes and choices cannot be removed or renamed through
+        the API, and a rule that hand-edited data no longer resolves is
+        ignored where styles are applied (``_effective_row_styles``).
+        """
+        if row_styles is None:
+            return []
+        if not isinstance(row_styles, list):
+            raise ValueError("row_styles must be a list of row style rules")
+        if len(row_styles) > MAX_ROW_STYLES:
+            raise ValueError(f"A project can have at most {MAX_ROW_STYLES} row styles")
+        attributes = {a.id: a for a in project.attributes}
+        seen: set[tuple[str, str]] = set()
+        result: list[RowStyle] = []
+        for index, raw in enumerate(row_styles):
+            where = f"row_styles[{index}]"
+            if not isinstance(raw, dict):
+                raise ValueError(f"{where}: must be an object")
+            unknown = sorted(str(k) for k in raw if k not in ROW_STYLE_KEYS)
+            if unknown:
+                raise ValueError(f"{where}: unknown key(s) {unknown}")
+            attr_id = raw.get("attribute_id")
+            attr = attributes.get(attr_id) if isinstance(attr_id, str) else None
+            if attr is None:
+                raise ValueError(f"{where}: unknown attribute {attr_id!r}")
+            if attr.type != "enum" or attr.system:
+                raise ValueError(f"{where}: attribute '{attr.name}' is not an enum attribute")
+            value = raw.get("value")
+            if not isinstance(value, str) or value not in (attr.choices or []):
+                raise ValueError(f"{where}: {value!r} is not a choice of attribute '{attr.name}'")
+            if (attr.id, value) in seen:
+                raise ValueError(f"{where}: attribute '{attr.name}' value '{value}' already has a row style")
+            seen.add((attr.id, value))
+            colors: dict[str, str | None] = {}
+            for key in ("font_color", "background_color"):
+                color = raw.get(key)
+                if color is not None and not (isinstance(color, str) and _HEX_COLOR.match(color)):
+                    raise ValueError(f"{where}: '{key}' must be a color '#rrggbb' or null")
+                colors[key] = color.lower() if color is not None else None
+            bold = raw.get("bold", False)
+            if not isinstance(bold, bool):
+                raise ValueError(f"{where}: 'bold' must be true or false")
+            if colors["font_color"] is None and colors["background_color"] is None and not bold:
+                raise ValueError(
+                    f"{where}: attribute '{attr.name}' value '{value}' sets no font color, background color or bold"
+                )
+            result.append(RowStyle(attribute_id=attr.id, value=value, bold=bold, **colors))
+        return result
+
+    @staticmethod
+    def _effective_row_styles(project: Project) -> list[RowStyle]:
+        """The project's rules that still resolve: enum attribute, value among its choices.
+
+        Hand-edited data can leave a rule naming a missing attribute or
+        choice; such a rule is ignored (not rewritten). The first rule for
+        an (attribute, value) pair wins.
+        """
+        attributes = {a.id: a for a in project.attributes}
+        seen: set[tuple[str, str]] = set()
+        result: list[RowStyle] = []
+        for style in project.row_styles:
+            attr = attributes.get(style.attribute_id)
+            key = (style.attribute_id, style.value)
+            if attr is None or attr.type != "enum" or attr.system or key in seen:
+                continue
+            if style.value not in (attr.choices or []):
+                continue
+            if style.font_color is None and style.background_color is None and not style.bold:
+                continue
+            seen.add(key)
+            result.append(style)
+        return result
 
     # --- modules ----------------------------------------------------------------
 
@@ -1814,6 +1961,9 @@ class ProjectService:
                     )
             self._add_view(project, tview.name, mapped)
 
+        # Rule messages name the entry (``row_styles[<index>]``).
+        project.row_styles = self._checked_row_styles(project, [s.to_dict() for s in template.row_styles])
+
         return project, modules
 
     def _validate_template(self, template: Template) -> None:
@@ -1925,15 +2075,20 @@ class ProjectService:
                 for c in project.link_configurations
             ],
             views=views,
+            # Rules hand-edited data no longer resolves are not carried over.
+            row_styles=[
+                TemplateRowStyle(**style.to_dict()) for style in ProjectService._effective_row_styles(project)
+            ],
         )
 
     def save_project_as_template(self, project_id: str, name: Any, description: Any = "") -> dict[str, Any]:
         """Write a project's structure as a new user template (``user:<slug>``).
 
         Saves non-system attributes (except the built-in ``object_text``),
-        modules (key = module id), link configurations (between module keys)
-        and views (mirror attributes written as ``link:<key>``; references to
-        attributes the project no longer has are dropped). Requirements, id
+        modules (key = module id), link configurations (between module keys),
+        views (mirror attributes written as ``link:<key>``; references to
+        attributes the project no longer has are dropped) and row styles
+        (rules that no longer resolve are dropped). Requirements, id
         counters and the parent are not saved. The result is validated
         exactly like a loaded template before anything is written. A name
         already used by any template (built-in or user, case-insensitive)
@@ -2058,7 +2213,7 @@ class ProjectService:
 
         project = self.store.load_project(project_id)
         modules = self._export_modules(project)
-        return export_project_to_docx(project, modules)
+        return export_project_to_docx(project, modules, self._effective_row_styles(project))
 
     # --- import ----------------------------------------------------------------
 

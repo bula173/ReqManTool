@@ -6,6 +6,7 @@ import { ImportCsvModal } from '../components/ImportCsvModal';
 import { ImportTemplateModal } from '../components/ImportTemplateModal';
 import { KeyboardShortcutsModal } from '../components/KeyboardShortcutsModal';
 import { NewProjectModal } from '../components/NewProjectModal';
+import { RowStylesModal } from '../components/RowStylesModal';
 import { SaveAsTemplateModal } from '../components/SaveAsTemplateModal';
 
 /**
@@ -31,6 +32,8 @@ export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; 
       return <DataDirModal opened onClose={onClose} />;
     case 'saveAsTemplate':
       return <SaveAsTemplateModal opened onClose={onClose} project={dialog.project} />;
+    case 'rowStyles':
+      return <RowStylesModal opened onClose={onClose} project={dialog.project} />;
     case 'importTemplate':
       return <ImportTemplateModal opened onClose={onClose} />;
     case 'importCsv':

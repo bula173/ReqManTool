@@ -1,5 +1,5 @@
 """Persisted data shapes: Project, Module, Requirement, AttributeDefinition,
-LinkConfiguration, LinkPair.
+LinkConfiguration, LinkPair, View, RowStyle.
 
 Plain dataclasses only — no behavior, no validation beyond field defaults.
 Each type carries its own ``to_dict``/``from_dict`` for JSON (de)serialization;
@@ -12,6 +12,7 @@ invariants, attribute validation) live in ``service.py``, not here.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, asdict
 from typing import Any, Literal
 
@@ -137,6 +138,58 @@ class View:
         )
 
 
+_HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _color(value: Any) -> str | None:
+    """A hand-edited ``#rrggbb`` color (lower-cased), or None for anything else."""
+    return value.lower() if isinstance(value, str) and _HEX_COLOR.match(value) else None
+
+
+@dataclass
+class RowStyle:
+    """How rows whose enum attribute has a given value are drawn (project format 3).
+
+    ``font_color``/``background_color`` are ``#rrggbb`` or None (unchanged).
+    Rules (known enum attribute, value among its choices, no duplicate
+    attribute/value pair, limits) live in ``ProjectService``.
+    """
+
+    attribute_id: str
+    value: str
+    font_color: str | None = None
+    background_color: str | None = None
+    bold: bool = False
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(data: dict) -> "RowStyle":
+        return RowStyle(
+            attribute_id=data["attribute_id"],
+            value=data["value"],
+            font_color=_color(data.get("font_color")),
+            background_color=_color(data.get("background_color")),
+            bold=data.get("bold") is True,
+        )
+
+
+def _row_styles(value: Any) -> list[RowStyle]:
+    """The usable entries of a hand-editable ``row_styles`` list.
+
+    An entry that is not an object with string ``attribute_id`` and ``value``
+    is skipped; anything else reads as no rules.
+    """
+    if not isinstance(value, list):
+        return []
+    return [
+        RowStyle.from_dict(item)
+        for item in value
+        if isinstance(item, dict) and isinstance(item.get("attribute_id"), str) and isinstance(item.get("value"), str)
+    ]
+
+
 @dataclass
 class Requirement:
     id: str
@@ -194,6 +247,10 @@ class Project:
     # data) lists its modules in id order. ``ProjectService`` drops entries
     # naming missing modules and appends unlisted modules in id order.
     module_order: list[str] = field(default_factory=list)
+    # Row styling rules (project format 3), in display order. Written only
+    # when non-empty, after every other key, so a project without rules keeps
+    # exactly the keys it had before.
+    row_styles: list[RowStyle] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         data: dict[str, Any] = {
@@ -216,6 +273,7 @@ class Project:
             # Written only when set, like ``parent_project_id``, so a project
             # without modules (or older data) gains no empty key on save.
             **({"module_order": list(self.module_order)} if self.module_order else {}),
+            **({"row_styles": [s.to_dict() for s in self.row_styles]} if self.row_styles else {}),
         }
 
     @staticmethod
@@ -232,4 +290,5 @@ class Project:
                 LinkConfiguration.from_dict(c) for c in data.get("link_configurations", [])
             ],
             module_order=_string_list(data.get("module_order")),
+            row_styles=_row_styles(data.get("row_styles")),
         )

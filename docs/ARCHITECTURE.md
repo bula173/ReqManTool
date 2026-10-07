@@ -98,7 +98,8 @@ persistence" below.
                                    #   parent_project_id (only if set),
                                    #   attributes (incl. system ones),
                                    #   id_counters, link_configurations, views,
-                                   #   module_order (only if set)
+                                   #   module_order (only if set),
+                                   #   row_styles (only if non-empty)
     modules/
       <module-id>/
         module.json                # Module: id, name, prefix, description
@@ -123,8 +124,9 @@ persistence" below.
   prefix), `link_configurations: list[LinkConfiguration]`,
   `views: list[View]` (view names are unique per project, compared
   case-insensitively after stripping, like template view names),
-  `module_order: list[str]` (module ids in display order; written last and
-  only when non-empty — see "Module order" below).
+  `module_order: list[str]` (module ids in display order; written only
+  when non-empty — see "Module order" below), `row_styles: list[RowStyle]`
+  (written last and only when non-empty — see "Row styles" below).
 - **AttributeDefinition** — `id`, `name`, `type` (`string | text | integer
   | boolean | enum`), `required`, `default`, `choices` (enum only),
   `system: bool`. `system=True` marks an attribute the service manages
@@ -329,8 +331,10 @@ domain rules.
   `_templates/<slug-of-name>.json` (atomic write, two-space indent, trailing
   newline, fixed key order): non-system attributes except `object_text`,
   modules (`key` = module id, in the project's module order), link configurations (between
-  module keys) and views (mirror attributes as `link:<key>`; references to
-  attributes the project no longer has are dropped). Requirements, id
+  module keys), views (mirror attributes as `link:<key>`; references to
+  attributes the project no longer has are dropped) and row styles (rules
+  that no longer resolve are dropped; `row_styles` written only when
+  non-empty). Requirements, id
   counters and the parent are not saved. The result is round-tripped
   through the loader before it is written. A name already used by any
   template (built-in or user, case-insensitive) is rejected with 409; a
@@ -351,13 +355,16 @@ domain rules.
 
 `project.json` and the app config file (`.reqman/config.json`) start with
 an integer `format_version` (`reqman/formats.py`: `PROJECT_FORMAT`,
-`CONFIG_FORMAT`; project currently 2, config 1). Module, requirement and
+`CONFIG_FORMAT`; project currently 3, config 1). Module, requirement and
 link-pair files have no version of their own; they are governed by their
 project's version. Templates keep their own, separate `format_version`.
 Project format 2 added `AttributeDefinition.modules` (per-module attribute
 applicability: the module ids an attribute applies to, written only when
 non-empty); the 1 → 2 step drops any stray `modules` key, since version 1
-attributes applied to every module.
+attributes applied to every module. Project format 3 added
+`Project.row_styles`; the 2 → 3 step drops any stray `row_styles` key, so
+an existing project gets no rules (only new projects from a template that
+declares them, such as the RBC template, get the defaults).
 
 Only optional attributes can be scoped to modules: a required attribute
 always applies to every module. `ProjectService._check_required_scope`
@@ -428,6 +435,33 @@ modules, and save-as-template writes no `modules` for it.
   be protected anyway; from this release on, new keys bump the version
   (module folders therefore must). A project migration that changes
   module, requirement or link-pair files must upgrade those files too.
+
+### Row styles
+
+`project.row_styles` is an ordered list of `{attribute_id, value,
+font_color, background_color, bold}` rules: rows whose enum attribute
+`attribute_id` has `value` get that font color, background color
+(`#rrggbb`, stored lower-case, or null) and bold. The first matching rule
+wins. `ProjectService.set_row_styles` (`PUT /projects/{id}/row-styles`
+`{"row_styles": [...] or null}`, WS `project.set_row_styles` `{id,
+row_styles}`, both broadcast `changed`) replaces the whole list and checks
+it in `_checked_row_styles`: a list of at most 200 objects with only the
+five keys, a known non-system enum attribute, a value among its choices,
+colors `#rrggbb` or null, a boolean `bold`, at least one of the three set,
+and no duplicate (attribute, value) pair. Invalid → REST 400 / WS -32602,
+nothing written. Templates may declare `row_styles` (shape checked by
+`templates.parse_template`, rules by the service when the template is
+validated); the RBC template styles Object Type Heading green and
+Information blue. Rules that hand-edited data no longer resolves are kept on
+disk but ignored where styles apply (`_effective_row_styles`, mirrored by
+`frontend/src/components/rowStyles.ts`): the requirements table, the Module
+outline, the baseline view (the baseline's own rules), baseline compare
+(`row_styles` per module entry: requirement id → rule, from the side the
+requirement is listed for) and the DOCX export (heading and attribute
+paragraphs: font color, shading, bold). In dark mode the frontend darkens
+backgrounds and lightens font colors to a 4.5:1 contrast; stored colors and
+the DOCX export are unchanged. Edited in View ▸ Row styles or the project
+page's Row styles button.
 
 ### Module order
 
@@ -818,7 +852,7 @@ resource:
 
 | Resource | Routes |
 |---|---|
-| Projects | `POST/GET /projects` (`GET` lists unloadable projects as `{id, name, error}` stubs; `POST` body: `name`, `description`, optional `template_id`, optional `parent_project_id`), `GET /projects/{id}`, `PUT /projects/{id}/parent` (`{"parent_project_id": id or null}`) |
+| Projects | `POST/GET /projects` (`GET` lists unloadable projects as `{id, name, error}` stubs; `POST` body: `name`, `description`, optional `template_id`, optional `parent_project_id`), `GET /projects/{id}`, `PUT /projects/{id}/parent` (`{"parent_project_id": id or null}`), `PUT /projects/{id}/row-styles` (`{"row_styles": [...]}`; WS `project.set_row_styles`; 400 invalid) |
 | History (git) | `GET /projects/{id}/git` (status; WS `project.git_status`), `POST /projects/{id}/git/enable` (WS `project.git_enable`, broadcasts `changed`, also after a part-way failure; 409 nested/foreign/detached/merge etc. in progress/`current` not checked out, 400 git off or missing or a failed step), `GET /projects/{id}/git/log?limit=` (WS `project.git_log`), `GET .../modules/{m}/requirements/{r}/history` (WS `requirement.history`) — see "Project history (git)" |
 | Baselines (git) | `POST /projects/{id}/baselines` (`{name, description}`; WS `baseline.create`, broadcasts `changed`; 409 duplicate name / not `ready` / `baseline` moved by hand, 400 invalid name or git off/missing), `GET /projects/{id}/baselines` (WS `baseline.list`), `GET /projects/{id}/baselines/{name}` (WS `baseline.get`; 409 for a newer-format baseline), `GET .../baselines/{name}/modules/{m}/requirements` (WS `baseline.requirements`), `GET /projects/{id}/baselines/compare?from=&to=` (`to`/`from` = a baseline name or `current`; WS `baseline.compare`) — reads are read-only; see "Project history (git)" |
 | Templates | `GET /templates` → `[{id, source, name, description, modules: [{key, name, prefix}], error}]`, `POST /projects/{id}/save-as-template` (`{name, description}`; 409 on a name clash; broadcasts `templates_changed`), `POST /templates/import` (raw template JSON request body, `Content-Type: application/json` required (415 otherwise), UTF-8 with optional BOM, at most 1 MiB (413); invalid → 400, name clash → 409; returns the template summary; broadcasts `templates_changed`; WS: `template.import` `{text}`) |
@@ -848,6 +882,7 @@ REST side (`manager.broadcast`, excluding the sender socket so a client
 doesn't get a redundant refresh of its own change). Templates and
 subprojects: `template.list`, `project.create` (optional `template_id`,
 `parent_project_id`), `project.set_parent` (`{id, parent_project_id}`,
+broadcasts `changed`), `project.set_row_styles` (`{id, row_styles}`,
 broadcasts `changed`), `project.save_as_template` (`{id, name,
 description}`) and `template.import` (`{text}`: the template file's
 content), both in `TEMPLATE_MUTATING_METHODS`: they broadcast

@@ -24,6 +24,7 @@ import {
   IconFolderPlus,
   IconHierarchy2,
   IconInfoCircle,
+  IconPalette,
   IconPlus,
   IconTemplate,
   IconTrash,
@@ -223,6 +224,14 @@ export function ProjectPage() {
             onClick={() => run('file.saveAsTemplate')}
           >
             Save as template
+          </Button>
+          <Button
+            size="xs"
+            variant="default"
+            leftSection={<IconPalette size={14} />}
+            onClick={() => run('view.rowStyles')}
+          >
+            Row styles
           </Button>
         </Group>
       </Group>
