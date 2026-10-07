@@ -678,6 +678,50 @@
       rounds: 2 (receive-side hooks, then target-config command vectors).
       Not covered: Windows drive/UNC paths were tested only via a flag;
       not tried in a browser.
+- [x] **Per-module attribute applicability** (2026-10-04 item). A project
+      attribute can be limited to selected modules:
+      `AttributeDefinition.modules` holds module ids and is written only
+      when non-empty (absent / empty = all modules). PROJECT_FORMAT 1 → 2
+      with a tested, idempotent v1→v2 migration. Rules in
+      `ProjectService`: writing a value for a non-applicable attribute is
+      rejected (400 / -32602) on add, update and CSV import; `required`
+      and defaults apply only in the listed modules. CSV import: a
+      non-empty cell for a non-applicable attribute rejects the import
+      with a row error; a column that is empty throughout goes to
+      `ignored_columns`. CSV/XLSX/DOCX/ReqIF exports show only the
+      applicable attributes per module. New REST `PUT
+      /projects/{id}/attributes/{attr_id}/modules` and WebSocket
+      `attribute.set_modules`: narrowing the scope while non-blank values
+      exist outside it is refused unless `drop_values` is true, which
+      removes them and reports them in `dropped_values` (blank values are
+      removed silently); the change broadcasts. Templates declare
+      `modules` by module key; `rbc_template.json` scopes the test fields
+      (preconditions, test_steps, expected_result, test_result) to
+      SysTest/SwTest and SIL, Allocation and Verification Method to
+      StRS/SyRS/SwRS. User rule (2026-10-07): only optional attributes
+      can be scoped; required attributes always apply to every module.
+      Add / set-modules with a required attribute and a non-empty list
+      → 400 / -32602 "Required attribute '<Name>' applies to every
+      module; only optional attributes can be limited to modules";
+      templates with a required scoped attribute are rejected;
+      hand-edited required+scoped attributes load and are treated as
+      applying everywhere. UI: module checklist in the Add attribute
+      dialog (disabled while Required is ticked); Modules column and
+      Modules editor dialog on the project page (the Modules button is
+      disabled with a tooltip for required attributes); tables, views,
+      the detail panel and forms show only the module's applicable
+      attributes. Files: `backend/reqman/{models.py, service.py, app.py,
+      csv_import.py, formats.py, templates.py,
+      templates/rbc_template.json}`,
+      `backend/tests/{test_attribute_applicability.py (new),
+      test_required_attribute_scope.py (new, 9 tests),
+      test_git_baselines.py, test_templates_edge_cases.py}`,
+      `docs/ARCHITECTURE.md`, `frontend/src/api/{applicability.ts,
+      queries.ts, types.ts}`, `components/{AddAttributeModal.tsx,
+      AttributeModulesChecklist.tsx, AttributeModulesModal.tsx}`,
+      `pages/{ProjectPage.tsx, ModulePage.tsx, BaselinePage.tsx}`.
+      Backend tests 1096 → 1120. Not covered: no frontend tests (no test
+      runner); not tried in a browser; review follow-ups (see backlog).
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -940,24 +984,6 @@ to the categories above.
       page-local Add child / Link / Move to parent dialogs into registry
       actions (`frontend/src/actions/`); add a Delete key shortcut and
       F10 / Alt access to the menu bar.
-- [ ] Per-module attribute applicability. Requested 2026-10-04. A project
-      attribute definition can be marked as valid only for selected
-      modules (`AttributeDefinition.modules`: list of module ids; absent /
-      empty = all modules, so existing projects are unchanged). Server
-      rules in `ProjectService`: writing a value for an attribute that
-      does not apply to the requirement's module is rejected (400 /
-      -32602); `required` and defaults only apply in the listed modules;
-      CSV import treats a non-applicable column as ignored (reported in
-      `ignored_columns`) or rejects non-empty cells — decide at
-      implementation; moving or copying a requirement to another module
-      drops non-applicable values (reported); removing a module cleans it
-      from every list; link-mirror/system attributes keep their own
-      module scope. UI: module checklist in the attribute dialog; tables,
-      detail panel, add form, views and exports (CSV/XLSX/DOCX/ReqIF) show
-      only the module's applicable attributes. Templates declare
-      applicability by module key (`RBC_Template`: test fields → SysTest/
-      SwTest; SIL/Allocation/Verification Method → StRS/SyRS/SwRS).
-      Needs a project format-version bump (format-version item).
 - [ ] AI prompt library (copy → external AI chat → CSV → import).
       Requested 2026-10-04. No AI service is called by ReqManTool; the
       user copies a generated prompt into any AI chat and imports the CSV
@@ -1071,6 +1097,22 @@ to the categories above.
       drops view column widths (`TemplateView` has no field). (6) A
       "reset this column only" entry, and a "save widths" option in the
       view dialog.
+- [ ] Attribute applicability: follow-ups (2026-10-07). (1) Moving or
+      copying a requirement to another module must drop its
+      non-applicable values (via `_applicable_values`) and report them;
+      removing a module must strip its id from every attribute's
+      `modules` list (both were in the spec). (2) `set_attribute_modules`
+      with `drop_values` rewrites the requirement files before
+      `project.json`, so it is not atomic: an I/O error mid-way leaves
+      values stripped while the scope is unchanged. Fix: save the
+      project first, or pre-check writability. (3) WS `attribute.add`
+      does not type-check `required` (REST coerces it via pydantic), so
+      `"required": "false"` is truthy over WS. Fix: validate that it is
+      a bool in the service. (4) `docs/ARCHITECTURE.md`: the
+      required-scope paragraph splits the "Format versions" intro from
+      its bullets; move it. (5) A required attribute with a hand-edited
+      scope cannot be reset from the UI (the Modules button is
+      disabled); only the API can clear it.
 - [ ] Module templates + heading skeletons in project and module templates.
       Requested 2026-10-04 (extends the delivered project templates).
       (1) Module templates: JSON files (built-in + user, like project

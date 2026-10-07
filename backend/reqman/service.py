@@ -774,10 +774,12 @@ class ProjectService:
 
         ``modules`` lists the module ids the attribute applies to; ``None``
         or an empty list means every module (see ``_attribute_applies``).
+        Only an optional attribute can be scoped (``_check_required_scope``).
         """
         project = self.store.load_project(project_id)
         definition = self._new_attribute_definition(project, attr_id, name, type, required, default, choices)
         definition.modules = self._checked_attribute_modules(project, modules)
+        self._check_required_scope(definition.name, definition.required, definition.modules)
         project.attributes.append(definition)
         self.store.save_project(project)
         return project
@@ -793,7 +795,8 @@ class ProjectService:
         unless ``drop_values`` is true, in which case it is removed and
         reported in ``dropped_values``. Blank values there are removed
         silently. System (link-mirror) attributes keep their own scope and
-        the built-in ObjectText applies to every module.
+        the built-in ObjectText applies to every module. A required attribute
+        applies to every module: only ``[]``/``None`` is accepted for it.
         """
         if not isinstance(drop_values, bool):
             raise ValueError("drop_values must be true or false")
@@ -806,6 +809,7 @@ class ProjectService:
         if attr.id in {a.id for a in BUILTIN_ATTRIBUTES}:
             raise ValueError(f"Attribute '{attr.name}' is built in and applies to every module")
         scope = self._checked_attribute_modules(project, modules)
+        self._check_required_scope(attr.name, attr.required, scope)
 
         outside: list[tuple[str, Requirement]] = []
         if scope:
@@ -854,13 +858,30 @@ class ProjectService:
         return [module_id for module_id in order if module_id in wanted]
 
     @staticmethod
+    def _check_required_scope(name: Any, required: Any, scope: list[str]) -> None:
+        """Refuse to limit a required attribute to some modules.
+
+        A required attribute applies to every module; only optional
+        attributes can be scoped. Shared by ``add_attribute_definition``,
+        ``set_attribute_modules`` and templates (``_build_from_template``).
+        """
+        if required and scope:
+            raise ValueError(
+                f"Required attribute '{name}' applies to every module; "
+                "only optional attributes can be limited to modules"
+            )
+
+    @staticmethod
     def _attribute_applies(attr: AttributeDefinition, module_id: str) -> bool:
         """Whether ``attr`` applies to requirements of ``module_id``.
 
         An attribute without a module list applies everywhere. Ids in the
         list that name no existing module (hand-edited data) are harmless.
+        A required attribute applies everywhere even if a hand-edited file
+        gives it a module list: the API never lets one be scoped, and the
+        stored list is kept (not rewritten) until the scope is reset.
         """
-        return not attr.modules or module_id in attr.modules
+        return bool(attr.required) or not attr.modules or module_id in attr.modules
 
     @classmethod
     def _applicable_values(
@@ -1749,9 +1770,13 @@ class ProjectService:
         project.module_order = [m.id for m in modules]
         # Attribute scopes name module keys (checked by ``parse_template``);
         # stored as module ids in module order.
-        for tattr in template.attributes:
+        for index, tattr in enumerate(template.attributes):
             if tattr.modules:
                 definition = next(a for a in project.attributes if a.id == tattr.id)
+                try:
+                    self._check_required_scope(definition.name, definition.required, tattr.modules)
+                except ValueError as exc:
+                    raise ValueError(f"attributes[{index}] ('{tattr.id}'): {exc}") from exc
                 wanted = {module_ids[key] for key in tattr.modules}
                 definition.modules = [m.id for m in modules if m.id in wanted]
 
@@ -1864,7 +1889,9 @@ class ProjectService:
                 required=a.required,
                 default=a.default,
                 choices=list(a.choices) if isinstance(a.choices, list) else a.choices,
-                modules=[m.id for m in modules if m.id in a.modules],
+                # A required attribute applies to every module, whatever a
+                # hand-edited file lists (see ``_attribute_applies``).
+                modules=[] if a.required else [m.id for m in modules if m.id in a.modules],
             )
             for a in project.attributes
             if not a.system and a.id not in builtin_ids

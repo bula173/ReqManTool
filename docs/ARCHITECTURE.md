@@ -359,6 +359,20 @@ applicability: the module ids an attribute applies to, written only when
 non-empty); the 1 → 2 step drops any stray `modules` key, since version 1
 attributes applied to every module.
 
+Only optional attributes can be scoped to modules: a required attribute
+always applies to every module. `ProjectService._check_required_scope`
+enforces it for `add_attribute_definition` (required with a non-empty
+`modules`), `set_attribute_modules` (a non-empty list for a required
+attribute; `[]`/`null` stays allowed) and templates (a required template
+attribute with `modules` makes the template invalid). REST answers 400 and
+WebSocket -32602 with the same message, and nothing is written. No API
+changes an existing attribute's `required` flag, so a scoped attribute
+cannot become required later. A hand-edited `project.json` with a required,
+scoped attribute still loads: the attribute is treated as applying to every
+module (`_attribute_applies`, mirrored by `attributeAppliesTo` in the
+frontend), the stored list is kept on disk until the scope is reset to all
+modules, and save-as-template writes no `modules` for it.
+
 - A file without the key is version 1 (the format written before versions
   existed) and loads unchanged.
 - Loading never rewrites a file: `formats.upgrade` applies the registered

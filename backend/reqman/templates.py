@@ -36,7 +36,9 @@ An attribute's optional ``modules`` lists the module *keys* of this template
 the attribute applies to (absent or empty: every module). It was added
 without a ``format_version`` bump under the rule below: an older ReqManTool
 ignores it and creates the attribute for every module. It is written only
-when non-empty.
+when non-empty. Only an optional attribute may have one: a required
+attribute applies to every module, so ``ProjectService`` reports a template
+with a required, scoped attribute as invalid.
 
 Compatibility rules:
 

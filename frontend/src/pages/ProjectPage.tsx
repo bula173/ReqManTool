@@ -40,6 +40,7 @@ import {
   useRemoveView,
   useReorderModule,
 } from '../api/queries';
+import { REQUIRED_SCOPE_HINT } from '../api/applicability';
 import { AddAttributeModal } from '../components/AddAttributeModal';
 import { AttributeModulesModal } from '../components/AttributeModulesModal';
 import { GitStatusPanel } from '../components/GitStatusPanel';
@@ -260,15 +261,22 @@ export function ProjectPage() {
                 <Table.Td>{attr.default === null || attr.default === undefined ? '—' : String(attr.default)}</Table.Td>
                 <Table.Td>{attr.choices ? attr.choices.join(', ') : '—'}</Table.Td>
                 <Table.Td>
-                  {attr.modules && attr.modules.length > 0 ? attr.modules.map(moduleLabel).join(', ') : 'All'}
+                  {!attr.required && attr.modules && attr.modules.length > 0
+                    ? attr.modules.map(moduleLabel).join(', ')
+                    : 'All'}
                 </Table.Td>
                 <Table.Td>
                   {attr.id !== 'object_text' && (
-                    <Tooltip label="Modules it applies to">
+                    <Tooltip label={attr.required ? `${REQUIRED_SCOPE_HINT}; only optional ones can be limited` : 'Modules it applies to'}>
                       <ActionIcon
                         variant="subtle"
                         aria-label={`Modules for ${attr.name}`}
-                        onClick={() => setScopedAttribute(attr)}
+                        // data-disabled, not disabled, so the tooltip still shows.
+                        data-disabled={attr.required || undefined}
+                        aria-disabled={attr.required}
+                        onClick={() => {
+                          if (!attr.required) setScopedAttribute(attr);
+                        }}
                       >
                         <IconAdjustments size={16} />
                       </ActionIcon>

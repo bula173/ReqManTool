@@ -47,7 +47,7 @@ def scoped(service):
     sys_module = service.create_module(project.id, "Sys", "SYS")
     test_module = service.create_module(project.id, "Test", "TST")
     service.add_attribute_definition(
-        project.id, "steps", "Steps", "text", required=True, default="tbd", modules=[test_module.id]
+        project.id, "steps", "Steps", "text", default="tbd", modules=[test_module.id]
     )
     service.add_attribute_definition(project.id, "note", "Note")
     return project.id, sys_module.id, test_module.id
@@ -87,14 +87,12 @@ def test_writing_a_non_applicable_attribute_is_rejected(service, scoped):
     service.update_requirement(project_id, sys_id, req.id, {"note": "fine"})
 
 
-def test_required_and_default_only_in_listed_modules(service, scoped):
+def test_default_only_in_listed_modules(service, scoped):
     project_id, sys_id, test_id = scoped
     in_sys = service.add_requirement(project_id, sys_id, {"object_text": "a"})
     assert "steps" not in in_sys.attributes
     in_test = service.add_requirement(project_id, test_id, {"object_text": "b"})
     assert in_test.attributes["steps"] == "tbd"
-    with pytest.raises(ValueError, match="required attribute 'Steps' is empty"):
-        service.add_requirement(project_id, test_id, {"object_text": "c", "steps": " "})
 
 
 def test_set_modules_refuses_then_drops_values_outside_scope(service, scoped):

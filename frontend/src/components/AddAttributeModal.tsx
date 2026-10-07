@@ -1,9 +1,10 @@
-import { Button, Checkbox, Group, Modal, Select, Stack, TextInput } from '@mantine/core';
+import { Button, Checkbox, Group, Modal, Select, Stack, Text, TextInput } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import { useAddAttribute } from '../api/queries';
 import { ApiError } from '../api/client';
 import type { AttributeType } from '../api/types';
+import { REQUIRED_SCOPE_HINT } from '../api/applicability';
 import { AttributeModulesChecklist } from './AttributeModulesChecklist';
 
 interface AddAttributeModalProps {
@@ -82,7 +83,8 @@ export function AddAttributeModal({ projectId, opened, onClose }: AddAttributeMo
         required: values.required,
         default: coerceDefault(values.type, values.default),
         choices,
-        modules: values.modules,
+        // Only optional attributes can be limited to modules.
+        modules: values.required ? [] : values.modules,
       },
       {
         onSuccess: () => {
@@ -112,7 +114,15 @@ export function AddAttributeModal({ projectId, opened, onClose }: AddAttributeMo
             allowDeselect={false}
             {...form.getInputProps('type')}
           />
-          <Checkbox label="Required" {...form.getInputProps('required', { type: 'checkbox' })} />
+          <Checkbox
+            label="Required"
+            {...form.getInputProps('required', { type: 'checkbox' })}
+            onChange={(event) => {
+              const required = event.currentTarget.checked;
+              form.setFieldValue('required', required);
+              if (required) form.setFieldValue('modules', []);
+            }}
+          />
           <TextInput label="Default value" placeholder="Optional" {...form.getInputProps('default')} />
           {form.values.type === 'enum' && (
             <TextInput
@@ -125,8 +135,13 @@ export function AddAttributeModal({ projectId, opened, onClose }: AddAttributeMo
             projectId={projectId}
             value={form.values.modules}
             onChange={(modules) => form.setFieldValue('modules', modules)}
-            disabled={addAttribute.isPending}
+            disabled={addAttribute.isPending || form.values.required}
           />
+          {form.values.required && (
+            <Text size="xs" c="dimmed">
+              {REQUIRED_SCOPE_HINT}.
+            </Text>
+          )}
           <Group justify="flex-end" mt="sm">
             <Button variant="default" onClick={onClose}>
               Cancel
