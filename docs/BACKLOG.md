@@ -772,6 +772,32 @@ to the categories above.
       decisions to confirm: local paths / shared-filesystem remotes are
       rejected in production (only allowed via the test opt-in), and
       auto-push disables session squashing.
+- [ ] Row styling by Object Type (and other enum values). Requested
+      2026-10-07. Per-project style rules: for an enum attribute value
+      (default attribute: Object Type) set row font color and background
+      color (optionally bold). Defaults for new projects and templates:
+      Heading → green font, Information → blue font. Rules live in
+      `project.json` (`row_styles`: attribute id, value, font_color,
+      background_color, bold; project format bump + migration), edited in
+      a project settings dialog with color pickers and a live preview;
+      applied in the requirements table, Module outline, baseline/compare
+      views and the DOCX export; theme-aware (readable in dark mode).
+      REST + WebSocket parity; validated server-side (known attribute and
+      value, `#rrggbb` colors).
+- [ ] Rich text in requirement text (bold, italic, underline, lists,
+      font color, font size). Requested 2026-10-07. Text attributes
+      (`text` type, incl. ObjectText) gain rich formatting: bold, italic,
+      underline, strikethrough, bullet/numbered lists, font color, font
+      size (small set of sizes), and later tables/images. Storage: a
+      sanitised XHTML subset string (same model as ReqIF XHTML), with a
+      plain-text projection kept for search, CSV and tooltips; existing
+      plain values stay valid. Server validates/sanitises (allow-list of
+      tags and styles, no scripts/links to javascript:). Editor: rich-text
+      toolbar in the inline cell editor, detail panel and add form
+      (TipTap via @mantine/tiptap — new dependency). Exports: DOCX keeps
+      formatting, ReqIF exports XHTML datatype, CSV/XLSX plain text (CSV
+      import stays plain). Project format bump + migration. Builds on row
+      styling (shared color handling).
 - [ ] Commit browser for project, module and requirement. Requested
       2026-10-07. Builds on git history (done: requirement History tab,
       `GET /projects/{id}/git/log`, recent commits in the Git panel).
