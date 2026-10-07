@@ -14,15 +14,11 @@ import {
   Title,
   Tooltip,
 } from '@mantine/core';
-import { modals } from '@mantine/modals';
 import { notifications } from '@mantine/notifications';
 import {
   IconChevronDown,
   IconChevronRight,
   IconClipboard,
-  IconDownload,
-  IconFileExport,
-  IconFileImport,
   IconLink,
   IconPlus,
   IconArrowsMove,
@@ -38,7 +34,6 @@ import {
   useModule,
   useProject,
   useRequirements,
-  usePurgeModule,
   useUpdateRequirement,
   useViews,
 } from '../api/queries';
@@ -106,7 +101,6 @@ export function ModulePage() {
   const moduleQuery = useModule(projectId, moduleId);
   const requirementsQuery = useRequirements(projectId, moduleId);
   const viewsQuery = useViews(projectId);
-  const purgeModule = usePurgeModule(projectId ?? '', moduleId ?? '');
   const updateRequirement = useUpdateRequirement(projectId ?? '', moduleId ?? '');
   // Selection, clipboard, active view and the detail panel are shared with
   // the menu bar and keyboard shortcuts through the action registry.
@@ -238,29 +232,6 @@ export function ModulePage() {
     );
   };
 
-  const handlePurge = () => {
-    modals.openConfirmModal({
-      title: 'Purge module',
-      children: (
-        <Text size="sm">
-          Are you sure you want to delete ALL requirements in "{module.name}"? This cannot be undone.
-        </Text>
-      ),
-      labels: { confirm: 'Purge', cancel: 'Cancel' },
-      confirmProps: { color: 'red' },
-      onConfirm: () => {
-        purgeModule.mutate(undefined, {
-          onSuccess: (result) => notifications.show({ message: `Purged ${result.purged} requirement(s)`, color: 'green' }),
-          onError: (err) =>
-            notifications.show({
-              message: err instanceof ApiError ? err.message : 'Failed to purge module',
-              color: 'red',
-            }),
-        });
-      },
-    });
-  };
-
   return (
     <Stack gap="md">
       <div>
@@ -282,48 +253,6 @@ export function ModulePage() {
           onClick={() => run('requirement.pasteAtRoot')}
         >
           Paste at root
-        </Button>
-        <Button color="red" variant="light" leftSection={<IconTrash size={16} />} onClick={handlePurge}>
-          Purge Module
-        </Button>
-        <Button
-          variant="default"
-          leftSection={<IconFileExport size={16} />}
-          disabled={!isAvailable('file.export.reqif')}
-          onClick={() => run('file.export.reqif')}
-        >
-          Export ReqIF
-          <IconDownload size={14} style={{ marginLeft: 6 }} />
-        </Button>
-        <Button
-          variant="default"
-          leftSection={<IconFileExport size={16} />}
-          disabled={!isAvailable('file.export.csv')}
-          onClick={() => run('file.export.csv')}
-        >
-          Export CSV
-          <IconDownload size={14} style={{ marginLeft: 6 }} />
-        </Button>
-        <Button variant="default" leftSection={<IconFileImport size={16} />} onClick={() => run('file.importCsv')}>
-          Import CSV
-        </Button>
-        <Button
-          variant="default"
-          leftSection={<IconFileExport size={16} />}
-          disabled={!isAvailable('file.export.xlsx')}
-          onClick={() => run('file.export.xlsx')}
-        >
-          Export XLSX
-          <IconDownload size={14} style={{ marginLeft: 6 }} />
-        </Button>
-        <Button
-          variant="default"
-          leftSection={<IconFileExport size={16} />}
-          disabled={!isAvailable('file.export.docx')}
-          onClick={() => run('file.export.docx')}
-        >
-          Export DOCX
-          <IconDownload size={14} style={{ marginLeft: 6 }} />
         </Button>
         <Select
           placeholder="All attributes"

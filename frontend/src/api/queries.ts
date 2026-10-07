@@ -568,12 +568,33 @@ export function useReorderModule(projectId: string) {
   });
 }
 
-export function usePurgeModule(projectId: string, moduleId: string) {
+/**
+ * Purge (hard-delete) every requirement of one module. The ids are mutation
+ * variables, not hook arguments, so a confirmation dialog purges the module
+ * it was opened for even if the route changed meanwhile.
+ */
+export function usePurgeModule() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.post<{ purged: number }>(`/projects/${projectId}/modules/${moduleId}/purge`),
-    onSuccess: () => {
+    mutationFn: ({ projectId, moduleId }: { projectId: string; moduleId: string }) =>
+      api.post<{ purged: number }>(
+        `/projects/${encodeURIComponent(projectId)}/modules/${encodeURIComponent(moduleId)}/purge`,
+      ),
+    onSuccess: (_result, { projectId, moduleId }) => {
       qc.invalidateQueries({ queryKey: queryKeys.requirements(projectId, moduleId) });
+    },
+  });
+}
+
+/** Purge (hard-delete) every requirement of every module of a project. */
+export function usePurgeProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) =>
+      api.post<{ purged: number }>(`/projects/${encodeURIComponent(projectId)}/purge`),
+    onSuccess: (_result, projectId) => {
+      // Every module's requirements (and their histories) live under this prefix.
+      qc.invalidateQueries({ queryKey: queryKeys.modules(projectId) });
     },
   });
 }

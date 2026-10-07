@@ -19,7 +19,8 @@ JSON files on disk, so history, review, and backup are just... git.
   context menu, the Edit menu, or keyboard shortcuts (Ctrl/Cmd+X/C/V,
   Alt+↑/↓)
 - **Application menu bar** — File (new project, open project folder, load /
-  import / save templates, CSV import, exports), Edit, View (attribute view,
+  import / save templates, CSV import, exports), Edit (clipboard, reordering,
+  purge module / project), View (attribute view,
   detail panel, dark mode) and Help (shortcuts, documentation, About)
 - **Project templates** — create a project from a template (attributes,
   modules, link configurations and views, no requirements), including the

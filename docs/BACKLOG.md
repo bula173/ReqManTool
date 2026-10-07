@@ -552,6 +552,29 @@
       collapsed rail and context menus on project/module nodes wait for
       those items; no frontend unit tests (no test runner; `planDrop`
       checked with a throwaway script); review follow-ups (see backlog).
+- [x] Toolbar buttons → menu items: Import, Export, Purge (2026-10-06
+      item). Frontend only, no backend change. The module page toolbar
+      loses the Import CSV, Export ReqIF/CSV/XLSX/DOCX and Purge Module
+      buttons and keeps Add Requirement, Paste at root and the view
+      selector (the project page had no such buttons). The menu bar uses
+      shared registry actions: File → Import ▸ CSV… (`file.importCsv`,
+      module open); File → Export ▸ ReqIF / CSV / Excel (XLSX) / Word
+      (DOCX) (`file.export.<format>`), enabled whenever a project is
+      loaded, the URL built from the project id; Edit → a divider, then
+      the red "Purge module…" (`module.purge`, module open) and "Purge
+      project…" (`project.purge`, project open), both in the new
+      `frontend/src/actions/purgeActions.tsx`. Purge reuses the existing
+      confirm modal (there was no typed-name confirm); ids are captured
+      when the dialog opens, so a route change cannot redirect the purge;
+      no navigation after a purge. New `AppCommands.purgeModule` /
+      `purgeProject`; `usePurgeModule` takes the ids as mutation
+      variables; new `usePurgeProject` calls the existing `POST
+      /projects/{id}/purge` and invalidates every module query of the
+      project (live sync covers the rest). `docs/ARCHITECTURE.md`
+      (actions) and README (menu bar) updated. Backend tests unchanged at
+      1025. Not covered: no frontend tests (no test runner); not tried in
+      a browser; the later left/right-click menus do not use these
+      actions yet; review follow-ups (see backlog).
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -842,18 +865,22 @@ to the categories above.
       state and widths are remembered per browser (not in git-tracked
       data). On narrow screens both panels start collapsed and open as
       overlays. The requirements table uses the freed width.
-- [ ] Toolbar buttons → menu items: Import, Export, Purge. Requested
-      2026-10-06 (priority). Remove the "Import CSV", "Export ReqIF/CSV/
-      XLSX/DOCX" and "Purge Module" buttons from the module page toolbar
-      (and any purge/export buttons on the project page); every one of
-      them is reachable from the menu bar instead, as actions in the
-      shared registry: File → Import ▸ CSV…; File → Export ▸ ReqIF / CSV /
-      XLSX / DOCX (enabled whenever a project is open — exports cover the
-      whole project); Edit → Purge module… (module open) and Purge
-      project… (project open), red/destructive styling, the existing typed
-      confirmation dialogs, separated from other Edit entries. Same
-      actions also available to the later left/right-click menus. No
-      backend change.
+- [ ] Toolbar → menu: review follow-ups (2026-10-06). (1) Hard-delete
+      safety: an open purge confirmation survives a data-folder switch
+      (`root_changed`), and the captured project id is then purged in
+      the new folder, where ids can repeat. Fix: close purge modals in
+      the `subscribeDatasetCleared` listener, or capture `dataDir` and
+      refuse a confirm when it no longer matches. (2) On read-only
+      baseline pages, File ▸ Export and Edit ▸ Purge project are enabled
+      but act on the CURRENT data; export there silently delivers current
+      content. Fix: add `baselineName` to AppState and either disable
+      these actions there or label them "(current data, not baseline
+      <name>)". (3) The purge mutations do not invalidate git status/log
+      or other modules' link columns while live sync is disconnected; use
+      the project-wide predicate invalidation. (4) The Purge project
+      confirm text should mention that links are removed and show the
+      module count; a typed-name confirm for project purge may be worth
+      adding.
 - [ ] Left panel tabs: review follow-ups (2026-10-06). (1) The Module
       outline filter is O(n²): `ancestorIdsOf` rebuilds a Map per match
       (about 1.3 s per keystroke at 5,000 requirements) — memoize, build
@@ -1126,7 +1153,8 @@ to the categories above.
       menu bar item (2026-10-04). Decided 2026-10-04: (1) Ctrl/Cmd+V with
       the copied requirement itself selected pastes it as a sibling right
       after it (today it does nothing). (2) Export ▸ is enabled only while a module is open, although
-      exports cover the whole project; enable it on the project page.
+      exports cover the whole project; enable it on the project page —
+      done 2026-10-06 with the toolbar → menu item.
       (3) The templates list is fetched on every app load; load it lazily
       (when a template picker or the Load template menu opens).
 - [ ] User-template management dialog. Follow-up of the menu bar item

@@ -96,6 +96,9 @@ export interface AppCommands {
   /** Starts a file download (export endpoints answer with Content-Disposition: attachment). */
   download: (url: string) => void;
   openExternal: (url: string) => void;
+  /** Hard-delete every requirement of a module / of every module of a project; resolve with the count. */
+  purgeModule: (projectId: string, moduleId: string) => Promise<{ purged: number }>;
+  purgeProject: (projectId: string) => Promise<{ purged: number }>;
   /** Requirement mutations of the open module (TanStack mutations; invalidate their queries). */
   requirements: {
     copy: (requirementId: string, targetParentId: string | null) => Promise<Requirement>;

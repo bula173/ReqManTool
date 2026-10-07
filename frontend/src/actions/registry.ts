@@ -1,5 +1,6 @@
-import { IconFileExport, IconTemplate } from '@tabler/icons-react';
+import { IconFileExport, IconFileImport, IconTemplate } from '@tabler/icons-react';
 import { appActions } from './appActions';
+import { purgeActions } from './purgeActions';
 import { requirementActions } from './requirementActions';
 import { matchesShortcut } from './shortcuts';
 import type {
@@ -22,7 +23,7 @@ import type {
  * case, and describe its context menu as a `MenuEntry[]` layout rendered
  * with `targets={{ <element>: clicked }}`.
  */
-export const ACTIONS: Action[] = [...appActions, ...requirementActions];
+export const ACTIONS: Action[] = [...appActions, ...purgeActions, ...requirementActions];
 
 const ACTIONS_BY_ID = new Map<string, Action>(ACTIONS.map((action) => [action.id, action]));
 if (ACTIONS_BY_ID.size !== ACTIONS.length) {
@@ -113,7 +114,12 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
       action('project.gitPush'),
       action('project.gitPull'),
       divider,
-      action('file.importCsv'),
+      {
+        kind: 'submenu',
+        label: 'Import',
+        icon: IconFileImport,
+        entries: [action('file.importCsv')],
+      },
       {
         kind: 'submenu',
         label: 'Export',
@@ -139,6 +145,10 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
       action('requirement.moveDown'),
       divider,
       action('requirement.delete'),
+      // Destructive bulk deletes, kept apart from the requirement entries.
+      divider,
+      action('module.purge'),
+      action('project.purge'),
     ],
   },
   {

@@ -13,6 +13,8 @@ import {
   useModule,
   useMoveRequirement,
   useProject,
+  usePurgeModule,
+  usePurgeProject,
   useRemoveRequirement,
   useReorderRequirement,
   useRequirements,
@@ -58,6 +60,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const moveRequirement = useMoveRequirement(projectId ?? '', moduleId ?? '');
   const reorderRequirement = useReorderRequirement(projectId ?? '', moduleId ?? '');
   const removeRequirement = useRemoveRequirement(projectId ?? '', moduleId ?? '');
+  const purgeModule = usePurgeModule();
+  const purgeProject = usePurgeProject();
 
   const { setColorScheme } = useMantineColorScheme();
   const colorScheme = useComputedColorScheme('light');
@@ -125,6 +129,9 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       openExternal: (url) => {
         window.open(url, '_blank', 'noopener,noreferrer');
       },
+      purgeModule: (purgeProjectId, purgeModuleId) =>
+        purgeModule.mutateAsync({ projectId: purgeProjectId, moduleId: purgeModuleId }),
+      purgeProject: (purgeProjectId) => purgeProject.mutateAsync(purgeProjectId),
       requirements: {
         copy: (id, targetParentId) => copyRequirement.mutateAsync({ id, targetParentId }),
         move: (id, parentId) => moveRequirement.mutateAsync({ id, parentId }),
@@ -146,6 +153,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       moveRequirement.mutateAsync,
       reorderRequirement.mutateAsync,
       removeRequirement.mutateAsync,
+      purgeModule.mutateAsync,
+      purgeProject.mutateAsync,
       enableHistory.mutateAsync,
       gitPush.mutateAsync,
       gitPull.mutateAsync,

@@ -46,15 +46,15 @@ const EXPORT_LABELS: Record<ExportFormat, string> = {
   docx: 'Word (DOCX)',
 };
 
-/** Exports are offered while a module is open (the export itself covers the whole project). */
+/** Exports cover the whole project, so they are offered whenever a project is open (module or not). */
 const exportAction = (format: ExportFormat): Action<'app'> => ({
   id: `file.export.${format}`,
   element: 'app',
   label: EXPORT_LABELS[format],
   icon: IconFileExport,
-  isAvailable: (ctx) => ctx.projectId !== null && ctx.module !== null,
+  isAvailable: (ctx) => ctx.project !== null,
   run: (ctx) => {
-    if (ctx.projectId) ctx.commands.download(exportUrl(ctx.projectId, format));
+    if (ctx.project) ctx.commands.download(exportUrl(ctx.project.id, format));
   },
 });
 
@@ -233,9 +233,10 @@ export const appActions: Action<'app'>[] = [
     },
   },
   {
+    // Imports into the open module; listed as File ▸ Import ▸ CSV.
     id: 'file.importCsv',
     element: 'app',
-    label: 'Import CSV',
+    label: 'CSV',
     icon: IconFileImport,
     opensDialog: true,
     isAvailable: (ctx) => ctx.projectId !== null && ctx.module !== null,

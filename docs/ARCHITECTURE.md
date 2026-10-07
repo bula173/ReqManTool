@@ -824,7 +824,8 @@ frontend/src/
                     shortcuts" below): types.ts, registry.ts (all actions,
                     menu layouts, shortcut dispatch), appActions.ts
                     (File/View/Help), requirementActions.tsx (Edit and the
-                    row context menu), AppActionsProvider.tsx (state,
+                    row context menu), purgeActions.tsx (Edit ▸ Purge
+                    module / project), AppActionsProvider.tsx (state,
                     dialogs, global shortcuts), ActionMenuEntries.tsx (renders
                     a menu layout), shortcuts.ts (matching, display, typing
                     guard)
@@ -902,9 +903,13 @@ entry, `resolveTarget` supplies the default. Menus are data (`MenuEntry[]` layou
 the menu bar and the row context menu show the same labels, shortcut hints
 and enabled state. The menu bar and shortcuts target the selected
 requirement; a context menu passes the clicked row as its `requirement`
-target. Toolbar buttons (Paste at root, Import CSV, the module page's
-Export buttons, header data-folder and colour-scheme buttons, New project
-in the sidebar, New subproject on the project page) call `run(id)` too.
+target. Toolbar buttons (Paste at root, header data-folder and
+colour-scheme buttons, New project in the sidebar, New subproject on the
+project page) call `run(id)` too. Import, Export and Purge have no toolbar
+buttons: they are File ▸ Import ▸ CSV (module open), File ▸ Export ▸
+ReqIF/CSV/XLSX/DOCX (project open; exports cover the whole project) and
+Edit ▸ Purge module / Purge project (`purgeActions.tsx`: red, behind a
+divider, with a confirmation dialog), ready for later context menus.
 The clipboard is scoped to the data folder it was filled in, and a data
 folder switch (in this tab, or a `root_changed` live-sync event) clears the
 clipboard and the selection, since ids repeat across folders.
