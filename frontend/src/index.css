@@ -69,3 +69,71 @@ body {
 :where([data-mantine-color-scheme='dark']) .reqman-card-table {
   --mantine-color-body: var(--mantine-color-dark-6);
 }
+
+/*
+ * Resizable table columns (hooks/columnLayout.ts): `table-layout: fixed` with
+ * a <colgroup>, so each column is exactly its stored width. Cells clip what
+ * does not fit; long words break inside the width.
+ */
+.reqman-resizable-table {
+  table-layout: fixed;
+}
+
+.reqman-resizable-table tbody td {
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/* The header label: one line, with an ellipsis when the column is narrow. */
+.reqman-col-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The column menu button shows on header hover or focus (right-click the header opens the menu too). */
+.reqman-col-menu-button {
+  flex-shrink: 0;
+  opacity: 0;
+}
+
+th:hover > div > .reqman-col-menu-button,
+.reqman-col-menu-button:focus-visible,
+.reqman-col-menu-button[data-expanded] {
+  opacity: 1;
+}
+
+/* The drag handle on a header cell's right edge (straddling the column border). */
+.reqman-col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  width: 8px;
+  height: 100%;
+  z-index: 1;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.reqman-col-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 15%;
+  bottom: 15%;
+  left: 3px;
+  width: 2px;
+  border-radius: 1px;
+}
+
+.reqman-col-resize-handle:hover::after,
+.reqman-col-resize-handle:focus-visible::after,
+.reqman-col-resize-handle[data-resizing]::after {
+  background: var(--mantine-color-blue-filled);
+}
+
+.reqman-col-resize-handle:focus-visible {
+  outline: none;
+}

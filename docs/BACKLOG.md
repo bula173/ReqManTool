@@ -601,6 +601,51 @@
       and on the baseline page. Not covered: no frontend tests (no test
       runner); Safari and Firefox not tried; review follow-ups (see
       backlog).
+- [x] Resizable table columns (2026-10-04 item). The requirements table
+      (`ModulePage.tsx`) and the baseline table use `table-layout: fixed`
+      with a `<colgroup>`; the sticky header and horizontal scroll keep
+      working. Drag a header's right edge to resize (pointer capture, live
+      preview); double-click the edge to auto-fit (capped at 800px); the
+      edge is a focusable `role="separator"` (Arrow ±10px, Shift+Arrow
+      ±50px, Enter auto-fits). Widths are bounded to 40–4000px; the
+      Actions column takes the leftover space. Wrap per column: wrap is
+      the default and now shows the full text instead of the old 2-line
+      clamp; single-line mode uses an ellipsis plus a tooltip. Column
+      header menu (⋮ button or right-click on the header): Wrap text,
+      Auto-fit width, Reset column widths, Save column widths to view,
+      Remove column widths from view; View menu registry actions
+      `view.resetColumnWidths`, `view.saveColumnWidths`,
+      `view.removeViewColumnWidths`. Per browser, localStorage
+      `reqman.columns:module/<project>/<module>/<viewId|default>` holds
+      `{widths, singleLine}`; width precedence is browser, then view, then
+      the attribute-type default. The baseline table shares the module's
+      "All attributes" layout. Shared view widths: new optional
+      `View.column_widths` in `project.json`, written only when set, so
+      existing files stay byte-identical (no PROJECT_FORMAT bump; older
+      readers ignore the field but drop it on their next write).
+      `ProjectService.create_view(column_widths=)` and
+      `set_view_column_widths` (keys `"@id"` or the view's own attribute
+      ids, integer values 40..4000, null or `{}` clears); REST `PUT
+      /projects/{p}/views/{v}/column-widths`, `POST /projects/{p}/views`
+      accepts `column_widths`; WebSocket `view.set_column_widths`,
+      `view.create` accepts `column_widths`; 400/-32602 for invalid input,
+      404/-32001 for a missing view; changes broadcast. Files:
+      `backend/reqman/{models.py, service.py, app.py}`,
+      `backend/tests/test_view_column_widths.py` (new, 19 tests),
+      `frontend/src/hooks/columnLayout.ts` (new),
+      `components/ResizableHeaderCell.tsx` (new),
+      `pages/{ModulePage.tsx, BaselinePage.tsx}`,
+      `components/EditableAttributeCell.tsx` (`wrap` prop),
+      `actions/{appActions.ts, registry.ts, types.ts,
+      AppActionsProvider.tsx}`, `api/{types.ts, queries.ts}`,
+      `index.css`. Backend tests 1025 → 1044. Browser smoke test
+      (Chromium) passed for drag, minimum width, auto-fit, keyboard, wrap
+      toggle, reset, save to view / fresh session / remove with live
+      sync, and the baseline page. Not covered: no report grids exist
+      yet; the detail panel has no label column (labels sit above the
+      values), so it is unchanged (left to "Collapsible (and resizable)
+      side panels"); no frontend tests (no test runner); touch input and
+      dark mode not tried; review follow-ups (see backlog).
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -882,16 +927,6 @@ to the categories above.
       tags); this item adds the UI glue — "lock after baseline", and
       baseline references from sign-off records, verification and test
       execution reports, and impact analysis.
-- [ ] Resizable table columns. Requested 2026-10-04. Drag a column header's
-      right edge to resize (requirements table, detail-panel label column,
-      report grids); double-click the edge to auto-fit to content; minimum
-      width so a column never disappears; long text wraps inside the
-      width (toggle wrap / single line per column). Widths are remembered
-      per browser per project+module (and per view), so they do not touch
-      the git-tracked data; a named view can optionally store its column
-      widths in `project.json` (`View.column_widths`, backward compatible)
-      so a shared view looks the same for everyone. "Reset column widths"
-      in the View menu and the column header menu.
 - [ ] Collapsible (and resizable) side panels. Requested 2026-10-04. The
       left panel (project/module tree) and the right panel (requirement
       detail) can each be collapsed to a thin rail and expanded again —
@@ -946,6 +981,20 @@ to the categories above.
       (4) `--mantine-color-body` is overridden on the whole baseline
       Card. Fix: scope it to the table scroll container. (5) Safari/
       Firefox nested flex/overflow behaviour is unverified.
+- [ ] Resizable columns: review follow-ups (2026-10-07). (1) The inline
+      `position: relative` in `ResizableHeaderCell.tsx` overrides
+      Mantine's per-`th` `position: sticky`, so the header relies on the
+      sticky `thead` only and may not stick in some browsers (Safari).
+      Fix: remove the override. (2) `document.body` cursor/user-select
+      are not reset if a header cell unmounts mid-drag, so text
+      selection stays disabled until reload. Fix: add an unmount
+      cleanup. (3) The last baseline column's resize handle
+      (`right: -4px`) causes a 4px horizontal scroll. (4) "Save column
+      widths to view" flickers to the defaults for one refetch. Fix:
+      await the invalidation or use setQueryData. (5) "Save as template"
+      drops view column widths (`TemplateView` has no field). (6) A
+      "reset this column only" entry, and a "save widths" option in the
+      view dialog.
 - [ ] Module templates + heading skeletons in project and module templates.
       Requested 2026-10-04 (extends the delivered project templates).
       (1) Module templates: JSON files (built-in + user, like project

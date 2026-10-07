@@ -493,6 +493,19 @@ export function useCreateView(projectId: string) {
   });
 }
 
+/** Stores (or, with null, removes) a view's shared column widths in project.json. */
+export function useSetViewColumnWidths(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ viewId, columnWidths }: { viewId: string; columnWidths: Record<string, number> | null }) =>
+      api.put<View>(`/projects/${projectId}/views/${viewId}/column-widths`, { column_widths: columnWidths }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+      qc.invalidateQueries({ queryKey: ['projects', projectId, 'views'] });
+    },
+  });
+}
+
 export function useRemoveView(projectId: string) {
   const qc = useQueryClient();
   return useMutation({

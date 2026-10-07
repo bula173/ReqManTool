@@ -63,6 +63,13 @@ BUILTIN_ATTRIBUTES = [
 
 ATTRIBUTE_TYPES = ("string", "text", "integer", "boolean", "enum")
 
+# Shared view column widths (``View.column_widths``): the key of the
+# requirements table's Id column (attribute ids name the other columns) and
+# the accepted width range in CSS pixels.
+VIEW_ID_COLUMN = "@id"
+MIN_COLUMN_WIDTH = 40
+MAX_COLUMN_WIDTH = 4000
+
 _SLUG_NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
 # Upper bound on the candidates ``_unique_slug`` tries (``<slug>``, ``<slug>-2``, ...).
@@ -1329,11 +1336,67 @@ class ProjectService:
     # --- views ----------------------------------------------------------------
 
     @_records_history
-    def create_view(self, project_id: str, name: str, attribute_ids: list[str]) -> View:
+    def create_view(
+        self,
+        project_id: str,
+        name: str,
+        attribute_ids: list[str],
+        column_widths: Any = None,
+    ) -> View:
         project = self.store.load_project(project_id)
         view = self._add_view(project, name, attribute_ids)
+        view.column_widths = self._checked_column_widths(column_widths, view)
         self.store.save_project(project)
         return view
+
+    @_records_history
+    def set_view_column_widths(self, project_id: str, view_id: str, column_widths: Any) -> View:
+        """Store (or, with None or an empty mapping, clear) a view's shared column widths."""
+        project = self.store.load_project(project_id)
+        view = next((v for v in project.views if v.id == view_id), None)
+        if view is None:
+            raise FileNotFoundError(f"View '{view_id}' not found in project '{project_id}'")
+        view.column_widths = self._checked_column_widths(column_widths, view)
+        self.store.save_project(project)
+        return view
+
+    @staticmethod
+    def _checked_column_widths(column_widths: Any, view: View) -> dict[str, int] | None:
+        """Validated column widths for ``view``, or None when there are none.
+
+        A mapping of column key to an integer width in pixels within
+        [MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH]. Keys are the view's own
+        columns: ``VIEW_ID_COLUMN`` or one of its ``attribute_ids``. None or
+        an empty mapping means "no widths" (the key is then not written).
+        Widths are per-browser display preferences everywhere else; only a
+        view can share them through project.json.
+        """
+        if column_widths is None:
+            return None
+        if not isinstance(column_widths, dict):
+            raise ValueError("column_widths must be an object mapping column keys to widths")
+        allowed = {VIEW_ID_COLUMN, *view.attribute_ids}
+        widths: dict[str, int] = {}
+        for key, width in column_widths.items():
+            if key not in allowed:
+                raise ValueError(
+                    f"Unknown column '{key}' for view '{view.name}'; expected '{VIEW_ID_COLUMN}' "
+                    "or one of the view's attribute ids"
+                )
+            if (
+                not isinstance(width, int)
+                or isinstance(width, bool)
+                or not MIN_COLUMN_WIDTH <= width <= MAX_COLUMN_WIDTH
+            ):
+                raise ValueError(
+                    f"Width of column '{key}' must be an integer from {MIN_COLUMN_WIDTH} "
+                    f"to {MAX_COLUMN_WIDTH}"
+                )
+            widths[key] = width
+        # Stored in the view's column order, whatever order the client sent,
+        # so the same widths always serialize identically.
+        ordered = {key: widths[key] for key in (VIEW_ID_COLUMN, *view.attribute_ids) if key in widths}
+        return ordered or None
 
     @staticmethod
     def _checked_view_name(project: Project, name: Any, view_id: str | None = None) -> str:

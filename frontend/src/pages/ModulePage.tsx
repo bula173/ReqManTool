@@ -28,7 +28,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ActionMenuEntries } from '../actions/ActionMenuEntries';
 import { useAppActions } from '../actions/context';
-import { REQUIREMENT_CONTEXT_MENU } from '../actions/registry';
+import { COLUMN_HEADER_MENU, REQUIREMENT_CONTEXT_MENU } from '../actions/registry';
 import { api, ApiError } from '../api/client';
 import {
   useModule,
@@ -43,6 +43,14 @@ import { LinkModal } from '../components/LinkModal';
 import { MoveRequirementModal } from '../components/MoveRequirementModal';
 import { RequirementDetailPanel } from '../components/RequirementDetailPanel';
 import { RequirementFormModal } from '../components/RequirementFormModal';
+import { ResizableHeaderCell } from '../components/ResizableHeaderCell';
+import {
+  DEFAULT_ID_COLUMN_WIDTH,
+  ID_COLUMN,
+  defaultColumnWidth,
+  moduleTableKey,
+  useResizableColumns,
+} from '../hooks/columnLayout';
 import type { Requirement } from '../api/types';
 
 interface TreeRow {
@@ -87,6 +95,9 @@ function ancestorIds(requirements: Requirement[], requirementId: string): string
   return ancestors;
 }
 
+/** The Actions column is not resizable; it takes the table's remaining width, at least this much. */
+const ACTIONS_COLUMN_MIN_WIDTH = 150;
+
 interface ContextMenuState {
   x: number;
   y: number;
@@ -106,6 +117,14 @@ export function ModulePage() {
   // the menu bar and keyboard shortcuts through the action registry.
   const { state: appState, run, isAvailable } = useAppActions();
   const { commands } = appState;
+  // Column widths and wrap toggles: per browser, per project + module + view;
+  // a view's shared widths (project.json) are the defaults.
+  const viewForColumns = (viewsQuery.data ?? []).find((v) => v.id === appState.activeViewId) ?? null;
+  const columns = useResizableColumns(
+    moduleTableKey(projectId ?? '', moduleId ?? '', viewForColumns?.id ?? null),
+    viewForColumns?.column_widths,
+  );
+  const { tableRef, colRef } = columns;
 
   const [addParentId, setAddParentId] = useState<string | null | undefined>(undefined);
   const [linkSource, setLinkSource] = useState<Requirement | null>(null);
@@ -184,6 +203,12 @@ export function ModulePage() {
   const visibleAttributes = activeView
     ? attributes.filter((a) => activeView.attribute_ids.includes(a.id))
     : attributes;
+  const columnWidth = (key: string, fallback: number) => columns.widthOf(key, fallback);
+  const tableMinWidth =
+    columnWidth(ID_COLUMN, DEFAULT_ID_COLUMN_WIDTH) +
+    visibleAttributes.reduce((sum, attr) => sum + columnWidth(attr.id, defaultColumnWidth(attr)), 0) +
+    ACTIONS_COLUMN_MIN_WIDTH;
+  const columnMenu = <ActionMenuEntries entries={COLUMN_HEADER_MENU} />;
   const selectedId = appState.selectedRequirement?.id ?? null;
   const selectedRequirement = requirements.find((r) => r.id === selectedId) ?? null;
 
@@ -270,14 +295,47 @@ export function ModulePage() {
       <Group align="stretch" wrap="nowrap" gap="md" style={{ flex: 1, minHeight: 0 }}>
       {/* The table's own scroll container (both axes), so the sticky header row stays visible. */}
       <div className="reqman-table-scroll" style={{ flex: 1 }}>
-        <Table striped highlightOnHover withTableBorder stickyHeader miw={700}>
+        <Table
+          ref={tableRef}
+          className="reqman-resizable-table"
+          striped
+          highlightOnHover
+          withTableBorder
+          stickyHeader
+          style={{ width: '100%', minWidth: tableMinWidth }}
+        >
+          <colgroup>
+            <col ref={colRef(ID_COLUMN)} style={{ width: columnWidth(ID_COLUMN, DEFAULT_ID_COLUMN_WIDTH) }} />
+            {visibleAttributes.map((attr) => (
+              <col
+                key={attr.id}
+                ref={colRef(attr.id)}
+                style={{ width: columnWidth(attr.id, defaultColumnWidth(attr)) }}
+              />
+            ))}
+            {/* Actions: no width, so it takes whatever the resized columns leave. */}
+            <col />
+          </colgroup>
           <Table.Thead>
             <Table.Tr>
-              <Table.Th>Id</Table.Th>
+              <ResizableHeaderCell
+                columnKey={ID_COLUMN}
+                label="Id"
+                defaultWidth={DEFAULT_ID_COLUMN_WIDTH}
+                columns={columns}
+                menuExtra={columnMenu}
+              />
               {visibleAttributes.map((attr) => (
-                <Table.Th key={attr.id}>{attr.name}</Table.Th>
+                <ResizableHeaderCell
+                  key={attr.id}
+                  columnKey={attr.id}
+                  label={attr.name}
+                  defaultWidth={defaultColumnWidth(attr)}
+                  columns={columns}
+                  menuExtra={columnMenu}
+                />
               ))}
-              <Table.Th w={200}>Actions</Table.Th>
+              <Table.Th>Actions</Table.Th>
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
@@ -306,11 +364,13 @@ export function ModulePage() {
                   setContextMenu({ x: e.clientX, y: e.clientY, requirement: req });
                 }}
               >
-                <Table.Td>
-                  <Text fw={600}>{req.id}</Text>
+                <Table.Td data-column-key={ID_COLUMN}>
+                  <Text fw={600} truncate={columns.isSingleLine(ID_COLUMN) ? 'end' : undefined}>
+                    {req.id}
+                  </Text>
                 </Table.Td>
                 {visibleAttributes.map((attr, attrIdx) => (
-                  <Table.Td key={attr.id}>
+                  <Table.Td key={attr.id} data-column-key={attr.id}>
                     <Group gap={4} wrap="nowrap" pl={attrIdx === 0 ? depth * 20 : 0}>
                       {attrIdx === 0 && hasChildren && (
                         <ActionIcon variant="subtle" size="sm" onClick={() => toggleExpanded(req.id)}>
@@ -329,6 +389,7 @@ export function ModulePage() {
                           disabled={updateRequirement.isPending}
                           projectId={projectId}
                           onNavigateToLinked={handleNavigateToLinked}
+                          wrap={!columns.isSingleLine(attr.id)}
                         />
                       </div>
                     </Group>

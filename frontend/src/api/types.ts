@@ -21,6 +21,12 @@ export interface View {
   id: string;
   name: string;
   attribute_ids: string[];
+  /**
+   * Shared column widths in pixels, keyed by attribute id (and `'@id'` for
+   * the Id column). Omitted when the view stores none. Per-browser widths
+   * (localStorage) apply on top of them.
+   */
+  column_widths?: Record<string, number>;
 }
 
 export interface Project {

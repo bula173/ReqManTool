@@ -18,6 +18,7 @@ import {
   useRemoveRequirement,
   useReorderRequirement,
   useRequirements,
+  useSetViewColumnWidths,
   useTemplates,
   useViews,
 } from '../api/queries';
@@ -53,6 +54,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const enableHistory = useEnableHistory(projectId ?? '');
   const gitPush = useGitPush(projectId ?? '');
   const gitPull = useGitPull(projectId ?? '');
+  const setViewColumnWidths = useSetViewColumnWidths(projectId ?? '');
   // The data folder the clipboard and selection belong to (null until known).
   const dataDir = useConfig().data?.data_dir ?? null;
 
@@ -113,6 +115,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       setClipboard: (entry) => setClipboardEntry(entry ? { dataDir, clipboard: entry } : null),
       selectRequirement: (id) => setSelection({ moduleKey, id }),
       setActiveView: (viewId) => setActiveViewState({ projectId, viewId }),
+      setViewColumnWidths: (viewId, columnWidths) => setViewColumnWidths.mutateAsync({ viewId, columnWidths }),
       setDetailPanelOpen,
       setColorScheme,
       enableHistory: () => enableHistory.mutateAsync(),
@@ -158,6 +161,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       enableHistory.mutateAsync,
       gitPush.mutateAsync,
       gitPull.mutateAsync,
+      setViewColumnWidths.mutateAsync,
     ],
   );
 

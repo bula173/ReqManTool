@@ -281,6 +281,14 @@ class CreateLinkConfigurationBody(BaseModel):
 class CreateViewBody(BaseModel):
     name: str
     attribute_ids: list[str] = []
+    # Optional shared column widths; validated by ProjectService (any JSON
+    # shape is accepted here so REST and WebSocket report the same errors).
+    column_widths: Any = None
+
+
+class ViewColumnWidthsBody(BaseModel):
+    # A mapping of column key to width, or null to clear the view's widths.
+    column_widths: Any
 
 
 # --- error handling -----------------------------------------------------------
@@ -541,7 +549,14 @@ async def remove_link_configuration(project_id: str, config_id: str):
 
 @app.post("/projects/{project_id}/views")
 async def create_view(project_id: str, body: CreateViewBody):
-    view = _wrap(service.create_view, project_id, body.name, body.attribute_ids)
+    view = _wrap(service.create_view, project_id, body.name, body.attribute_ids, body.column_widths)
+    await manager.broadcast(project_id)
+    return view.to_dict()
+
+
+@app.put("/projects/{project_id}/views/{view_id}/column-widths")
+async def set_view_column_widths(project_id: str, view_id: str, body: ViewColumnWidthsBody):
+    view = _wrap(service.set_view_column_widths, project_id, view_id, body.column_widths)
     await manager.broadcast(project_id)
     return view.to_dict()
 
@@ -807,7 +822,10 @@ RPC_METHODS = {
         {"id": p["id"], "removed": True},
     )[1],
     "view.create": lambda p: service.create_view(
-        p["project_id"], p["name"], p.get("attribute_ids", [])
+        p["project_id"], p["name"], p.get("attribute_ids", []), p.get("column_widths")
+    ),
+    "view.set_column_widths": lambda p: service.set_view_column_widths(
+        p["project_id"], p["id"], p["column_widths"]
     ),
     "view.list": lambda p: service.list_views(p["project_id"]),
     "view.remove": lambda p: (
@@ -869,7 +887,7 @@ MUTATING_METHODS = {
     "attribute.add",
     "module.create", "module.purge", "module.reorder",
     "link_configuration.create", "link_configuration.remove",
-    "view.create", "view.remove",
+    "view.create", "view.set_column_widths", "view.remove",
     "requirement.add", "requirement.update", "requirement.remove", "requirement.move",
     "requirement.reorder", "requirement.copy", "requirement.import_csv",
     "requirement.link", "requirement.unlink",

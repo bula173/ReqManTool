@@ -82,14 +82,41 @@ class LinkPair:
         return LinkPair(source_id=data["source_id"], target_id=data["target_id"])
 
 
+def _column_widths(value: Any) -> dict[str, int] | None:
+    """The usable entries of a hand-editable column-width mapping, or None.
+
+    Keeps string keys with positive integer (not boolean) values; anything
+    else reads as absent. Bounds and key rules are ``ProjectService``'s.
+    """
+    if not isinstance(value, dict):
+        return None
+    widths = {
+        k: v for k, v in value.items()
+        if isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool) and v > 0
+    }
+    return widths or None
+
+
 @dataclass
 class View:
     id: str
     name: str
     attribute_ids: list[str] = field(default_factory=list)
+    # Optional shared column widths in pixels, keyed by attribute id (plus
+    # ``ProjectService.VIEW_ID_COLUMN`` for the Id column). None (the default)
+    # means the view stores no widths; it is then not written at all, so a
+    # view without widths keeps exactly the keys it had before.
+    column_widths: dict[str, int] | None = None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data: dict[str, Any] = {
+            "id": self.id,
+            "name": self.name,
+            "attribute_ids": list(self.attribute_ids),
+        }
+        if self.column_widths:
+            data["column_widths"] = dict(self.column_widths)
+        return data
 
     @staticmethod
     def from_dict(data: dict) -> "View":
@@ -97,6 +124,7 @@ class View:
             id=data["id"],
             name=data["name"],
             attribute_ids=data.get("attribute_ids", []),
+            column_widths=_column_widths(data.get("column_widths")),
         )
 
 

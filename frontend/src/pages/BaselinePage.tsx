@@ -1,10 +1,18 @@
-import { Alert, Anchor, Badge, Card, Center, Group, Loader, Select, Stack, Table, Text, Title } from '@mantine/core';
+import { Alert, Anchor, Badge, Card, Center, Group, Loader, Menu, Select, Stack, Table, Text, Title } from '@mantine/core';
 import { IconInfoCircle, IconLock } from '@tabler/icons-react';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { useBaseline, useBaselineRequirements } from '../api/queries';
 import type { Requirement } from '../api/types';
+import { ResizableHeaderCell } from '../components/ResizableHeaderCell';
+import {
+  DEFAULT_ID_COLUMN_WIDTH,
+  ID_COLUMN,
+  defaultColumnWidth,
+  moduleTableKey,
+  useResizableColumns,
+} from '../hooks/columnLayout';
 
 /** Depth-first tree order: siblings by `order`, then id (same as the exports). */
 function treeOrder(requirements: Requirement[]): { requirement: Requirement; depth: number }[] {
@@ -49,6 +57,9 @@ export function BaselinePage() {
   const snapshot = baselineQuery.data;
   const moduleId = selectedModule ?? snapshot?.modules[0]?.id ?? null;
   const requirementsQuery = useBaselineRequirements(projectId, baselineName, moduleId ?? undefined);
+  // The module's own "All attributes" layout: a baseline looks like the module's table.
+  const columns = useResizableColumns(moduleTableKey(projectId ?? '', moduleId ?? '', null));
+  const { tableRef, colRef } = columns;
 
   if (!projectId || !baselineName) return null;
   if (baselineQuery.isLoading) {
@@ -71,6 +82,14 @@ export function BaselinePage() {
   const module = snapshot.modules.find((m) => m.id === moduleId);
   const attributes = snapshot.project.attributes;
   const rows = treeOrder(requirementsQuery.data ?? []);
+  const tableWidth =
+    columns.widthOf(ID_COLUMN, DEFAULT_ID_COLUMN_WIDTH) +
+    attributes.reduce((sum, attr) => sum + columns.widthOf(attr.id, defaultColumnWidth(attr)), 0);
+  const columnMenu = (
+    <Menu.Item disabled={!columns.hasWidthOverrides} onClick={columns.resetWidths}>
+      Reset column widths
+    </Menu.Item>
+  );
 
   // Fills the page area: the card shrinks to fit it and the table scrolls inside, under a sticky header row.
   return (
@@ -136,28 +155,77 @@ export function BaselinePage() {
         )}
         {rows.length > 0 && (
           <div className="reqman-table-scroll" style={{ flex: '0 1 auto' }}>
-            <Table striped highlightOnHover stickyHeader miw={600}>
+            <Table
+              ref={tableRef}
+              className="reqman-resizable-table"
+              striped
+              highlightOnHover
+              stickyHeader
+              style={{ width: tableWidth, minWidth: tableWidth }}
+            >
+              <colgroup>
+                <col
+                  ref={colRef(ID_COLUMN)}
+                  style={{ width: columns.widthOf(ID_COLUMN, DEFAULT_ID_COLUMN_WIDTH) }}
+                />
+                {attributes.map((attr) => (
+                  <col
+                    key={attr.id}
+                    ref={colRef(attr.id)}
+                    style={{ width: columns.widthOf(attr.id, defaultColumnWidth(attr)) }}
+                  />
+                ))}
+              </colgroup>
               <Table.Thead>
                 <Table.Tr>
-                  <Table.Th>Id</Table.Th>
+                  <ResizableHeaderCell
+                    columnKey={ID_COLUMN}
+                    label="Id"
+                    defaultWidth={DEFAULT_ID_COLUMN_WIDTH}
+                    columns={columns}
+                    menuExtra={columnMenu}
+                  />
                   {attributes.map((attr) => (
-                    <Table.Th key={attr.id}>{attr.name}</Table.Th>
+                    <ResizableHeaderCell
+                      key={attr.id}
+                      columnKey={attr.id}
+                      label={attr.name}
+                      defaultWidth={defaultColumnWidth(attr)}
+                      columns={columns}
+                      menuExtra={columnMenu}
+                    />
                   ))}
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
                 {rows.map(({ requirement, depth }) => (
                   <Table.Tr key={requirement.id}>
-                    <Table.Td style={{ whiteSpace: 'nowrap', paddingLeft: 12 + depth * 20 }}>
+                    <Table.Td
+                      data-column-key={ID_COLUMN}
+                      style={{
+                        whiteSpace: columns.isSingleLine(ID_COLUMN) ? 'nowrap' : undefined,
+                        textOverflow: 'ellipsis',
+                        paddingLeft: 12 + depth * 20,
+                      }}
+                    >
                       {requirement.id}
                     </Table.Td>
-                    {attributes.map((attr) => (
-                      <Table.Td key={attr.id}>
-                        <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
-                          {formatValue(requirement.attributes[attr.id])}
-                        </Text>
-                      </Table.Td>
-                    ))}
+                    {attributes.map((attr) => {
+                      const text = formatValue(requirement.attributes[attr.id]);
+                      return (
+                        <Table.Td key={attr.id} data-column-key={attr.id}>
+                          {columns.isSingleLine(attr.id) ? (
+                            <Text size="sm" truncate="end" title={text}>
+                              {text}
+                            </Text>
+                          ) : (
+                            <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
+                              {text}
+                            </Text>
+                          )}
+                        </Table.Td>
+                      );
+                    })}
                   </Table.Tr>
                 ))}
               </Table.Tbody>

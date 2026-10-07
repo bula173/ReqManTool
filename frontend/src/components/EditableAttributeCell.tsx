@@ -12,6 +12,12 @@ interface EditableAttributeCellProps {
   disabled?: boolean;
   projectId?: string;
   onNavigateToLinked?: (targetId: string) => void;
+  /**
+   * Table column display mode: true wraps the full value inside the column
+   * width, false keeps it on one line (truncated). Omitted: the compact
+   * default (text clamped to two lines).
+   */
+  wrap?: boolean;
 }
 
 function LinkBadge({
@@ -55,10 +61,12 @@ function LinkEntries({
   value,
   projectId,
   onNavigate,
+  wrap,
 }: {
   value: unknown;
   projectId?: string;
   onNavigate?: (targetId: string) => void;
+  wrap?: boolean;
 }) {
   if (value === null || value === undefined || value === '') {
     return <Text c="dimmed">—</Text>;
@@ -68,7 +76,7 @@ function LinkEntries({
     .map((e) => e.trim())
     .filter(Boolean);
   return (
-    <Group gap={4} wrap="wrap">
+    <Group gap={4} wrap={wrap === false ? 'nowrap' : 'wrap'} style={wrap === false ? { overflow: 'hidden' } : undefined}>
       {entries.map((entry, idx) => (
         <LinkBadge key={idx} entry={entry} projectId={projectId} onNavigate={onNavigate} />
       ))}
@@ -81,14 +89,16 @@ function DisplayValue({
   value,
   projectId,
   onNavigate,
+  wrap,
 }: {
   attr: AttributeDefinition;
   value: unknown;
   projectId?: string;
   onNavigate?: (targetId: string) => void;
+  wrap?: boolean;
 }) {
   if (attr.system) {
-    return <LinkEntries value={value} projectId={projectId} onNavigate={onNavigate} />;
+    return <LinkEntries value={value} projectId={projectId} onNavigate={onNavigate} wrap={wrap} />;
   }
   if (value === null || value === undefined || value === '') {
     return <Text c="dimmed">—</Text>;
@@ -98,6 +108,20 @@ function DisplayValue({
   }
   if (attr.type === 'enum') {
     return <Badge variant="light">{String(value)}</Badge>;
+  }
+  if (wrap === false) {
+    return (
+      <Text size="sm" truncate="end" title={String(value)}>
+        {String(value)}
+      </Text>
+    );
+  }
+  if (wrap === true) {
+    return (
+      <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
+        {String(value)}
+      </Text>
+    );
   }
   if (attr.type === 'text') {
     return (
@@ -126,6 +150,7 @@ export function EditableAttributeCell({
   disabled,
   projectId,
   onNavigateToLinked,
+  wrap,
 }: EditableAttributeCellProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<unknown>(value);
@@ -140,7 +165,9 @@ export function EditableAttributeCell({
   }, [editing]);
 
   if (disabled || attr.system) {
-    return <DisplayValue attr={attr} value={value} projectId={projectId} onNavigate={onNavigateToLinked} />;
+    return (
+      <DisplayValue attr={attr} value={value} projectId={projectId} onNavigate={onNavigateToLinked} wrap={wrap} />
+    );
   }
 
   const commit = () => {
@@ -154,7 +181,7 @@ export function EditableAttributeCell({
   if (!editing) {
     return (
       <div onDoubleClick={() => setEditing(true)} style={{ cursor: 'pointer', minHeight: 22 }}>
-        <DisplayValue attr={attr} value={value} />
+        <DisplayValue attr={attr} value={value} wrap={wrap} />
       </div>
     );
   }

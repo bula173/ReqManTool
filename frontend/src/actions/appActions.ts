@@ -1,5 +1,8 @@
 import {
   IconBook,
+  IconColumns,
+  IconColumnsOff,
+  IconDeviceFloppy,
   IconCloudDownload,
   IconCloudPlus,
   IconCloudUpload,
@@ -18,6 +21,12 @@ import {
 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { API_BASE_URL, ApiError } from '../api/client';
+import {
+  hasColumnWidthOverrides,
+  moduleTableKey,
+  resetColumnWidths,
+  viewColumnWidths,
+} from '../hooks/columnLayout';
 import type { Action, ActionContext, DynamicMenuItem, ExportFormat } from './types';
 
 /** Application-wide actions: the File, View and Help menus. */
@@ -87,6 +96,20 @@ function viewItems(ctx: AppContext): DynamicMenuItem[] {
       run: () => ctx.commands.setActiveView(view.id),
     })),
   ];
+}
+
+/** The open module's requirements table key (per view), or null outside a module. */
+function openTableKey(ctx: AppContext): string | null {
+  return ctx.projectId && ctx.module ? moduleTableKey(ctx.projectId, ctx.module.id, ctx.activeViewId) : null;
+}
+
+function activeView(ctx: AppContext) {
+  return ctx.module ? (ctx.views.find((view) => view.id === ctx.activeViewId) ?? null) : null;
+}
+
+function showError(fallback: string) {
+  return (err: unknown) =>
+    notifications.show({ message: err instanceof ApiError ? err.message : fallback, color: 'red' });
 }
 
 export const appActions: Action<'app'>[] = [
@@ -274,6 +297,57 @@ export const appActions: Action<'app'>[] = [
     isAvailable: () => true,
     isChecked: (ctx) => ctx.detailPanelOpen,
     run: (ctx) => ctx.commands.setDetailPanelOpen(!ctx.detailPanelOpen),
+  },
+  {
+    // This browser's widths of the open table (module + view); wrap toggles are kept.
+    id: 'view.resetColumnWidths',
+    element: 'app',
+    label: 'Reset column widths',
+    icon: IconColumns,
+    isAvailable: (ctx) => {
+      const key = openTableKey(ctx);
+      return key !== null && hasColumnWidthOverrides(key);
+    },
+    run: (ctx) => {
+      const key = openTableKey(ctx);
+      if (key) resetColumnWidths(key);
+    },
+  },
+  {
+    // Shares the current widths through the active view in project.json.
+    id: 'view.saveColumnWidths',
+    element: 'app',
+    label: 'Save column widths to view',
+    icon: IconDeviceFloppy,
+    isAvailable: (ctx) => activeView(ctx) !== null && ctx.project !== null,
+    run: (ctx) => {
+      const view = activeView(ctx);
+      const key = openTableKey(ctx);
+      if (!view || !key || !ctx.project) return;
+      ctx.commands.setViewColumnWidths(view.id, viewColumnWidths(key, view, ctx.project.attributes)).then(
+        () => {
+          // The view now holds these widths; this browser's copies are redundant.
+          resetColumnWidths(key);
+          notifications.show({ message: `Column widths saved to view "${view.name}"`, color: 'green' });
+        },
+        showError('Failed to save the column widths'),
+      );
+    },
+  },
+  {
+    id: 'view.removeViewColumnWidths',
+    element: 'app',
+    label: 'Remove column widths from view',
+    icon: IconColumnsOff,
+    isAvailable: (ctx) => activeView(ctx)?.column_widths !== undefined,
+    run: (ctx) => {
+      const view = activeView(ctx);
+      if (!view) return;
+      ctx.commands.setViewColumnWidths(view.id, null).then(
+        () => notifications.show({ message: `Column widths removed from view "${view.name}"`, color: 'green' }),
+        showError('Failed to remove the column widths'),
+      );
+    },
   },
   {
     id: 'view.toggleDarkMode',

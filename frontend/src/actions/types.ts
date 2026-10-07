@@ -86,6 +86,8 @@ export interface AppCommands {
   setClipboard: (entry: RequirementClipboard | null) => void;
   selectRequirement: (requirementId: string | null) => void;
   setActiveView: (viewId: string | null) => void;
+  /** Store (or, with null, remove) a view's shared column widths in project.json. */
+  setViewColumnWidths: (viewId: string, widths: Record<string, number> | null) => Promise<View>;
   setDetailPanelOpen: (open: boolean) => void;
   setColorScheme: (scheme: 'light' | 'dark') => void;
   /** "Enable history (git)" for the open project; resolves with its new git status. */

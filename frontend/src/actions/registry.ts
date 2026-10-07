@@ -153,12 +153,31 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
   },
   {
     label: 'View',
-    entries: [action('view.attributeView'), action('view.toggleDetailPanel'), divider, action('view.toggleDarkMode')],
+    entries: [
+      action('view.attributeView'),
+      action('view.toggleDetailPanel'),
+      divider,
+      action('view.resetColumnWidths'),
+      action('view.saveColumnWidths'),
+      action('view.removeViewColumnWidths'),
+      divider,
+      action('view.toggleDarkMode'),
+    ],
   },
   {
     label: 'Help',
     entries: [action('help.shortcuts'), action('help.documentation'), divider, action('help.about')],
   },
+];
+
+/**
+ * The table-wide part of a requirements table column header menu (after the
+ * column's own Wrap text / Auto-fit width entries).
+ */
+export const COLUMN_HEADER_MENU: MenuEntry[] = [
+  action('view.resetColumnWidths'),
+  action('view.saveColumnWidths'),
+  action('view.removeViewColumnWidths'),
 ];
 
 /** Right-click menu of a requirement row. */
