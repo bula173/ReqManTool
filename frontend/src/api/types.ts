@@ -8,6 +8,23 @@ export interface AttributeDefinition {
   default: unknown;
   choices: string[] | null;
   system: boolean;
+  /**
+   * Module ids the attribute applies to, in module order. Omitted (or empty)
+   * when it applies to every module. Writing a value in another module is
+   * rejected by the server; see `api/applicability.ts`.
+   */
+  modules?: string[];
+}
+
+/** A requirement value removed by `PUT /projects/{id}/attributes/{attr}/modules`. */
+export interface DroppedAttributeValue {
+  module_id: string;
+  requirement_id: string;
+}
+
+export interface SetAttributeModulesResult {
+  project: Project;
+  dropped_values: DroppedAttributeValue[];
 }
 
 export interface LinkConfiguration {

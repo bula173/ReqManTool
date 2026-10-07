@@ -66,7 +66,25 @@ class NewerFormatError(ValueError):
     """
 
 
-PROJECT_FORMAT = FileFormat(name="project", current=1)
+def _project_v1_to_v2(data: dict) -> dict:
+    """Project format 1 -> 2: attribute definitions gained ``modules``.
+
+    Version 2 adds ``AttributeDefinition.modules`` (the module ids an
+    attribute applies to; absent or empty = every module). Version 1 had no
+    such scope, so every attribute applied to every module; a stray
+    ``modules`` key in a hand-edited version 1 file was ignored then and is
+    dropped here so it keeps meaning nothing. Module, requirement and
+    link-pair files are unchanged.
+    """
+    attributes = data.get("attributes")
+    if isinstance(attributes, list):
+        for attr in attributes:
+            if isinstance(attr, dict):
+                attr.pop("modules", None)
+    return data
+
+
+PROJECT_FORMAT = FileFormat(name="project", current=2, migrations={1: _project_v1_to_v2})
 CONFIG_FORMAT = FileFormat(name="config", current=1)
 
 

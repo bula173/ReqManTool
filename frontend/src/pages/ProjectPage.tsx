@@ -18,6 +18,7 @@ import {
 import { modals } from '@mantine/modals';
 import { notifications } from '@mantine/notifications';
 import {
+  IconAdjustments,
   IconArrowDown,
   IconArrowUp,
   IconFolderPlus,
@@ -40,12 +41,19 @@ import {
   useReorderModule,
 } from '../api/queries';
 import { AddAttributeModal } from '../components/AddAttributeModal';
+import { AttributeModulesModal } from '../components/AttributeModulesModal';
 import { GitStatusPanel } from '../components/GitStatusPanel';
 import { LinkConfigurationModal } from '../components/LinkConfigurationModal';
 import { NewModuleModal } from '../components/NewModuleModal';
 import { ProjectParentModal } from '../components/ProjectParentModal';
 import { ViewModal } from '../components/ViewModal';
-import { isProjectStub, type LinkConfiguration, type Module, type View } from '../api/types';
+import {
+  isProjectStub,
+  type AttributeDefinition,
+  type LinkConfiguration,
+  type Module,
+  type View,
+} from '../api/types';
 
 export function ProjectPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -57,6 +65,7 @@ export function ProjectPage() {
   const removeView = useRemoveView(projectId ?? '');
   const reorderModule = useReorderModule(projectId ?? '');
   const [addAttributeOpened, setAddAttributeOpened] = useState(false);
+  const [scopedAttribute, setScopedAttribute] = useState<AttributeDefinition | null>(null);
   const [newModuleOpened, setNewModuleOpened] = useState(false);
   const [newLinkConfigOpened, setNewLinkConfigOpened] = useState(false);
   const [newViewOpened, setNewViewOpened] = useState(false);
@@ -235,6 +244,8 @@ export function ProjectPage() {
               <Table.Th>Required</Table.Th>
               <Table.Th>Default</Table.Th>
               <Table.Th>Choices</Table.Th>
+              <Table.Th>Modules</Table.Th>
+              <Table.Th w={60} />
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody>
@@ -248,6 +259,22 @@ export function ProjectPage() {
                 <Table.Td>{attr.required ? 'Yes' : 'No'}</Table.Td>
                 <Table.Td>{attr.default === null || attr.default === undefined ? '—' : String(attr.default)}</Table.Td>
                 <Table.Td>{attr.choices ? attr.choices.join(', ') : '—'}</Table.Td>
+                <Table.Td>
+                  {attr.modules && attr.modules.length > 0 ? attr.modules.map(moduleLabel).join(', ') : 'All'}
+                </Table.Td>
+                <Table.Td>
+                  {attr.id !== 'object_text' && (
+                    <Tooltip label="Modules it applies to">
+                      <ActionIcon
+                        variant="subtle"
+                        aria-label={`Modules for ${attr.name}`}
+                        onClick={() => setScopedAttribute(attr)}
+                      >
+                        <IconAdjustments size={16} />
+                      </ActionIcon>
+                    </Tooltip>
+                  )}
+                </Table.Td>
               </Table.Tr>
             ))}
           </Table.Tbody>
@@ -410,6 +437,11 @@ export function ProjectPage() {
       </Card>
 
       <AddAttributeModal projectId={projectId} opened={addAttributeOpened} onClose={() => setAddAttributeOpened(false)} />
+      <AttributeModulesModal
+        projectId={projectId}
+        attribute={scopedAttribute}
+        onClose={() => setScopedAttribute(null)}
+      />
       <NewModuleModal projectId={newModuleOpened ? projectId : null} onClose={() => setNewModuleOpened(false)} />
       <LinkConfigurationModal
         projectId={projectId}

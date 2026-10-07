@@ -230,6 +230,14 @@ class AddAttributeBody(BaseModel):
     required: bool = False
     default: Any = None
     choices: list[str] | None = None
+    # Module ids the attribute applies to; absent/empty = every module. Typed
+    # loosely so the service validates it and REST/WebSocket reject alike.
+    modules: Any = None
+
+
+class SetAttributeModulesBody(BaseModel):
+    modules: Any = None
+    drop_values: Any = False
 
 
 class CreateModuleBody(BaseModel):
@@ -517,9 +525,17 @@ async def add_attribute(project_id: str, body: AddAttributeBody):
         body.required,
         body.default,
         body.choices,
+        body.modules,
     )
     await manager.broadcast(project_id)
     return project.to_dict()
+
+
+@app.put("/projects/{project_id}/attributes/{attr_id}/modules")
+async def set_attribute_modules(project_id: str, attr_id: str, body: SetAttributeModulesBody):
+    result = _wrap(service.set_attribute_modules, project_id, attr_id, body.modules, body.drop_values)
+    await manager.broadcast(project_id)
+    return {"project": result["project"].to_dict(), "dropped_values": result["dropped_values"]}
 
 
 @app.post("/projects/{project_id}/link-configurations")
@@ -804,7 +820,10 @@ RPC_METHODS = {
     "baseline.compare": lambda p: service.compare_baselines(p["project_id"], p["from"], p["to"]),
     "attribute.add": lambda p: service.add_attribute_definition(
         p["project_id"], p["id"], p["name"], p.get("type", "string"),
-        p.get("required", False), p.get("default"), p.get("choices"),
+        p.get("required", False), p.get("default"), p.get("choices"), p.get("modules"),
+    ),
+    "attribute.set_modules": lambda p: service.set_attribute_modules(
+        p["project_id"], p["id"], p.get("modules"), p.get("drop_values", False)
     ),
     "module.create": lambda p: service.create_module(
         p["project_id"], p["name"], p["prefix"], p.get("description", "")
@@ -884,7 +903,7 @@ MUTATING_METHODS = {
     "project.create", "project.set_parent", "project.purge", "project.git_enable", "baseline.create",
     "project.git_set_remote", "project.git_set_auto_push", "project.git_push", "project.git_pull",
     "project.create_from_remote",
-    "attribute.add",
+    "attribute.add", "attribute.set_modules",
     "module.create", "module.purge", "module.reorder",
     "link_configuration.create", "link_configuration.remove",
     "view.create", "view.set_column_widths", "view.remove",

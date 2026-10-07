@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fastapi.testclient import TestClient
 
 from reqman import __version__
+from reqman.formats import PROJECT_FORMAT
 from reqman.git_repo import GitHistory, GitSettings, validate_baseline_name
 from reqman.service import ConflictError, ProjectService
 from reqman.store import ProjectStore
@@ -94,8 +95,8 @@ def test_create_baseline_tags_and_fast_forwards(service, root):
     assert "First release" in message
     assert "Reqman-Baseline: v1" in message
     assert f"Reqman-Tool-Version: {__version__}" in message
-    assert "Reqman-Project-Format: 1" in message
-    assert baseline["tool_version"] == __version__ and baseline["format_version"] == 1
+    assert f"Reqman-Project-Format: {PROJECT_FORMAT.current}" in message
+    assert baseline["tool_version"] == __version__ and baseline["format_version"] == PROJECT_FORMAT.current
     assert git(folder, "tag", "-l", "--format=%(taggername)", "baseline/v1").strip() == "Test Author"
     # The squash window is closed: the next change starts a new commit and
     # never amends the baselined one (ref containment).
@@ -181,7 +182,7 @@ def test_list_baselines_newest_first_with_lightweight_and_foreign_tags(service, 
     v1 = next(b for b in listed["baselines"] if b["name"] == "v1")
     assert v1["annotated"] is True and v1["description"] == "one"
     assert v1["tagger"] == {"name": "Test Author", "email": "author@example.com"}
-    assert v1["tool_version"] == __version__ and v1["format_version"] == 1
+    assert v1["tool_version"] == __version__ and v1["format_version"] == PROJECT_FORMAT.current
     assert v1["date"]  # the Reqman-Baseline-Date trailer
     light = next(b for b in listed["baselines"] if b["name"] == "light")
     assert light["annotated"] is False and light["description"] is None

@@ -2,6 +2,7 @@ import { Alert, Anchor, Badge, Card, Center, Group, Loader, Menu, Select, Stack,
 import { IconInfoCircle, IconLock } from '@tabler/icons-react';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { applicableAttributes } from '../api/applicability';
 import { ApiError } from '../api/client';
 import { useBaseline, useBaselineRequirements } from '../api/queries';
 import type { Requirement } from '../api/types';
@@ -80,7 +81,7 @@ export function BaselinePage() {
   }
 
   const module = snapshot.modules.find((m) => m.id === moduleId);
-  const attributes = snapshot.project.attributes;
+  const attributes = applicableAttributes(snapshot.project.attributes, moduleId);
   const rows = treeOrder(requirementsQuery.data ?? []);
   const tableWidth =
     columns.widthOf(ID_COLUMN, DEFAULT_ID_COLUMN_WIDTH) +

@@ -31,6 +31,10 @@ Rules:
   share a name. Columns for system-managed attributes (link mirrors) are
   ignored and reported back, so that a CSV export can be re-imported. Unknown,
   ambiguous and duplicate columns reject the whole file.
+- **Attributes that do not apply to the target module** (``applies``): a
+  column whose cells are all empty is ignored and reported back (a whole-project
+  export has such columns); a non-empty cell rejects the file, with the row
+  number.
 - **Values**: an empty cell means "not set". ``integer`` accepts an optional
   sign and ASCII digits 0-9. ``boolean`` accepts true/false, yes/no, y/n and
   1/0 (any case). ``string``/``text``/``enum`` are kept verbatim.
@@ -129,6 +133,7 @@ def parse_requirements_csv(
     attributes: Sequence[Any],
     csv_text: str,
     validate: Callable[[dict[str, Any]], list[str]] | None = None,
+    applies: Callable[[Any], bool] | None = None,
 ) -> ParsedCsv:
     """Validate and convert CSV text into requirement rows.
 
@@ -140,6 +145,8 @@ def parse_requirements_csv(
             id) once all of its cells converted; returns the row's problems
             (an empty list if it is valid). Each problem is reported with the
             row number.
+        applies: whether an attribute applies to the target module (default:
+            every attribute does). See "Attributes that do not apply" above.
 
     Raises:
         CsvImportError: if anything in the file is invalid. Nothing is
@@ -185,7 +192,9 @@ def parse_requirements_csv(
 
     reserved_index: dict[str, int] = {}
     attr_columns: list[tuple[int, Any]] = []
-    ignored_columns: list[str] = []
+    ignored_columns: list[tuple[int, str]] = []
+    # Columns of attributes that do not apply to the module: index -> header.
+    inapplicable: dict[int, str] = {}
     seen_headers: set[str] = set()
     seen_attr_ids: set[str] = set()
     unknown: list[str] = []
@@ -217,12 +226,15 @@ def parse_requirements_csv(
             unknown.append(name)
             continue
         if attr.system:
-            ignored_columns.append(name)
+            ignored_columns.append((index, name))
             continue
         if attr.id in seen_attr_ids:
             errors.append(f"Column '{name}' maps to attribute '{attr.id}', which another column already uses")
             continue
         seen_attr_ids.add(attr.id)
+        if applies is not None and not applies(attr):
+            inapplicable[index] = name
+            continue
         attr_columns.append((index, attr))
 
     if unknown:
@@ -273,6 +285,11 @@ def parse_requirements_csv(
                 errors.append(f"Row {row_number}: Id '{key}' is already used by row {key_rows[key]}")
             else:
                 key_rows[key] = row_number
+
+        filled = [i for i in inapplicable if cell(record, i).strip()]
+        if filled:
+            names = [inapplicable[i] for i in filled]
+            errors.append(f"Row {row_number}: attribute(s) {names} do not apply to this module")
 
         values: dict[str, Any] = {}
         converted = True
@@ -335,4 +352,6 @@ def parse_requirements_csv(
         raise CsvImportError(errors)
 
     ordered = sorted(rows, key=lambda r: depth[r.row_number])
-    return ParsedCsv(rows=ordered, ignored_columns=ignored_columns)
+    # Reached only when no row filled an inapplicable column.
+    ignored_columns.extend(inapplicable.items())
+    return ParsedCsv(rows=ordered, ignored_columns=[name for _, name in sorted(ignored_columns)])

@@ -26,7 +26,8 @@
       "type": "enum",
       "required": false,
       "default": null,
-      "choices": ["Basic Integrity", "SIL 1", "SIL 2", "SIL 3", "SIL 4"]
+      "choices": ["Basic Integrity", "SIL 1", "SIL 2", "SIL 3", "SIL 4"],
+      "modules": ["strs", "syrs", "swrs"]
     },
     {
       "id": "safety_related",
@@ -58,7 +59,8 @@
       "type": "enum",
       "required": false,
       "default": null,
-      "choices": ["Hardware", "Software", "Hardware/Software", "Operational Procedure", "External Interface", "Not Allocated"]
+      "choices": ["Hardware", "Software", "Hardware/Software", "Operational Procedure", "External Interface", "Not Allocated"],
+      "modules": ["strs", "syrs", "swrs"]
     },
     {
       "id": "verification_method",
@@ -66,7 +68,8 @@
       "type": "enum",
       "required": false,
       "default": null,
-      "choices": ["Test", "Analysis", "Inspection", "Review", "Demonstration"]
+      "choices": ["Test", "Analysis", "Inspection", "Review", "Demonstration"],
+      "modules": ["strs", "syrs", "swrs"]
     },
     {
       "id": "source",
@@ -98,7 +101,8 @@
       "type": "text",
       "required": false,
       "default": null,
-      "choices": null
+      "choices": null,
+      "modules": ["systest", "swtest"]
     },
     {
       "id": "test_steps",
@@ -106,7 +110,8 @@
       "type": "text",
       "required": false,
       "default": null,
-      "choices": null
+      "choices": null,
+      "modules": ["systest", "swtest"]
     },
     {
       "id": "expected_result",
@@ -114,7 +119,8 @@
       "type": "text",
       "required": false,
       "default": null,
-      "choices": null
+      "choices": null,
+      "modules": ["systest", "swtest"]
     },
     {
       "id": "test_result",
@@ -122,7 +128,8 @@
       "type": "enum",
       "required": false,
       "default": null,
-      "choices": ["Not Run", "Passed", "Failed", "Blocked", "Not Applicable"]
+      "choices": ["Not Run", "Passed", "Failed", "Blocked", "Not Applicable"],
+      "modules": ["systest", "swtest"]
     }
   ],
   "modules": [

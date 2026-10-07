@@ -4,6 +4,7 @@ import { notifications } from '@mantine/notifications';
 import { useAddAttribute } from '../api/queries';
 import { ApiError } from '../api/client';
 import type { AttributeType } from '../api/types';
+import { AttributeModulesChecklist } from './AttributeModulesChecklist';
 
 interface AddAttributeModalProps {
   projectId: string;
@@ -18,6 +19,8 @@ interface FormValues {
   required: boolean;
   default: string;
   choices: string;
+  /** Module ids the attribute applies to; empty = every module. */
+  modules: string[];
 }
 
 const TYPE_OPTIONS: { value: AttributeType; label: string }[] = [
@@ -52,7 +55,7 @@ function coerceDefault(type: AttributeType, raw: string): unknown {
 export function AddAttributeModal({ projectId, opened, onClose }: AddAttributeModalProps) {
   const addAttribute = useAddAttribute(projectId);
   const form = useForm<FormValues>({
-    initialValues: { id: '', name: '', type: 'string', required: false, default: '', choices: '' },
+    initialValues: { id: '', name: '', type: 'string', required: false, default: '', choices: '', modules: [] },
     validate: {
       id: (value) => (value.trim().length === 0 ? 'Attribute id is required' : null),
       name: (value) => (value.trim().length === 0 ? 'Attribute name is required' : null),
@@ -79,6 +82,7 @@ export function AddAttributeModal({ projectId, opened, onClose }: AddAttributeMo
         required: values.required,
         default: coerceDefault(values.type, values.default),
         choices,
+        modules: values.modules,
       },
       {
         onSuccess: () => {
@@ -117,6 +121,12 @@ export function AddAttributeModal({ projectId, opened, onClose }: AddAttributeMo
               {...form.getInputProps('choices')}
             />
           )}
+          <AttributeModulesChecklist
+            projectId={projectId}
+            value={form.values.modules}
+            onChange={(modules) => form.setFieldValue('modules', modules)}
+            disabled={addAttribute.isPending}
+          />
           <Group justify="flex-end" mt="sm">
             <Button variant="default" onClick={onClose}>
               Cancel

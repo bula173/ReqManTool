@@ -32,9 +32,17 @@ class AttributeDefinition:
     default: Any = None
     choices: list[str] | None = None
     system: bool = False
+    # Module ids the attribute applies to (project format 2). Empty means
+    # every module, so it is written only when set: an unscoped attribute
+    # keeps exactly the keys it had before. Rules (ids exist, values only in
+    # listed modules) live in ``ProjectService``.
+    modules: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        if not self.modules:
+            del data["modules"]
+        return data
 
     @staticmethod
     def from_dict(data: dict) -> "AttributeDefinition":
@@ -46,6 +54,7 @@ class AttributeDefinition:
             default=data.get("default"),
             choices=data.get("choices"),
             system=data.get("system", False),
+            modules=_string_list(data.get("modules")),
         )
 
 

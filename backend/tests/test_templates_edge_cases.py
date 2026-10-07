@@ -18,6 +18,7 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
+from reqman.formats import PROJECT_FORMAT
 from reqman.service import ConflictError, ProjectService
 from reqman.store import ProjectStore
 from reqman.templates import BUILTIN_TEMPLATES_DIR
@@ -704,7 +705,14 @@ def test_saved_template_json_format_and_contents(service):
     assert (data["format_version"], data["id"], data["name"], data["description"]) == (
         1, "saved", "Saved", "Saved description",
     )
-    assert all(list(a) == ["id", "name", "type", "required", "default", "choices"] for a in data["attributes"])
+    # ``modules`` (module keys) is written only for an attribute scoped to some modules.
+    assert all(
+        list(a) == ["id", "name", "type", "required", "default", "choices"] + (["modules"] if "modules" in a else [])
+        for a in data["attributes"]
+    )
+    scoped = {a["id"]: a["modules"] for a in data["attributes"] if "modules" in a}
+    assert scoped["sil"] == ["strs", "syrs", "swrs"]
+    assert scoped["test_steps"] == ["systest", "swtest"]
     assert all(list(m) == ["key", "name", "prefix", "description"] for m in data["modules"])
     assert all(list(c) == ["key", "name", "source_module", "target_module"] for c in data["link_configurations"])
     assert all(list(v) == ["name", "attribute_ids"] for v in data["views"])
@@ -775,7 +783,7 @@ def test_legacy_project_without_parent_loads_and_is_only_rewritten_by_real_chang
     # file gains its format_version as first key.
     module = service.create_module("legacy", "Reqs", "R")
     service.add_requirement("legacy", module.id, {"object_text": "x"})  # bumps id_counters
-    expected = {"format_version": 1, **json.loads(legacy)}
+    expected = {"format_version": PROJECT_FORMAT.current, **json.loads(legacy)}
     expected["id_counters"] = {"R": 1}
     expected["module_order"] = [module.id]
     assert path.read_text() == json.dumps(expected, indent=2) + "\n"

@@ -17,6 +17,7 @@ import type {
   ProjectListEntry,
   Requirement,
   RequirementHistory,
+  SetAttributeModulesResult,
   TemplateSummary,
   VersionInfo,
   View,
@@ -223,6 +224,27 @@ export function useAddAttribute(projectId: string) {
   return useMutation({
     mutationFn: (body: Omit<AttributeDefinition, 'default' | 'system'> & { default?: unknown }) =>
       api.post<Project>(`/projects/${projectId}/attributes`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+    },
+  });
+}
+
+/**
+ * Changes the modules an attribute applies to (`PUT
+ * /projects/{id}/attributes/{attr}/modules`, WS `attribute.set_modules`); an
+ * empty list means every module. Non-blank values in modules left out are
+ * refused (400) unless `drop_values` is true; the removed ones are returned in
+ * `dropped_values`. Invalidates the whole project, since requirements may change.
+ */
+export function useSetAttributeModules(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ attrId, modules, dropValues }: { attrId: string; modules: string[]; dropValues: boolean }) =>
+      api.put<SetAttributeModulesResult>(`/projects/${projectId}/attributes/${encodeURIComponent(attrId)}/modules`, {
+        modules,
+        drop_values: dropValues,
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.project(projectId) });
     },

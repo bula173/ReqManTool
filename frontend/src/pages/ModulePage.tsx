@@ -29,6 +29,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ActionMenuEntries } from '../actions/ActionMenuEntries';
 import { useAppActions } from '../actions/context';
 import { COLUMN_HEADER_MENU, REQUIREMENT_CONTEXT_MENU } from '../actions/registry';
+import { applicableAttributes } from '../api/applicability';
 import { api, ApiError } from '../api/client';
 import {
   useModule,
@@ -193,7 +194,8 @@ export function ModulePage() {
     );
   }
 
-  const attributes = projectQuery.data.attributes;
+  // Only the attributes that apply to this module: table, views, detail panel and forms.
+  const attributes = applicableAttributes(projectQuery.data.attributes, moduleId);
   const requirements = requirementsQuery.data;
   const module = moduleQuery.data;
   const rows = flattenTree(requirements, collapsed);

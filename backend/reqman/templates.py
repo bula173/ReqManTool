@@ -21,7 +21,7 @@ Format (``format_version`` 1)::
       "id": "<stem>",
       "name": "...",
       "description": "...",
-      "attributes": [{"id", "name", "type", "required", "default", "choices"}],
+      "attributes": [{"id", "name", "type", "required", "default", "choices", "modules"?}],
       "modules": [{"key", "name", "prefix", "description"}],
       "link_configurations": [{"key", "name", "source_module", "target_module"}],
       "views": [{"name", "attribute_ids"}]
@@ -31,6 +31,12 @@ Format (``format_version`` 1)::
 already has it. A view's ``attribute_ids`` entry is ``object_text``, a
 template attribute id, or ``link:<key>`` for the mirror attribute of the
 link configuration with that key.
+
+An attribute's optional ``modules`` lists the module *keys* of this template
+the attribute applies to (absent or empty: every module). It was added
+without a ``format_version`` bump under the rule below: an older ReqManTool
+ignores it and creates the attribute for every module. It is written only
+when non-empty.
 
 Compatibility rules:
 
@@ -86,9 +92,11 @@ class TemplateAttribute:
     required: bool = False
     default: Any = None
     choices: Any = None
+    # Module keys of the template the attribute applies to; empty = every module.
+    modules: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "id": self.id,
             "name": self.name,
             "type": self.type,
@@ -96,6 +104,9 @@ class TemplateAttribute:
             "default": self.default,
             "choices": self.choices,
         }
+        if self.modules:
+            data["modules"] = list(self.modules)
+        return data
 
 
 @dataclass
@@ -324,6 +335,13 @@ def parse_template(data: Any, template_id: str) -> Template:
                 f"{where}: template attributes cannot be system attributes; link mirror "
                 "attributes come from 'link_configurations'"
             )
+        scope = raw.get("modules", [])
+        if scope is None:
+            scope = []
+        if not isinstance(scope, list) or not all(_is_nonblank_str(k) for k in scope):
+            raise ValueError(f"{where}: 'modules' must be a list of module keys")
+        if len(set(scope)) != len(scope):
+            raise ValueError(f"{where}: 'modules' lists a module key more than once")
         attributes.append(
             TemplateAttribute(
                 id=attr_id,
@@ -332,6 +350,7 @@ def parse_template(data: Any, template_id: str) -> Template:
                 required=required,
                 default=raw.get("default"),
                 choices=raw.get("choices"),
+                modules=list(scope),
             )
         )
 
@@ -364,6 +383,11 @@ def parse_template(data: Any, template_id: str) -> Template:
         modules.append(
             TemplateModule(key=key, name=module_name, prefix=prefix, description=module_description)
         )
+
+    for index, attr in enumerate(attributes):
+        for key in attr.modules:
+            if key not in module_keys:
+                raise ValueError(f"attributes[{index}]: 'modules' entry {key!r} is not a module key of this template")
 
     link_configurations: list[TemplateLinkConfiguration] = []
     link_keys: set[str] = set()

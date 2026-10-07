@@ -351,9 +351,13 @@ domain rules.
 
 `project.json` and the app config file (`.reqman/config.json`) start with
 an integer `format_version` (`reqman/formats.py`: `PROJECT_FORMAT`,
-`CONFIG_FORMAT`, both currently 1). Module, requirement and link-pair files
-have no version of their own; they are governed by their project's
-version. Templates keep their own, separate `format_version`.
+`CONFIG_FORMAT`; project currently 2, config 1). Module, requirement and
+link-pair files have no version of their own; they are governed by their
+project's version. Templates keep their own, separate `format_version`.
+Project format 2 added `AttributeDefinition.modules` (per-module attribute
+applicability: the module ids an attribute applies to, written only when
+non-empty); the 1 → 2 step drops any stray `modules` key, since version 1
+attributes applied to every module.
 
 - A file without the key is version 1 (the format written before versions
   existed) and loads unchanged.
