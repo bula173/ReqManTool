@@ -7,12 +7,14 @@ import { ApiError } from '../api/client';
 import { useBaseline, useBaselineRequirements } from '../api/queries';
 import type { Requirement } from '../api/types';
 import { ResizableHeaderCell } from '../components/ResizableHeaderCell';
+import { RowResizeHandle } from '../components/RowResizeHandle';
 import {
   DEFAULT_ID_COLUMN_WIDTH,
   ID_COLUMN,
   defaultColumnWidth,
   moduleTableKey,
   useResizableColumns,
+  useResizableRows,
 } from '../hooks/columnLayout';
 
 /** Depth-first tree order: siblings by `order`, then id (same as the exports). */
@@ -59,8 +61,11 @@ export function BaselinePage() {
   const moduleId = selectedModule ?? snapshot?.modules[0]?.id ?? null;
   const requirementsQuery = useBaselineRequirements(projectId, baselineName, moduleId ?? undefined);
   // The module's own "All attributes" layout: a baseline looks like the module's table.
-  const columns = useResizableColumns(moduleTableKey(projectId ?? '', moduleId ?? '', null));
+  const tableKey = moduleTableKey(projectId ?? '', moduleId ?? '', null);
+  const columns = useResizableColumns(tableKey);
   const { tableRef, colRef } = columns;
+  const rowSizes = useResizableRows(tableKey);
+  const { tbodyRef } = rowSizes;
 
   if (!projectId || !baselineName) return null;
   if (baselineQuery.isLoading) {
@@ -87,9 +92,14 @@ export function BaselinePage() {
     columns.widthOf(ID_COLUMN, DEFAULT_ID_COLUMN_WIDTH) +
     attributes.reduce((sum, attr) => sum + columns.widthOf(attr.id, defaultColumnWidth(attr)), 0);
   const columnMenu = (
-    <Menu.Item disabled={!columns.hasWidthOverrides} onClick={columns.resetWidths}>
-      Reset column widths
-    </Menu.Item>
+    <>
+      <Menu.Item disabled={!columns.hasWidthOverrides} onClick={columns.resetWidths}>
+        Reset column widths
+      </Menu.Item>
+      <Menu.Item disabled={!rowSizes.hasHeightOverrides} onClick={rowSizes.resetHeights}>
+        Reset row heights
+      </Menu.Item>
+    </>
   );
 
   // Fills the page area: the card shrinks to fit it and the table scrolls inside, under a sticky header row.
@@ -198,32 +208,43 @@ export function BaselinePage() {
                   ))}
                 </Table.Tr>
               </Table.Thead>
-              <Table.Tbody>
+              <Table.Tbody ref={tbodyRef}>
                 {rows.map(({ requirement, depth }) => (
-                  <Table.Tr key={requirement.id}>
-                    <Table.Td
-                      data-column-key={ID_COLUMN}
-                      style={{
-                        whiteSpace: columns.isSingleLine(ID_COLUMN) ? 'nowrap' : undefined,
-                        textOverflow: 'ellipsis',
-                        paddingLeft: 12 + depth * 20,
-                      }}
-                    >
-                      {requirement.id}
+                  <Table.Tr
+                    key={requirement.id}
+                    data-row-height={rowSizes.heightOf(requirement.id)}
+                    style={rowSizes.rowStyle(requirement.id)}
+                  >
+                    <Table.Td data-column-key={ID_COLUMN} style={{ paddingLeft: 12 + depth * 20 }}>
+                      <div
+                        className="reqman-cell-clip"
+                        data-fade={columns.isSingleLine(ID_COLUMN) ? undefined : ''}
+                        style={{
+                          overflow: 'hidden',
+                          whiteSpace: columns.isSingleLine(ID_COLUMN) ? 'nowrap' : undefined,
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {requirement.id}
+                      </div>
+                      <RowResizeHandle rowId={requirement.id} rows={rowSizes} focusable />
                     </Table.Td>
                     {attributes.map((attr) => {
                       const text = formatValue(requirement.attributes[attr.id]);
                       return (
                         <Table.Td key={attr.id} data-column-key={attr.id}>
-                          {columns.isSingleLine(attr.id) ? (
-                            <Text size="sm" truncate="end" title={text}>
-                              {text}
-                            </Text>
-                          ) : (
-                            <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
-                              {text}
-                            </Text>
-                          )}
+                          <div className="reqman-cell-clip" data-fade={columns.isSingleLine(attr.id) ? undefined : ''}>
+                            {columns.isSingleLine(attr.id) ? (
+                              <Text size="sm" truncate="end" title={text}>
+                                {text}
+                              </Text>
+                            ) : (
+                              <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
+                                {text}
+                              </Text>
+                            )}
+                          </div>
+                          <RowResizeHandle rowId={requirement.id} rows={rowSizes} />
                         </Table.Td>
                       );
                     })}

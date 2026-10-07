@@ -1,7 +1,13 @@
 import { ActionIcon, Menu, Table } from '@mantine/core';
 import { IconArrowsHorizontal, IconCheck, IconDotsVertical } from '@tabler/icons-react';
-import { useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
-import { MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH, type ResizableColumns } from '../hooks/columnLayout';
+import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
+import {
+  MAX_COLUMN_WIDTH,
+  MIN_COLUMN_WIDTH,
+  beginBodyDrag,
+  endBodyDrag,
+  type ResizableColumns,
+} from '../hooks/columnLayout';
 
 interface ResizableHeaderCellProps {
   columnKey: string;
@@ -9,7 +15,7 @@ interface ResizableHeaderCellProps {
   /** Rendered width (fallback for columns without a stored width). */
   defaultWidth: number;
   columns: ResizableColumns;
-  /** Extra entries of the column header menu, after a divider (e.g. Reset column widths). */
+  /** Extra entries of the column header menu, after a divider (e.g. Reset column widths / row heights). */
   menuExtra?: ReactNode;
 }
 
@@ -32,12 +38,19 @@ export function ResizableHeaderCell({ columnKey, label, defaultWidth, columns, m
   const [resizing, setResizing] = useState(false);
   const drag = useRef<{ pointerId: number; startX: number; startWidth: number; width: number } | null>(null);
 
+  // Unmounted mid-drag (view switch, live-sync re-render): give the body its cursor and text selection back.
+  useEffect(
+    () => () => {
+      if (drag.current) endBodyDrag();
+    },
+    [],
+  );
+
   const finishDrag = (commit: boolean) => {
     const current = drag.current;
     drag.current = null;
     setResizing(false);
-    document.body.style.removeProperty('cursor');
-    document.body.style.removeProperty('user-select');
+    endBodyDrag();
     if (!current) return;
     if (commit && current.width !== current.startWidth) columns.setWidth(columnKey, current.width);
     else columns.previewWidth(columnKey, null);
@@ -51,8 +64,7 @@ export function ResizableHeaderCell({ columnKey, label, defaultWidth, columns, m
     drag.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: width, width };
     setResizing(true);
     // Keep the resize cursor and avoid selecting text while the pointer is outside the handle.
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
+    beginBodyDrag('col-resize');
   };
 
   const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
@@ -77,9 +89,10 @@ export function ResizableHeaderCell({ columnKey, label, defaultWidth, columns, m
   };
 
   return (
+    // No inline `position`: the sticky header's `th` is `position: sticky`, which also anchors the
+    // absolutely placed handle (index.css makes a non-sticky header's `th` relative).
     <Table.Th
       data-column-key={columnKey}
-      style={{ position: 'relative' }}
       onContextMenu={(event) => {
         event.preventDefault();
         setMenuOpened(true);

@@ -105,11 +105,15 @@ th:hover > div > .reqman-col-menu-button,
   opacity: 1;
 }
 
-/* The drag handle on a header cell's right edge (straddling the column border). */
+/*
+ * The drag handle on a header cell's right edge, inside the cell: each sticky
+ * `th` is its own stacking context, so a handle reaching into the next cell
+ * would be covered by it (and the last column's would widen the table).
+ */
 .reqman-col-resize-handle {
   position: absolute;
   top: 0;
-  right: -4px;
+  right: 0;
   width: 8px;
   height: 100%;
   z-index: 1;
@@ -123,7 +127,7 @@ th:hover > div > .reqman-col-menu-button,
   position: absolute;
   top: 15%;
   bottom: 15%;
-  left: 3px;
+  right: 0;
   width: 2px;
   border-radius: 1px;
 }
@@ -136,4 +140,72 @@ th:hover > div > .reqman-col-menu-button,
 
 .reqman-col-resize-handle:focus-visible {
   outline: none;
+}
+
+/* A header without `stickyHeader`: its `th` anchors the resize handle (a sticky `th` already does). */
+.reqman-resizable-table thead:not([data-sticky]) th {
+  position: relative;
+}
+
+/*
+ * Resizable rows (hooks/columnLayout.ts `useResizableRows`). A row with a
+ * fixed height carries `data-row-height` and `--reqman-row-height`; each
+ * cell's content wrapper (.reqman-cell-clip) is clipped to the cell's inner
+ * height (at least one line, `--reqman-row-min-line`: the tallest first-line
+ * content, the 28px Actions icons; keep in sync with `ONE_LINE_HEIGHT`).
+ * Wrapping columns (`data-fade`) fade out the last line when at least one
+ * line of content is cut off (`data-overflowing`, set by the hook).
+ * An open inline editor lifts the clipping, so the row grows while editing.
+ */
+.reqman-resizable-table {
+  --reqman-row-min-line: 28px;
+}
+
+.reqman-resizable-table tbody td {
+  position: relative;
+}
+
+.reqman-resizable-table tbody tr[data-row-height] {
+  height: var(--reqman-row-height);
+}
+
+.reqman-resizable-table tbody tr[data-row-height] > td > .reqman-cell-clip {
+  max-height: max(var(--reqman-row-min-line), calc(var(--reqman-row-height) - 2 * var(--table-vertical-spacing, 0px) - 1px));
+  overflow: hidden;
+}
+
+.reqman-resizable-table tbody tr[data-row-height] > td > .reqman-cell-clip[data-fade][data-overflowing] {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 1.25em), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 1.25em), transparent);
+}
+
+.reqman-resizable-table tbody tr[data-row-height] > td > .reqman-cell-clip:has([data-inline-editor]) {
+  max-height: none;
+  overflow: visible;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+/* The drag handle on a body cell's bottom edge: every cell has one, so the row's whole bottom border resizes it. */
+.reqman-row-resize-handle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 6px;
+  z-index: 1;
+  cursor: row-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.reqman-row-resize-handle:focus-visible {
+  outline: none;
+}
+
+/* Hovering, dragging or focusing a row's handle marks the row's bottom border. */
+.reqman-resizable-table tbody tr:has(> td > .reqman-row-resize-handle:hover) > td,
+.reqman-resizable-table tbody tr:has(> td > .reqman-row-resize-handle:focus-visible) > td,
+.reqman-resizable-table tbody tr:has(> td > .reqman-row-resize-handle[data-resizing]) > td {
+  box-shadow: inset 0 -2px 0 var(--mantine-color-blue-filled);
 }

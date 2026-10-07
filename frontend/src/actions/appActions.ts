@@ -14,6 +14,7 @@ import {
   IconInfoCircle,
   IconKeyboard,
   IconLayoutSidebarRight,
+  IconLineHeight,
   IconMoon,
   IconTable,
   IconTemplate,
@@ -23,8 +24,10 @@ import { notifications } from '@mantine/notifications';
 import { API_BASE_URL, ApiError } from '../api/client';
 import {
   hasColumnWidthOverrides,
+  hasRowHeightOverrides,
   moduleTableKey,
   resetColumnWidths,
+  resetRowHeights,
   viewColumnWidths,
 } from '../hooks/columnLayout';
 import type { Action, ActionContext, DynamicMenuItem, ExportFormat } from './types';
@@ -311,6 +314,21 @@ export const appActions: Action<'app'>[] = [
     run: (ctx) => {
       const key = openTableKey(ctx);
       if (key) resetColumnWidths(key);
+    },
+  },
+  {
+    // This browser's fixed row heights of the open table (module + view): every row fits its content again.
+    id: 'view.resetRowHeights',
+    element: 'app',
+    label: 'Reset row heights',
+    icon: IconLineHeight,
+    isAvailable: (ctx) => {
+      const key = openTableKey(ctx);
+      return key !== null && hasRowHeightOverrides(key);
+    },
+    run: (ctx) => {
+      const key = openTableKey(ctx);
+      if (key) resetRowHeights(key);
     },
   },
   {

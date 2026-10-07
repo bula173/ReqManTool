@@ -1,10 +1,10 @@
-import { useCallback, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useLayoutEffect, useRef, useSyncExternalStore, type CSSProperties } from 'react';
 import type { AttributeDefinition, View } from '../api/types';
 
 /**
- * Resizable table columns: per-browser column widths and the per-column
- * wrap / single-line toggle, kept in localStorage (never in the git-tracked
- * project data). A named view may also carry shared widths in project.json
+ * Resizable table columns and rows: per-browser column widths, the
+ * per-column wrap / single-line toggle and per-requirement row heights, kept
+ * in localStorage (never in the git-tracked project data). A named view may also carry shared widths in project.json
  * (`View.column_widths`); those are the defaults and the browser's own
  * widths apply on top of them.
  *
@@ -20,19 +20,38 @@ export const MAX_COLUMN_WIDTH = 4000;
 /** Auto-fit never makes a column wider than this (long wrapping text would otherwise span the screen). */
 export const AUTO_FIT_MAX_WIDTH = 800;
 export const DEFAULT_ID_COLUMN_WIDTH = 120;
+/** Row height range in pixels. The drag also keeps at least one line of content (see `minRowHeight`). */
+export const MIN_ROW_HEIGHT = 24;
+export const MAX_ROW_HEIGHT = 2000;
+/**
+ * The height of the tallest first line of a row's cells (the 28px Actions
+ * icons; the Id's md text and the empty-value dash are ~25px), used for the
+ * minimum row height. The CSS variable `--reqman-row-min-line` on
+ * `.reqman-resizable-table` (index.css) carries the same value; this is the
+ * fallback when it is not set.
+ */
+const ONE_LINE_HEIGHT = 28;
+/** The CSS custom property with the height of one line of cell content (see `ONE_LINE_HEIGHT`). */
+const ONE_LINE_VAR = '--reqman-row-min-line';
 
 export interface ColumnLayout {
   /** Column key → width in pixels (only the columns this browser resized). */
   widths: Record<string, number>;
   /** Column keys shown on a single line (truncated); every other column wraps. */
   singleLine: string[];
+  /** Requirement id → fixed row height in pixels (only the rows this browser resized); other rows fit their content. */
+  rowHeights: Record<string, number>;
 }
 
 const STORAGE_PREFIX = 'reqman.columns:';
-const EMPTY_LAYOUT: ColumnLayout = { widths: {}, singleLine: [] };
+const EMPTY_LAYOUT: ColumnLayout = { widths: {}, singleLine: [], rowHeights: {} };
 
 export function clampColumnWidth(width: number): number {
   return Math.min(MAX_COLUMN_WIDTH, Math.max(MIN_COLUMN_WIDTH, Math.round(width)));
+}
+
+export function clampRowHeight(height: number): number {
+  return Math.min(MAX_ROW_HEIGHT, Math.max(MIN_ROW_HEIGHT, Math.round(height)));
 }
 
 /** The localStorage key of a module's requirements table (per view). */
@@ -61,7 +80,11 @@ function parseLayout(raw: string | null): ColumnLayout {
   try {
     const data: unknown = JSON.parse(raw);
     if (!data || typeof data !== 'object') return EMPTY_LAYOUT;
-    const { widths: rawWidths, singleLine: rawSingleLine } = data as Record<string, unknown>;
+    const {
+      widths: rawWidths,
+      singleLine: rawSingleLine,
+      rowHeights: rawRowHeights,
+    } = data as Record<string, unknown>;
     const widths: Record<string, number> = {};
     if (rawWidths && typeof rawWidths === 'object') {
       for (const [key, value] of Object.entries(rawWidths)) {
@@ -71,7 +94,14 @@ function parseLayout(raw: string | null): ColumnLayout {
     const singleLine = Array.isArray(rawSingleLine)
       ? rawSingleLine.filter((key): key is string => typeof key === 'string')
       : [];
-    return { widths, singleLine };
+    // Older entries have no `rowHeights`: every row fits its content.
+    const rowHeights: Record<string, number> = {};
+    if (rawRowHeights && typeof rawRowHeights === 'object') {
+      for (const [key, value] of Object.entries(rawRowHeights)) {
+        if (typeof value === 'number' && Number.isFinite(value)) rowHeights[key] = clampRowHeight(value);
+      }
+    }
+    return { widths, singleLine, rowHeights };
   } catch {
     return EMPTY_LAYOUT;
   }
@@ -99,7 +129,10 @@ export function readColumnLayout(key: string): ColumnLayout {
 }
 
 function writeColumnLayout(key: string, layout: ColumnLayout): void {
-  const empty = Object.keys(layout.widths).length === 0 && layout.singleLine.length === 0;
+  const empty =
+    Object.keys(layout.widths).length === 0 &&
+    layout.singleLine.length === 0 &&
+    Object.keys(layout.rowHeights).length === 0;
   cache.set(key, empty ? EMPTY_LAYOUT : layout);
   try {
     if (empty) browserStorage()?.removeItem(key);
@@ -121,6 +154,15 @@ export function resetColumnWidths(key: string): void {
 
 export function hasColumnWidthOverrides(key: string): boolean {
   return Object.keys(readColumnLayout(key).widths).length > 0;
+}
+
+/** Drops this browser's row heights for a table: every row fits its content again. */
+export function resetRowHeights(key: string): void {
+  updateColumnLayout(key, (layout) => ({ ...layout, rowHeights: {} }));
+}
+
+export function hasRowHeightOverrides(key: string): boolean {
+  return Object.keys(readColumnLayout(key).rowHeights).length > 0;
 }
 
 /**
@@ -287,3 +329,138 @@ export function useResizableColumns(storageKey: string, viewWidths?: Record<stri
 }
 
 export type ResizableColumns = ReturnType<typeof useResizableColumns>;
+
+/**
+ * While a resize handle is dragged, the body keeps the resize cursor and text
+ * selection is off (the pointer may leave the handle). Every drag must call
+ * `endBodyDrag` when it ends, including when its handle unmounts mid-drag.
+ */
+export function beginBodyDrag(cursor: 'col-resize' | 'row-resize'): void {
+  document.body.style.cursor = cursor;
+  document.body.style.userSelect = 'none';
+}
+
+export function endBodyDrag(): void {
+  document.body.style.removeProperty('cursor');
+  document.body.style.removeProperty('user-select');
+}
+
+/** The CSS custom property that carries a row's fixed height (see `.reqman-resizable-table` in index.css). */
+const ROW_HEIGHT_VAR = '--reqman-row-height';
+/** Marks the cell content wrapper whose content is clipped by a fixed row height. */
+const CELL_CLIP_SELECTOR = '.reqman-cell-clip';
+
+/** The smallest height of `row` that still shows one line of content: the cell padding plus one line. */
+export function minRowHeight(row: HTMLTableRowElement): number {
+  const cell = row.cells[0];
+  if (!cell) return MIN_ROW_HEIGHT;
+  const style = getComputedStyle(cell);
+  const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+  const line = parseFloat(style.getPropertyValue(ONE_LINE_VAR));
+  return clampRowHeight(
+    (Number.isFinite(padding) ? padding : 0) + (Number.isFinite(line) ? line : ONE_LINE_HEIGHT) + 1,
+  );
+}
+
+/**
+ * Flags the clipped cells of a fixed-height row (`data-overflowing`), so only
+ * those show the fade. A cell cut off by less than one line of its text (e.g.
+ * taller one-line content at the minimum height) is not faded.
+ */
+function markOverflow(row: HTMLTableRowElement): void {
+  for (const clip of Array.from(row.querySelectorAll<HTMLElement>(CELL_CLIP_SELECTOR))) {
+    const hidden = clip.scrollHeight - clip.clientHeight;
+    let overflowing = row.dataset.rowHeight !== undefined && hidden > 1;
+    if (overflowing) {
+      const lineHeight = parseFloat(getComputedStyle(clip).lineHeight);
+      overflowing = hidden >= (Number.isFinite(lineHeight) ? lineHeight : ONE_LINE_HEIGHT);
+    }
+    if (overflowing) clip.dataset.overflowing = '';
+    else delete clip.dataset.overflowing;
+  }
+}
+
+/**
+ * A resizable table's row heights (per requirement id, stored with the
+ * column layout): a fixed height, or none (the row fits its content).
+ *
+ * Give the `<tbody>` `tbodyRef`; give each resizable `<tr>`
+ * `data-row-height={heightOf(id)}` and `style={rowStyle(id)}`; wrap each
+ * cell's content in `<div className="reqman-cell-clip">` (with `data-fade`
+ * in wrapping columns), and put a `RowResizeHandle` in each cell.
+ */
+export function useResizableRows(storageKey: string) {
+  const layout = useColumnLayout(storageKey);
+  const tbodyElement = useRef<HTMLTableSectionElement | null>(null);
+  // The rendered height of the row a drag previews (null: the row fits its content).
+  const previewBase = useRef<{ id: string; height: string | null } | null>(null);
+
+  const tbodyRef = useCallback((el: HTMLTableSectionElement | null) => {
+    tbodyElement.current = el;
+  }, []);
+
+  // After every render (content, widths or heights may have changed): refresh the fade flags of the fixed rows.
+  useLayoutEffect(() => {
+    const tbody = tbodyElement.current;
+    if (!tbody) return;
+    for (const row of Array.from(tbody.querySelectorAll<HTMLTableRowElement>(':scope > tr[data-row-height]'))) {
+      markOverflow(row);
+    }
+  });
+
+  const heightOf = (id: string): number | undefined => layout.rowHeights[id];
+
+  const rowStyle = (id: string): CSSProperties => {
+    const height = layout.rowHeights[id];
+    return height === undefined ? {} : ({ [ROW_HEIGHT_VAR]: `${height}px` } as CSSProperties);
+  };
+
+  /** Shows `height` on `row` without re-rendering (during a drag); null restores the rendered height. */
+  const previewHeight = (row: HTMLTableRowElement, id: string, height: number | null) => {
+    if (!previewBase.current || previewBase.current.id !== id) {
+      previewBase.current = { id, height: row.dataset.rowHeight ?? null };
+    }
+    const next = height === null ? previewBase.current.height : String(clampRowHeight(height));
+    if (next === null) {
+      delete row.dataset.rowHeight;
+      row.style.removeProperty(ROW_HEIGHT_VAR);
+    } else {
+      row.dataset.rowHeight = next;
+      row.style.setProperty(ROW_HEIGHT_VAR, `${next}px`);
+    }
+    markOverflow(row);
+    if (height === null) previewBase.current = null;
+  };
+
+  const setHeight = (id: string, height: number) => {
+    previewBase.current = null;
+    updateColumnLayout(storageKey, (current) => ({
+      ...current,
+      rowHeights: { ...current.rowHeights, [id]: clampRowHeight(height) },
+    }));
+  };
+
+  /** Fits the row to its content again: drops its fixed height. */
+  const autoFit = (id: string) => {
+    previewBase.current = null;
+    if (readColumnLayout(storageKey).rowHeights[id] === undefined) return;
+    updateColumnLayout(storageKey, (current) => {
+      const rowHeights = { ...current.rowHeights };
+      delete rowHeights[id];
+      return { ...current, rowHeights };
+    });
+  };
+
+  return {
+    tbodyRef,
+    heightOf,
+    rowStyle,
+    previewHeight,
+    setHeight,
+    autoFit,
+    resetHeights: () => resetRowHeights(storageKey),
+    hasHeightOverrides: Object.keys(layout.rowHeights).length > 0,
+  };
+}
+
+export type ResizableRows = ReturnType<typeof useResizableRows>;

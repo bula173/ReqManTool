@@ -722,6 +722,36 @@
       `pages/{ProjectPage.tsx, ModulePage.tsx, BaselinePage.tsx}`.
       Backend tests 1096 → 1120. Not covered: no frontend tests (no test
       runner); not tried in a browser; review follow-ups (see backlog).
+- [x] **Row height resizing (Excel-like)** (2026-10-07 user addition to
+      "Resizable table columns"). Frontend only; row heights are kept per
+      browser only. In the requirements table and the baseline table, a
+      row's bottom border shows a `row-resize` cursor: dragging it resizes
+      the row live (pointer capture); double-clicking it auto-fits the
+      row to its content and clears the fixed height. The minimum height
+      is the cell padding plus 28px, set once in the
+      `--reqman-row-min-line` CSS variable. Content clipped by more than
+      one line gets a fade on wrap columns; single-line columns keep
+      their ellipsis; an open inline editor lifts the clipping. The Id
+      cell's handle is keyboard-accessible (ArrowUp/Down ±5px, Shift
+      ±25px, Enter fits; Alt, Ctrl and Meta are left for the shortcuts).
+      A plain click on the handle still selects the row, and a cell
+      double-click still opens the editor. Heights are stored with the
+      column widths in localStorage
+      `reqman.columns:module/<p>/<m>/<view>` as `rowHeights`; old entries
+      still parse. "Reset row heights" is in the View menu (registry
+      action `view.resetRowHeights`) and in the column header menu. Also
+      fixed follow-ups (1)–(3) of "Resizable columns: review follow-ups
+      (2026-10-07)": the sticky `th` override is removed; an unmount
+      mid-drag no longer leaves the body cursor and user-select stuck;
+      the column handle moved inside its cell (no more 4px overflow).
+      Files: `frontend/src/hooks/columnLayout.ts`,
+      `components/{RowResizeHandle.tsx (new),
+      ResizableHeaderCell.tsx}`, `index.css`,
+      `pages/{ModulePage.tsx, BaselinePage.tsx}`,
+      `actions/{appActions.ts, registry.ts}`. Backend unchanged at 1120.
+      Headless Chrome smoke test passed. Review: 1 fix round. Not
+      covered: no frontend tests; Safari/Firefox not tried; review
+      follow-ups (see backlog).
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -1083,20 +1113,33 @@ to the categories above.
       (4) `--mantine-color-body` is overridden on the whole baseline
       Card. Fix: scope it to the table scroll container. (5) Safari/
       Firefox nested flex/overflow behaviour is unverified.
-- [ ] Resizable columns: review follow-ups (2026-10-07). (1) The inline
-      `position: relative` in `ResizableHeaderCell.tsx` overrides
-      Mantine's per-`th` `position: sticky`, so the header relies on the
-      sticky `thead` only and may not stick in some browsers (Safari).
-      Fix: remove the override. (2) `document.body` cursor/user-select
-      are not reset if a header cell unmounts mid-drag, so text
-      selection stays disabled until reload. Fix: add an unmount
-      cleanup. (3) The last baseline column's resize handle
-      (`right: -4px`) causes a 4px horizontal scroll. (4) "Save column
+- [ ] Resizable columns: review follow-ups (2026-10-07). (1) Done
+      2026-10-07: the inline `position: relative` in
+      `ResizableHeaderCell.tsx` overrides Mantine's per-`th` `position:
+      sticky`, so the header relies on the sticky `thead` only and may
+      not stick in some browsers (Safari). Fix: remove the override.
+      (2) Done 2026-10-07: `document.body` cursor/user-select are not
+      reset if a header cell unmounts mid-drag, so text selection stays
+      disabled until reload. Fix: add an unmount cleanup. (3) Done
+      2026-10-07: the last baseline column's resize handle (`right:
+      -4px`) causes a 4px horizontal scroll. (4) "Save column
       widths to view" flickers to the defaults for one refetch. Fix:
       await the invalidation or use setQueryData. (5) "Save as template"
       drops view column widths (`TemplateView` has no field). (6) A
       "reset this column only" entry, and a "save widths" option in the
-      view dialog.
+      view dialog. Row height resizing (added 2026-10-07): (7) The
+      overflow-fade effect runs after every render and forces a layout;
+      it also misses layout changes without a render (window resize,
+      live column drag). Fix: ResizeObserver plus rAF, write only on
+      change. (8) Every cell has one stateful `RowResizeHandle`, costly
+      for big modules. Fix: stateless handles with events delegated on
+      the tbody. (9) `rowHeights` entries of deleted or moved
+      requirements are never pruned, and they keep "Reset row heights"
+      enabled. (10) The row separator's `aria-valuenow` is missing for
+      auto-height rows, and its `aria-valuemin` is wrong. (11) A
+      two-line wrap cell at the minimum height shows a sliver of its
+      second line without a fade. (12) Frontend unit tests for
+      `parseLayout` with old entries and the reset helpers.
 - [ ] Attribute applicability: follow-ups (2026-10-07). (1) Moving or
       copying a requirement to another module must drop its
       non-applicable values (via `_applicable_values`) and report them;

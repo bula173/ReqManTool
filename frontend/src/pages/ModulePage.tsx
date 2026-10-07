@@ -45,12 +45,14 @@ import { MoveRequirementModal } from '../components/MoveRequirementModal';
 import { RequirementDetailPanel } from '../components/RequirementDetailPanel';
 import { RequirementFormModal } from '../components/RequirementFormModal';
 import { ResizableHeaderCell } from '../components/ResizableHeaderCell';
+import { RowResizeHandle } from '../components/RowResizeHandle';
 import {
   DEFAULT_ID_COLUMN_WIDTH,
   ID_COLUMN,
   defaultColumnWidth,
   moduleTableKey,
   useResizableColumns,
+  useResizableRows,
 } from '../hooks/columnLayout';
 import type { Requirement } from '../api/types';
 
@@ -118,14 +120,14 @@ export function ModulePage() {
   // the menu bar and keyboard shortcuts through the action registry.
   const { state: appState, run, isAvailable } = useAppActions();
   const { commands } = appState;
-  // Column widths and wrap toggles: per browser, per project + module + view;
-  // a view's shared widths (project.json) are the defaults.
+  // Column widths, wrap toggles and row heights: per browser, per project +
+  // module + view; a view's shared widths (project.json) are the defaults.
   const viewForColumns = (viewsQuery.data ?? []).find((v) => v.id === appState.activeViewId) ?? null;
-  const columns = useResizableColumns(
-    moduleTableKey(projectId ?? '', moduleId ?? '', viewForColumns?.id ?? null),
-    viewForColumns?.column_widths,
-  );
+  const tableKey = moduleTableKey(projectId ?? '', moduleId ?? '', viewForColumns?.id ?? null);
+  const columns = useResizableColumns(tableKey, viewForColumns?.column_widths);
   const { tableRef, colRef } = columns;
+  const rowSizes = useResizableRows(tableKey);
+  const { tbodyRef } = rowSizes;
 
   const [addParentId, setAddParentId] = useState<string | null | undefined>(undefined);
   const [linkSource, setLinkSource] = useState<Requirement | null>(null);
@@ -340,7 +342,7 @@ export function ModulePage() {
               <Table.Th>Actions</Table.Th>
             </Table.Tr>
           </Table.Thead>
-          <Table.Tbody>
+          <Table.Tbody ref={tbodyRef}>
             {rows.length === 0 && (
               <Table.Tr>
                 <Table.Td colSpan={visibleAttributes.length + 2}>
@@ -359,7 +361,8 @@ export function ModulePage() {
                 }}
                 onClick={() => commands.selectRequirement(req.id)}
                 bg={selectedId === req.id ? 'var(--mantine-color-blue-light)' : undefined}
-                style={{ cursor: 'pointer' }}
+                data-row-height={rowSizes.heightOf(req.id)}
+                style={{ cursor: 'pointer', ...rowSizes.rowStyle(req.id) }}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   commands.selectRequirement(req.id);
@@ -367,63 +370,72 @@ export function ModulePage() {
                 }}
               >
                 <Table.Td data-column-key={ID_COLUMN}>
-                  <Text fw={600} truncate={columns.isSingleLine(ID_COLUMN) ? 'end' : undefined}>
-                    {req.id}
-                  </Text>
+                  <div className="reqman-cell-clip" data-fade={columns.isSingleLine(ID_COLUMN) ? undefined : ''}>
+                    <Text fw={600} truncate={columns.isSingleLine(ID_COLUMN) ? 'end' : undefined}>
+                      {req.id}
+                    </Text>
+                  </div>
+                  <RowResizeHandle rowId={req.id} rows={rowSizes} focusable />
                 </Table.Td>
                 {visibleAttributes.map((attr, attrIdx) => (
                   <Table.Td key={attr.id} data-column-key={attr.id}>
-                    <Group gap={4} wrap="nowrap" pl={attrIdx === 0 ? depth * 20 : 0}>
-                      {attrIdx === 0 && hasChildren && (
-                        <ActionIcon variant="subtle" size="sm" onClick={() => toggleExpanded(req.id)}>
-                          {collapsed.has(req.id) ? (
-                            <IconChevronRight size={14} />
-                          ) : (
-                            <IconChevronDown size={14} />
-                          )}
-                        </ActionIcon>
-                      )}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <EditableAttributeCell
-                          attr={attr}
-                          value={req.attributes[attr.id]}
-                          onSave={(value) => handleCellSave(req, attr.id, value)}
-                          disabled={updateRequirement.isPending}
-                          projectId={projectId}
-                          onNavigateToLinked={handleNavigateToLinked}
-                          wrap={!columns.isSingleLine(attr.id)}
-                        />
-                      </div>
-                    </Group>
+                    <div className="reqman-cell-clip" data-fade={columns.isSingleLine(attr.id) ? undefined : ''}>
+                      <Group gap={4} wrap="nowrap" pl={attrIdx === 0 ? depth * 20 : 0}>
+                        {attrIdx === 0 && hasChildren && (
+                          <ActionIcon variant="subtle" size="sm" onClick={() => toggleExpanded(req.id)}>
+                            {collapsed.has(req.id) ? (
+                              <IconChevronRight size={14} />
+                            ) : (
+                              <IconChevronDown size={14} />
+                            )}
+                          </ActionIcon>
+                        )}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <EditableAttributeCell
+                            attr={attr}
+                            value={req.attributes[attr.id]}
+                            onSave={(value) => handleCellSave(req, attr.id, value)}
+                            disabled={updateRequirement.isPending}
+                            projectId={projectId}
+                            onNavigateToLinked={handleNavigateToLinked}
+                            wrap={!columns.isSingleLine(attr.id)}
+                          />
+                        </div>
+                      </Group>
+                    </div>
+                    <RowResizeHandle rowId={req.id} rows={rowSizes} />
                   </Table.Td>
                 ))}
                 <Table.Td>
-                  <Group gap={4} wrap="nowrap">
-                    <Tooltip label="Add child">
-                      <ActionIcon variant="subtle" onClick={() => setAddParentId(req.id)}>
-                        <IconPlus size={16} />
-                      </ActionIcon>
-                    </Tooltip>
-                    <Tooltip label="Move">
-                      <ActionIcon variant="subtle" onClick={() => setMoveSource(req)}>
-                        <IconArrowsMove size={16} />
-                      </ActionIcon>
-                    </Tooltip>
-                    <Tooltip label="Link">
-                      <ActionIcon variant="subtle" onClick={() => setLinkSource(req)}>
-                        <IconLink size={16} />
-                      </ActionIcon>
-                    </Tooltip>
-                    <Tooltip label="Remove">
-                      <ActionIcon
-                        variant="subtle"
-                        color="red"
-                        onClick={() => run('requirement.delete', { requirement: req })}
-                      >
-                        <IconTrash size={16} />
-                      </ActionIcon>
-                    </Tooltip>
-                  </Group>
+                  <div className="reqman-cell-clip">
+                    <Group gap={4} wrap="nowrap">
+                      <Tooltip label="Add child">
+                        <ActionIcon variant="subtle" onClick={() => setAddParentId(req.id)}>
+                          <IconPlus size={16} />
+                        </ActionIcon>
+                      </Tooltip>
+                      <Tooltip label="Move">
+                        <ActionIcon variant="subtle" onClick={() => setMoveSource(req)}>
+                          <IconArrowsMove size={16} />
+                        </ActionIcon>
+                      </Tooltip>
+                      <Tooltip label="Link">
+                        <ActionIcon variant="subtle" onClick={() => setLinkSource(req)}>
+                          <IconLink size={16} />
+                        </ActionIcon>
+                      </Tooltip>
+                      <Tooltip label="Remove">
+                        <ActionIcon
+                          variant="subtle"
+                          color="red"
+                          onClick={() => run('requirement.delete', { requirement: req })}
+                        >
+                          <IconTrash size={16} />
+                        </ActionIcon>
+                      </Tooltip>
+                    </Group>
+                  </div>
+                  <RowResizeHandle rowId={req.id} rows={rowSizes} />
                 </Table.Td>
               </Table.Tr>
             ))}

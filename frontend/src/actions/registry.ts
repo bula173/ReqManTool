@@ -160,6 +160,7 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
       action('view.resetColumnWidths'),
       action('view.saveColumnWidths'),
       action('view.removeViewColumnWidths'),
+      action('view.resetRowHeights'),
       divider,
       action('view.toggleDarkMode'),
     ],
@@ -178,6 +179,7 @@ export const COLUMN_HEADER_MENU: MenuEntry[] = [
   action('view.resetColumnWidths'),
   action('view.saveColumnWidths'),
   action('view.removeViewColumnWidths'),
+  action('view.resetRowHeights'),
 ];
 
 /** Right-click menu of a requirement row. */
