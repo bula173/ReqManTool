@@ -772,6 +772,22 @@ to the categories above.
       decisions to confirm: local paths / shared-filesystem remotes are
       rejected in production (only allowed via the test opt-in), and
       auto-push disables session squashing.
+- [ ] Commit browser for project, module and requirement. Requested
+      2026-10-07. Builds on git history (done: requirement History tab,
+      `GET /projects/{id}/git/log`, recent commits in the Git panel).
+      One commit list component at three scopes: project (all commits),
+      module (`git log` limited to the module folder), requirement (the
+      existing history, same component). Each row: short hash, date,
+      author, message, baseline tags on it, changed-requirement count;
+      paging / "load more", filters by author, date range and text.
+      Opening a commit shows its details: full message, parent, and the
+      changes as requirement-level semantics (added / removed / modified
+      requirements with per-attribute and link diffs, module renames/
+      reorders) — reusing the baseline compare engine between the commit
+      and its first parent; "browse project at this commit" read-only
+      (same mechanism as browsing a baseline). Reachable from the Git
+      panel, the left/right-click menus of project/module/requirement and
+      View menu. Read-only; REST + WebSocket parity.
 - [ ] GitLab and GitHub API integration. Requested 2026-10-07. Builds on
       git remotes (done). Provider connections (GitLab.com / self-hosted
       GitLab URL, GitHub.com / GitHub Enterprise URL) authenticated with a
