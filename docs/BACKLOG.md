@@ -727,6 +727,24 @@ to the categories above.
       decisions to confirm: local paths / shared-filesystem remotes are
       rejected in production (only allowed via the test opt-in), and
       auto-push disables session squashing.
+- [ ] GitLab and GitHub API integration. Requested 2026-10-07. Builds on
+      git remotes (done). Provider connections (GitLab.com / self-hosted
+      GitLab URL, GitHub.com / GitHub Enterprise URL) authenticated with a
+      personal access token in the local edition (stored in the OS
+      keychain, never in project data or git) and with the user's OAuth
+      login in the server edition. Features: (1) "Publish project" — create
+      the remote repository (choose group/organisation, name, private by
+      default) and set it as the project's remote, then push; (2) "Add
+      project from GitLab/GitHub" — browse/search the user's repositories
+      and clone one (instead of pasting a URL); (3) review workflow —
+      push the current work to a review branch and open a merge request /
+      pull request with a generated description (changed requirements,
+      baseline reference), show its status and approvals in the Git panel;
+      (4) optional: link requirements to issues (issue URL attribute,
+      create issue from a requirement). All API calls server-side through
+      one provider abstraction (GitLab REST v4, GitHub REST), REST +
+      WebSocket parity, provider errors shown verbatim, no token ever sent
+      to the browser.
 - [ ] Server edition: login (GitLab / OIDC / LDAP), users, project
       membership, module edit locks. Requested 2026-10-06 (replaces the
       2026-10-04 "User handling" item; scope change confirmed by the user).
