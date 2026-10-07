@@ -7,3 +7,65 @@ body,
 body {
   margin: 0;
 }
+
+/*
+ * Fixed app shell. The header (with the menu bar), the left panel and the
+ * footer are fixed by AppShell. The main area is exactly one viewport high,
+ * so the document never scrolls. The page area inside it scrolls on its own.
+ * Pages with their own panels (module, baseline) fill the page area and
+ * scroll each panel separately.
+ */
+.reqman-main {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+.reqman-page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  padding: var(--mantine-spacing-md);
+}
+
+/*
+ * A page that fills the page area: its panels scroll, the page does not.
+ * Below the minimum height (small windows) the page area scrolls instead,
+ * so the table never shrinks to nothing.
+ */
+.reqman-fill-page {
+  flex: 1 1 0;
+  min-height: 26rem;
+}
+
+/*
+ * The scroll container of a requirements table. It scrolls both ways, so the
+ * sticky header row (Table stickyHeader) stays on top. A row scrolled into
+ * view keeps clear of the sticky header.
+ */
+.reqman-table-scroll {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  scroll-padding-top: 3rem;
+}
+
+/* A panel's own scroll area, with its scrollbar on the edge of the enclosing Card. */
+.reqman-card-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin-inline-end: calc(var(--card-padding) * -1);
+  padding-inline-end: var(--card-padding);
+}
+
+/* The sticky header row of a table inside a Card takes the Card's background. */
+:where([data-mantine-color-scheme='light']) .reqman-card-table {
+  --mantine-color-body: var(--mantine-color-white);
+}
+
+:where([data-mantine-color-scheme='dark']) .reqman-card-table {
+  --mantine-color-body: var(--mantine-color-dark-6);
+}

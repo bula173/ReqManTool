@@ -30,7 +30,8 @@ export function AppLayout() {
         header={{ height: 56 }}
         navbar={{ width: 280, breakpoint: 'sm' }}
         footer={{ height: 28 }}
-        padding="md"
+        // The page area (.reqman-page) carries the padding, so its scrollbar sits on the edge.
+        padding={0}
       >
         <AppShell.Header>
           <Group h="100%" px="md" justify="space-between" wrap="nowrap">
@@ -47,8 +48,11 @@ export function AppLayout() {
         <AppShell.Navbar>
           <Sidebar />
         </AppShell.Navbar>
-        <AppShell.Main>
-          <Outlet />
+        {/* Fixed shell: only the page area (and the panels inside it) scrolls, never the document. */}
+        <AppShell.Main className="reqman-main">
+          <div className="reqman-page">
+            <Outlet />
+          </div>
         </AppShell.Main>
         <AppShell.Footer>
           <VersionFooter />

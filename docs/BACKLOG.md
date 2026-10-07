@@ -575,6 +575,32 @@
       1025. Not covered: no frontend tests (no test runner); not tried in
       a browser; the later left/right-click menus do not use these
       actions yet; review follow-ups (see backlog).
+- [x] Fixed layout: sticky table header, independently scrolling panels
+      (2026-10-05 item). Frontend only, no backend change. The app shell
+      stays fixed: in `layout/AppLayout.tsx` the AppShell padding is 0,
+      the main area is exactly one viewport high (`.reqman-main`), and
+      the page content scrolls in `.reqman-page`, which now carries the
+      padding. Module page: the requirements table sits in its own scroll
+      container (`.reqman-table-scroll`, one native `overflow: auto` for
+      both axes) with Mantine `stickyHeader`; the header stays visible
+      and opaque in light and dark mode; rows revealed by `?highlight=`
+      or by the outline clear the header via `scroll-padding-top: 3rem`.
+      The table/detail row fills the page (`.reqman-fill-page`,
+      min-height 26rem; below that the page area scrolls).
+      `RequirementDetailPanel.tsx` keeps its title and tab list fixed
+      while the Details and History panels scroll on their own. Baseline
+      page: the same sticky-table pattern; the card fits the viewport
+      (`.reqman-card-table` matches the header background to the card).
+      The left panel already scrolled independently (unchanged); compare,
+      home and project pages scroll inside the page area. Files:
+      `frontend/src/index.css`, `layout/AppLayout.tsx`,
+      `pages/ModulePage.tsx`, `pages/BaselinePage.tsx`,
+      `components/RequirementDetailPanel.tsx`. Backend tests unchanged at
+      1025. Browser smoke test (Chromium) against a scratch backend with
+      75 requirements passed in light and dark mode, at a small window
+      and on the baseline page. Not covered: no frontend tests (no test
+      runner); Safari and Firefox not tried; review follow-ups (see
+      backlog).
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -838,14 +864,6 @@ to the categories above.
       tags); this item adds the UI glue — "lock after baseline", and
       baseline references from sign-off records, verification and test
       execution reports, and impact analysis.
-- [ ] Fixed layout: sticky table header, independently scrolling panels.
-      Requested 2026-10-05. The requirements table's header row stays
-      visible while the rows scroll (sticky header inside the table's own
-      scroll container, correct with the detail panel open and in
-      baseline/compare views); the left panel (tree) and right panel
-      (requirement detail) each have their own scroll area and never
-      scroll with the requirements table — the app shell (header, menu
-      bar, footer) stays fixed, only each panel's content scrolls.
 - [ ] Resizable table columns. Requested 2026-10-04. Drag a column header's
       right edge to resize (requirements table, detail-panel label column,
       report grids); double-click the edge to auto-fit to content; minimum
@@ -897,6 +915,19 @@ to the categories above.
       differ. (6) The `ExpandToggle` span nests interactive content inside
       the NavLink. (7) `planDrop` needs frontend unit tests once a runner
       exists (see the frontend test runner item).
+- [ ] Fixed layout: review follow-ups (2026-10-07). (1) The 26rem floor
+      is on the page, not on the table row: a long module or baseline
+      description at small window heights can squeeze the table/detail
+      row to almost 0. Fix: set min-height ~14rem on the ModulePage panel
+      row and the baseline card, or line-clamp the description.
+      (2) Printing (Ctrl/Cmd+P) the module page now prints only the
+      visible part of the table. Fix: add an `@media print` block that
+      resets the heights and overflow. (3) `scroll-padding-top: 3rem` is
+      hardcoded, but header cells can wrap to 2–3 lines. Fix: nowrap the
+      header cells, or derive the padding from the thead height.
+      (4) `--mantine-color-body` is overridden on the whole baseline
+      Card. Fix: scope it to the table scroll container. (5) Safari/
+      Firefox nested flex/overflow behaviour is unverified.
 - [ ] Module templates + heading skeletons in project and module templates.
       Requested 2026-10-04 (extends the delivered project templates).
       (1) Module templates: JSON files (built-in + user, like project

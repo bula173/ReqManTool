@@ -62,6 +62,9 @@ function DiffLine({ diff, attributeName }: { diff: HistoryDiff; attributeName: (
  * from the attribute blame) and a History tab (the requirement's commits with
  * per-attribute diffs). Both read GET .../requirements/{id}/history, which is
  * refetched after every requirement change (and by live sync).
+ *
+ * The panel is as high as the module page's table area: the title and the
+ * tab list stay put, and the tab content scrolls on its own.
  */
 export function RequirementDetailPanel({
   projectId,
@@ -80,7 +83,7 @@ export function RequirementDetailPanel({
   const attributeName = (id: string) => attributes.find((a) => a.id === id)?.name ?? id;
 
   return (
-    <Card withBorder w={320} style={{ flexShrink: 0 }}>
+    <Card withBorder w={320} style={{ flexShrink: 0, minHeight: 0 }}>
       <Group justify="space-between" mb="sm" wrap="nowrap">
         <Title order={5}>Requirement details</Title>
         <Tooltip label="Hide the detail panel (View › Requirement detail panel)">
@@ -95,7 +98,12 @@ export function RequirementDetailPanel({
         </Text>
       )}
       {requirement && (
-        <Tabs value={tab} onChange={setTab} keepMounted={false}>
+        <Tabs
+          value={tab}
+          onChange={setTab}
+          keepMounted={false}
+          style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
+        >
           <Tabs.List mb="sm">
             <Tabs.Tab value="details">Details</Tabs.Tab>
             <Tabs.Tab value="history" leftSection={<IconHistory size={14} />}>
@@ -103,7 +111,7 @@ export function RequirementDetailPanel({
             </Tabs.Tab>
           </Tabs.List>
 
-          <Tabs.Panel value="details">
+          <Tabs.Panel value="details" className="reqman-card-scroll">
             <Stack gap="sm">
               <div>
                 <Text size="xs" c="dimmed">
@@ -140,7 +148,7 @@ export function RequirementDetailPanel({
             </Stack>
           </Tabs.Panel>
 
-          <Tabs.Panel value="history">
+          <Tabs.Panel value="history" className="reqman-card-scroll">
             {historyQuery.isLoading && (
               <Center py="md">
                 <Loader size="sm" />

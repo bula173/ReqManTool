@@ -72,8 +72,9 @@ export function BaselinePage() {
   const attributes = snapshot.project.attributes;
   const rows = treeOrder(requirementsQuery.data ?? []);
 
+  // Fills the page area: the card shrinks to fit it and the table scrolls inside, under a sticky header row.
   return (
-    <Stack gap="md">
+    <Stack gap="md" className="reqman-fill-page">
       <div>
         <Group gap="xs">
           <Title order={2}>
@@ -98,7 +99,7 @@ export function BaselinePage() {
         </Text>
       </div>
 
-      <Card withBorder>
+      <Card withBorder className="reqman-card-table" style={{ flex: '0 1 auto', minHeight: 0 }}>
         <Group justify="space-between" mb="sm">
           <Title order={4}>{module ? `${module.name} (${module.prefix})` : 'Requirements'}</Title>
           {snapshot.modules.length > 0 && (
@@ -134,8 +135,8 @@ export function BaselinePage() {
           </Text>
         )}
         {rows.length > 0 && (
-          <Table.ScrollContainer minWidth={600}>
-            <Table striped highlightOnHover>
+          <div className="reqman-table-scroll" style={{ flex: '0 1 auto' }}>
+            <Table striped highlightOnHover stickyHeader miw={600}>
               <Table.Thead>
                 <Table.Tr>
                   <Table.Th>Id</Table.Th>
@@ -161,7 +162,7 @@ export function BaselinePage() {
                 ))}
               </Table.Tbody>
             </Table>
-          </Table.ScrollContainer>
+          </div>
         )}
       </Card>
     </Stack>

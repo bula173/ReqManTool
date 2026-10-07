@@ -232,8 +232,10 @@ export function ModulePage() {
     );
   };
 
+  // Fills the page area: the title and toolbar stay put, the table and the
+  // detail panel each scroll on their own.
   return (
-    <Stack gap="md">
+    <Stack gap="md" className="reqman-fill-page">
       <div>
         <Group gap="xs">
           <Title order={2}>{module.name}</Title>
@@ -265,9 +267,10 @@ export function ModulePage() {
         />
       </Group>
 
-      <Group align="flex-start" wrap="nowrap" gap="md">
-      <Table.ScrollContainer minWidth={700} style={{ flex: 1 }}>
-        <Table striped highlightOnHover withTableBorder>
+      <Group align="stretch" wrap="nowrap" gap="md" style={{ flex: 1, minHeight: 0 }}>
+      {/* The table's own scroll container (both axes), so the sticky header row stays visible. */}
+      <div className="reqman-table-scroll" style={{ flex: 1 }}>
+        <Table striped highlightOnHover withTableBorder stickyHeader miw={700}>
           <Table.Thead>
             <Table.Tr>
               <Table.Th>Id</Table.Th>
@@ -363,7 +366,7 @@ export function ModulePage() {
             ))}
           </Table.Tbody>
         </Table>
-      </Table.ScrollContainer>
+      </div>
 
       {appState.detailPanelOpen && (
         <RequirementDetailPanel
