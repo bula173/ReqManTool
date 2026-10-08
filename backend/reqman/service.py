@@ -5655,7 +5655,7 @@ class ProjectService:
         exec_modules_seen: dict[str, dict[str, Any]] = {}
         for module_position, test_module in enumerate(test_modules):
             links = self._report_links(project, module.id, test_module.id)
-            exec_modules =self._report_linked_modules(project, test_module, "test_execution")
+            exec_modules = self._report_linked_modules(project, test_module, "test_execution")
             records, readers = self._test_case_results(project, test_module, exec_modules)
             for reader in readers:
                 exec_modules_seen.setdefault(reader["module"].id, {
@@ -6016,6 +6016,13 @@ class ProjectService:
             if key:
                 by_key.setdefault(key, []).append(test)
 
+        # Word counts of the keys by their first word: a partial match only tries the runs
+        # of words that can equal a key (linear in the result's name, not cubic).
+        key_lengths: dict[str, set[int]] = {}
+        for key in by_key:
+            words = key.split()
+            key_lengths.setdefault(words[0], set()).add(len(words))
+
         def lookup(keys: list[str], partial: bool) -> dict[str, dict[str, Any]]:
             found: dict[str, dict[str, Any]] = {}
             for text in keys:
@@ -6025,7 +6032,10 @@ class ProjectService:
                 else:
                     # every run of whole words: "SWT-0001 Login" contains "swt 0001"
                     spans = [
-                        " ".join(tokens[i:j]) for i in range(len(tokens)) for j in range(i + 1, len(tokens) + 1)
+                        " ".join(tokens[i:i + length])
+                        for i in range(len(tokens))
+                        for length in sorted(key_lengths.get(tokens[i], ()))
+                        if i + length <= len(tokens)
                     ]
                 for span in spans:
                     for test in by_key.get(span, ()):
@@ -6218,9 +6228,21 @@ class ProjectService:
         order = self._next_sibling_order(existing, None)
         created: list[Requirement] = []
         new_pairs: list[LinkPair] = []
-        for record in plan["records"]:
+        merged = [
+            self._merged_attributes(project, record["values"], module.id, module.type) for record in plan["records"]
+        ]
+        if guard_active():
+            # Server edition: the status guards apply to the new records' (defaulted) status
+            # too, like ``add_requirement`` and ``import_csv`` (before anything is written).
+            status = self._status_attribute(project, module)
+            if status is not None:
+                self._check_status_changes(
+                    project_id,
+                    module.id,
+                    [(None, None, a[status.id]) for a in merged if a.get(status.id) not in (None, "")],
+                )
+        for record, attributes in zip(plan["records"], merged):
             requirement_id = self._allocate_requirement_id(project, module)
-            attributes = self._merged_attributes(project, record["values"], module.id, module.type)
             test_id = record["test_id"]
             attributes[config.id] = f"> {test_id}" if record_is_source else f"< {test_id}"
             created.append(Requirement(id=requirement_id, attributes=attributes, parent_id=None, order=order))

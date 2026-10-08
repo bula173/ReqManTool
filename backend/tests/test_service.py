@@ -2154,13 +2154,13 @@ def test_add_attribute_accepts_blank_default_of_optional_and_no_default_of_requi
     assert [a.id for a in service.get_project(project.id).attributes] == ["object_text", "notes", "owner"]
 
 
-@pytest.mark.parametrize("type_", ["Integer", "Enum", "str", "", "date"])
+@pytest.mark.parametrize("type_", ["Integer", "Enum", "str", "", "datetime", "Date"])
 def test_add_attribute_rejects_unknown_type(service, type_):
     project = create_project(service)
     with pytest.raises(ValueError) as excinfo:
         service.add_attribute_definition(project.id, "priority", "Priority", type=type_, default="x")
     assert str(excinfo.value) == (
-        f"Unknown attribute type '{type_}'; expected one of string, text, integer, boolean, enum"
+        f"Unknown attribute type '{type_}'; expected one of string, text, integer, boolean, enum, date"
     )
     assert [a.id for a in service.get_project(project.id).attributes] == ["object_text"]
 

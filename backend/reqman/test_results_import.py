@@ -163,11 +163,18 @@ def _junit_results(root: ET.Element) -> list[TestResult]:
     results: list[TestResult] = []
 
     def walk(element: ET.Element, timestamp: str | None) -> None:
-        for child in element:
-            if child.tag == "testsuite":
-                walk(child, child.get("timestamp") or timestamp)
+        # Depth-first in document order with an explicit stack: deeply nested suites
+        # must not hit the interpreter's recursion limit.
+        stack = [(iter(element), timestamp)]
+        while stack:
+            children, inherited = stack[-1]
+            child = next(children, None)
+            if child is None:
+                stack.pop()
+            elif child.tag == "testsuite":
+                stack.append((iter(child), child.get("timestamp") or inherited))
             elif child.tag == "testcase":
-                results.append(_junit_case(child, len(results), child.get("timestamp") or timestamp))
+                results.append(_junit_case(child, len(results), child.get("timestamp") or inherited))
                 _check_count(results)
 
     if root.tag == "testsuite":
@@ -218,17 +225,25 @@ def _robot_results(root: ET.Element) -> list[TestResult]:
     results: list[TestResult] = []
     generated = root.get("generated")
 
-    def walk(suite: ET.Element, names: list[str]) -> None:
-        own = names + [suite.get("name") or ""]
-        for child in suite:
-            if child.tag == "suite":
-                walk(child, own)
+    def walk(top: ET.Element) -> None:
+        # Depth-first in document order with an explicit stack (no recursion limit);
+        # ``names`` holds the suite names of the open suites.
+        names = [top.get("name") or ""]
+        stack = [iter(top)]
+        while stack:
+            child = next(stack[-1], None)
+            if child is None:
+                stack.pop()
+                names.pop()
+            elif child.tag == "suite":
+                stack.append(iter(child))
+                names.append(child.get("name") or "")
             elif child.tag == "test":
-                results.append(_robot_test(child, own, len(results), generated))
+                results.append(_robot_test(child, names, len(results), generated))
                 _check_count(results)
 
     for suite in root.findall("suite"):
-        walk(suite, [])
+        walk(suite)
     return results
 
 

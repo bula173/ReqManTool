@@ -917,11 +917,11 @@ def test_required_attribute_rejects_blank_value_on_rest_and_ws_create_and_update
     [
         (
             {"type": "Integer", "default": "5"},
-            "Unknown attribute type 'Integer'; expected one of string, text, integer, boolean, enum",
+            "Unknown attribute type 'Integer'; expected one of string, text, integer, boolean, enum, date",
         ),
         (
             {"type": "Enum", "choices": ["Low"]},
-            "Unknown attribute type 'Enum'; expected one of string, text, integer, boolean, enum",
+            "Unknown attribute type 'Enum'; expected one of string, text, integer, boolean, enum, date",
         ),
         (
             {"type": "string", "required": True, "default": "  "},

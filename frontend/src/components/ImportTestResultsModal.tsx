@@ -17,7 +17,7 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { IconAlertCircle, IconAlertTriangle, IconFileImport } from '@tabler/icons-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ApiError } from '../api/client';
 import { useImportTestResults, usePreviewTestResults } from '../api/queries';
 import type { TestResultRow, TestResultsImportOptions, TestResultsPreview } from '../api/types';
@@ -30,12 +30,17 @@ interface ImportTestResultsModalProps {
   moduleName: string;
 }
 
-/** The options that change how results match (they re-run the preview); the others only fill attributes. */
+/** The options sent with the preview and the import (each change re-runs the preview). */
 interface MatchOptions {
   configId: string | null;
   matchAttribute: string | null;
   executionDate: string;
+  executedBy: string;
+  version: string;
 }
+
+/** Delay before typed values (executed by, version) re-run the preview. */
+const TEXT_PREVIEW_DELAY_MS = 400;
 
 /** Most result rows / uncovered test cases listed in the preview (the summary counts them all). */
 const MAX_PREVIEW_ROWS = 300;
@@ -102,8 +107,8 @@ function PreviewSummary({ preview }: { preview: TestResultsPreview }) {
  * File ▸ Import ▸ Test results / module menu "Import test results": JUnit XML
  * or Robot Framework output.xml results become execution records of a
  * test_execution module, linked to the matched test cases. The server
- * previews the match (read-only) whenever the file or a matching option
- * changes; Import writes exactly that, or nothing when there are errors.
+ * previews the match (read-only) whenever the file or an option changes
+ * (typed values after a pause); Import writes exactly that, or nothing when there are errors.
  */
 export function ImportTestResultsModal({ onClose, projectId, moduleId, moduleName }: ImportTestResultsModalProps) {
   const previewMutation = usePreviewTestResults(projectId, moduleId);
@@ -113,14 +118,24 @@ export function ImportTestResultsModal({ onClose, projectId, moduleId, moduleNam
     configId: null,
     matchAttribute: null,
     executionDate: '',
+    executedBy: '',
+    version: '',
   });
-  const [executedBy, setExecutedBy] = useState('');
-  const [version, setVersion] = useState('');
   const [preview, setPreview] = useState<TestResultsPreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   // Only the latest preview request may set the preview (options can change while one runs).
   const previewToken = useRef(0);
+  // Typed values re-run the preview after a pause; until then the shown preview is stale (no Import).
+  const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [previewStale, setPreviewStale] = useState(false);
+
+  useEffect(
+    () => () => {
+      if (previewTimer.current) clearTimeout(previewTimer.current);
+    },
+    [],
+  );
 
   const pending = importMutation.isPending;
   const previewing = previewMutation.isPending;
@@ -129,10 +144,15 @@ export function ImportTestResultsModal({ onClose, projectId, moduleId, moduleNam
     config_id: match.configId ?? undefined,
     match_attribute: match.matchAttribute ?? undefined,
     execution_date: match.executionDate || undefined,
+    executed_by: match.executedBy.trim() || undefined,
+    version: match.version.trim() || undefined,
     file_name: chosenFile.name,
   });
 
   const runPreview = (chosenFile: File | null, match: MatchOptions) => {
+    if (previewTimer.current) clearTimeout(previewTimer.current);
+    previewTimer.current = null;
+    setPreviewStale(false);
     const token = ++previewToken.current;
     setPreview(null);
     setPreviewError(null);
@@ -156,9 +176,20 @@ export function ImportTestResultsModal({ onClose, projectId, moduleId, moduleNam
     runPreview(file, next);
   };
 
+  const changeText = (update: Partial<MatchOptions>) => {
+    const next = { ...matchOptions, ...update };
+    setMatchOptions(next);
+    if (!file) return;
+    previewToken.current++; // a running preview is for the old values
+    setPreviewStale(true);
+    if (previewTimer.current) clearTimeout(previewTimer.current);
+    previewTimer.current = setTimeout(() => runPreview(file, next), TEXT_PREVIEW_DELAY_MS);
+  };
+
   const handleClose = () => {
     if (pending) return;
     previewToken.current++;
+    if (previewTimer.current) clearTimeout(previewTimer.current);
     onClose();
   };
 
@@ -173,8 +204,6 @@ export function ImportTestResultsModal({ onClose, projectId, moduleId, moduleNam
           // The preview's choices, so the import writes what was shown.
           config_id: preview.config.id,
           match_attribute: preview.match_attribute,
-          executed_by: executedBy.trim() || undefined,
-          version: version.trim() || undefined,
         },
       },
       {
@@ -192,7 +221,12 @@ export function ImportTestResultsModal({ onClose, projectId, moduleId, moduleNam
   };
 
   const canImport =
-    !!file && !!preview && !previewing && !pending && preview.errors.length === 0 && preview.summary.matched > 0;
+    !!file &&
+    !!preview &&
+    !previewStale &&
+    !previewing &&
+    !pending &&
+    preview.errors.length === 0 && preview.summary.matched > 0;
   const roleName = (role: keyof TestResultsPreview['attributes']) => preview?.attributes[role]?.name ?? null;
 
   return (
@@ -257,8 +291,8 @@ export function ImportTestResultsModal({ onClose, projectId, moduleId, moduleNam
           <TextInput
             label="Build / version under test"
             description={preview && !roleName('version') ? 'Not stored: this module has no such attribute' : undefined}
-            value={version}
-            onChange={(e) => setVersion(e.currentTarget.value)}
+            value={matchOptions.version}
+            onChange={(e) => changeText({ version: e.currentTarget.value })}
             disabled={pending}
           />
           <TextInput
@@ -266,8 +300,8 @@ export function ImportTestResultsModal({ onClose, projectId, moduleId, moduleNam
             description={
               preview && !roleName('executed_by') ? 'Not stored: this module has no such attribute' : 'Optional'
             }
-            value={executedBy}
-            onChange={(e) => setExecutedBy(e.currentTarget.value)}
+            value={matchOptions.executedBy}
+            onChange={(e) => changeText({ executedBy: e.currentTarget.value })}
             disabled={pending}
           />
         </SimpleGrid>
