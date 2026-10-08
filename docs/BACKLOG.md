@@ -1475,8 +1475,109 @@ custom report templates ❌.
 
 ## Backlog (not started)
 
-Ordered roughly by how directly each was requested / how foundational it is
-to the categories above.
+Updated 2026-10-08. Mode chosen by the user: implement every requested
+item first (phase A), then test, review and fix by area (phase B).
+
+### Next — requested, in delivery order
+
+- [ ] Two-step linking from the requirement menu: "Start link" → "Make
+      link". Requested 2026-10-08. Right-click (editing menu) a requirement
+      → "Start link" remembers it as the pending link source and shows a
+      bar "Linking from SYRS-0012 — pick a target requirement (Esc to
+      cancel)"; the user navigates to any module (other tab, detached
+      window, referenced project) and right-clicks the target requirement
+      → "Make link". The link set is resolved exactly like drag-and-drop
+      linking (link configurations between the two modules, either
+      direction, created in the configured direction; several → user
+      picks; none → warning, no link; duplicates reported). "Make link" is
+      hidden while nothing is pending and disabled on the source itself;
+      pending state is shared across tabs/windows of the same browser
+      (BroadcastChannel/localStorage) and cleared after success, Esc or
+      "Cancel link". Shared action-registry actions (right-click menu and
+      Edit menu). Frontend only (uses the existing link API).
+- [ ] Distribution package + user-space install. Requested 2026-10-04.
+      (1) Packaging: a `pyproject.toml` for the backend with a `reqman`
+      console script; the built frontend (`npm run build` → `dist/`) is
+      bundled inside the Python package and served by FastAPI from the
+      same origin (API under its current paths, SPA fallback to
+      `index.html`), so the frontend's API/WS base URL defaults to the page
+      origin instead of `localhost:8899` (`VITE_*` overrides kept for dev).
+      Test-only deps (`pytest`, `httpx`) move out of runtime requirements.
+      (2) GitHub Actions: CI on push/PR (backend `pytest`, frontend build +
+      lint); on a `v*` tag, build the frontend, build the wheel/sdist, and
+      attach them to a GitHub Release. Install with
+      `pipx install <release wheel URL>` (or `uv tool install`).
+      (3) User-space setup: `reqman init` creates the per-user config file
+      and data directory — no root/admin needed. Defaults follow the
+      platform: config in `~/.config/reqman/config.json` (Linux, honouring
+      `XDG_CONFIG_HOME`), `~/Library/Application Support/ReqManTool/` (macOS),
+      `%APPDATA%\ReqManTool\` (Windows); data in the matching user data dir
+      (or a path the user chooses at `init`). Optional
+      `reqman service install|uninstall` registers a per-user background
+      service (systemd `--user` unit on Linux, launchd agent on macOS).
+      (4) Own JSON config file: replaces today's repo-relative
+      `.reqman/config.json`. Keys: `data_dir` (storage root), `host`,
+      `port`, `cors_origins`; precedence CLI flag > env var
+      (`REQMAN_DATA_DIR`, `REQMAN_CONFIG_FILE`, …) > config file > platform
+      default. The in-app data-folder switcher writes `data_dir` back to the
+      same file (stable key order, two-space indent, trailing newline).
+      Running from a git checkout (`etc/start*.sh`) keeps working. Default
+      bind stays `localhost`.
+- [ ] AGPL compliance in the app. Follow-up of the 2026-10-06 licence
+      change. AGPL §13: users interacting with the app over a network must
+      be offered the corresponding source — add a "Source code" link (repo
+      URL + exact version/commit from the version item) in Help → About
+      and the footer; licence notice in About; SPDX
+      `AGPL-3.0-only` in `frontend/package.json` and (with the
+      distribution item) `pyproject.toml`; a third-party licence list
+      generated at build time; `CONTRIBUTING.md` with the CLA requirement.
+- [ ] Server edition: login (GitLab / OIDC / LDAP), users, project
+      membership, module edit locks. Requested 2026-10-06 (replaces the
+      2026-10-04 "User handling" item; scope change confirmed by the user).
+      Two editions from one codebase: **local** (free) — today's single-
+      user mode, no login, identity from git config, must keep working
+      unchanged; **server** (paid) — one shared instance in the company,
+      every user logs in, works on assigned projects. `mode: local|server`
+      in the app config. Persistence stays JSON + one git repo per
+      project (no database); the single server process allocates all ids,
+      so the distributed-id problem disappears in server mode.
+      (1) Authentication, pluggable providers: GitLab OAuth2/OIDC first
+      (users must have a GitLab account), then generic OIDC (Keycloak,
+      Entra ID), LDAP/Active Directory bind, and trusted reverse-proxy
+      header (Cloudflare Access / oauth2-proxy); HTTP-only secure session
+      cookie, CSRF protection, logout; every REST route and the WebSocket
+      handshake require a session in server mode. (2) Users and roles:
+      user registry in the server's config dir (`users.json`: id, name,
+      email, provider subject, server-admin flag, active) — auto-created
+      on first login; optional group → role mapping from GitLab groups /
+      LDAP groups; per-project membership with roles viewer / editor /
+      project-admin, enforced in `ProjectService` (one guard, REST + WS
+      parity); admin pages for users and memberships; users only see
+      projects they belong to. (3) Module edit locks: an editor checks out
+      a module (exclusive lock: owner, since, optional reason, auto-expiry
+      on inactivity, admin "break lock"); other users get read-only plus a
+      "locked by X" badge; writes to a module locked by someone else are
+      rejected (423); live sync shows lock changes. Optional per-
+      requirement ETag still protects against stale writes by the lock
+      owner's own tabs. (4) Attribution: git commits authored as the
+      logged-in user (name/email from the IdP), squash window per user;
+      created_by / modified_by system attributes; identity in live-sync
+      events; login/logout and admin actions in an audit log (append-only
+      JSON lines). (5) Editions/licensing — decided 2026-10-06: the
+      repository (community/local edition) is dual-licensed AGPL-3.0-only
+      + commercial (see `LICENSING.md`); the server-edition features live
+      in a separate, commercially licensed package/repo (`reqman-server`)
+      that plugs into the core through explicit extension points (auth
+      provider, request identity, permission guard, lock service), and is
+      gated by a signed licence file. The core must stay fully usable
+      without it. Depends on: the
+      git integration (done), distribution package (server install),
+      git remotes (server can mirror project repos to GitLab).
+
+### Phase B — tests, review and follow-ups of delivered items
+
+Collected review findings and leftovers of the items in Done; handled
+area by area once phase A is complete.
 
 - [ ] Git integration follow-ups from slice 2a (2026-10-04): git runs
       synchronously on the event loop (about 11–12 git processes,
@@ -1553,71 +1654,6 @@ to the categories above.
       prompt on the first listing. (7) Tests pending (phase B); one
       existing assertion in `tests/test_git_remotes.py` was updated for
       the new `review` key.
-- [ ] Two-step linking from the requirement menu: "Start link" → "Make
-      link". Requested 2026-10-08. Right-click (editing menu) a requirement
-      → "Start link" remembers it as the pending link source and shows a
-      bar "Linking from SYRS-0012 — pick a target requirement (Esc to
-      cancel)"; the user navigates to any module (other tab, detached
-      window, referenced project) and right-clicks the target requirement
-      → "Make link". The link set is resolved exactly like drag-and-drop
-      linking (link configurations between the two modules, either
-      direction, created in the configured direction; several → user
-      picks; none → warning, no link; duplicates reported). "Make link" is
-      hidden while nothing is pending and disabled on the source itself;
-      pending state is shared across tabs/windows of the same browser
-      (BroadcastChannel/localStorage) and cleared after success, Esc or
-      "Cancel link". Shared action-registry actions (right-click menu and
-      Edit menu). Frontend only (uses the existing link API).
-- [ ] Server edition: login (GitLab / OIDC / LDAP), users, project
-      membership, module edit locks. Requested 2026-10-06 (replaces the
-      2026-10-04 "User handling" item; scope change confirmed by the user).
-      Two editions from one codebase: **local** (free) — today's single-
-      user mode, no login, identity from git config, must keep working
-      unchanged; **server** (paid) — one shared instance in the company,
-      every user logs in, works on assigned projects. `mode: local|server`
-      in the app config. Persistence stays JSON + one git repo per
-      project (no database); the single server process allocates all ids,
-      so the distributed-id problem disappears in server mode.
-      (1) Authentication, pluggable providers: GitLab OAuth2/OIDC first
-      (users must have a GitLab account), then generic OIDC (Keycloak,
-      Entra ID), LDAP/Active Directory bind, and trusted reverse-proxy
-      header (Cloudflare Access / oauth2-proxy); HTTP-only secure session
-      cookie, CSRF protection, logout; every REST route and the WebSocket
-      handshake require a session in server mode. (2) Users and roles:
-      user registry in the server's config dir (`users.json`: id, name,
-      email, provider subject, server-admin flag, active) — auto-created
-      on first login; optional group → role mapping from GitLab groups /
-      LDAP groups; per-project membership with roles viewer / editor /
-      project-admin, enforced in `ProjectService` (one guard, REST + WS
-      parity); admin pages for users and memberships; users only see
-      projects they belong to. (3) Module edit locks: an editor checks out
-      a module (exclusive lock: owner, since, optional reason, auto-expiry
-      on inactivity, admin "break lock"); other users get read-only plus a
-      "locked by X" badge; writes to a module locked by someone else are
-      rejected (423); live sync shows lock changes. Optional per-
-      requirement ETag still protects against stale writes by the lock
-      owner's own tabs. (4) Attribution: git commits authored as the
-      logged-in user (name/email from the IdP), squash window per user;
-      created_by / modified_by system attributes; identity in live-sync
-      events; login/logout and admin actions in an audit log (append-only
-      JSON lines). (5) Editions/licensing — decided 2026-10-06: the
-      repository (community/local edition) is dual-licensed AGPL-3.0-only
-      + commercial (see `LICENSING.md`); the server-edition features live
-      in a separate, commercially licensed package/repo (`reqman-server`)
-      that plugs into the core through explicit extension points (auth
-      provider, request identity, permission guard, lock service), and is
-      gated by a signed licence file. The core must stay fully usable
-      without it. Depends on: the
-      git integration (done), distribution package (server install),
-      git remotes (server can mirror project repos to GitLab).
-- [ ] AGPL compliance in the app. Follow-up of the 2026-10-06 licence
-      change. AGPL §13: users interacting with the app over a network must
-      be offered the corresponding source — add a "Source code" link (repo
-      URL + exact version/commit from the version item) in Help → About
-      and the footer; licence notice in About; SPDX
-      `AGPL-3.0-only` in `frontend/package.json` and (with the
-      distribution item) `pyproject.toml`; a third-party licence list
-      generated at build time; `CONTRIBUTING.md` with the CLA requirement.
 - [ ] Context menus: follow-ups (2026-10-08). (1) Done 2026-10-08 for
       module tab entries (close, close others, detach), "Open in new
       tab" and "Detach"; done 2026-10-08 for project references (sidebar
@@ -1847,34 +1883,43 @@ to the categories above.
       path, so they are not strictly in tree order. (5) About 7 existing
       tests assert the old flat `module_order` and need updating; new
       tests are pending (phase B).
-- [ ] Distribution package + user-space install. Requested 2026-10-04.
-      (1) Packaging: a `pyproject.toml` for the backend with a `reqman`
-      console script; the built frontend (`npm run build` → `dist/`) is
-      bundled inside the Python package and served by FastAPI from the
-      same origin (API under its current paths, SPA fallback to
-      `index.html`), so the frontend's API/WS base URL defaults to the page
-      origin instead of `localhost:8899` (`VITE_*` overrides kept for dev).
-      Test-only deps (`pytest`, `httpx`) move out of runtime requirements.
-      (2) GitHub Actions: CI on push/PR (backend `pytest`, frontend build +
-      lint); on a `v*` tag, build the frontend, build the wheel/sdist, and
-      attach them to a GitHub Release. Install with
-      `pipx install <release wheel URL>` (or `uv tool install`).
-      (3) User-space setup: `reqman init` creates the per-user config file
-      and data directory — no root/admin needed. Defaults follow the
-      platform: config in `~/.config/reqman/config.json` (Linux, honouring
-      `XDG_CONFIG_HOME`), `~/Library/Application Support/ReqManTool/` (macOS),
-      `%APPDATA%\ReqManTool\` (Windows); data in the matching user data dir
-      (or a path the user chooses at `init`). Optional
-      `reqman service install|uninstall` registers a per-user background
-      service (systemd `--user` unit on Linux, launchd agent on macOS).
-      (4) Own JSON config file: replaces today's repo-relative
-      `.reqman/config.json`. Keys: `data_dir` (storage root), `host`,
-      `port`, `cors_origins`; precedence CLI flag > env var
-      (`REQMAN_DATA_DIR`, `REQMAN_CONFIG_FILE`, …) > config file > platform
-      default. The in-app data-folder switcher writes `data_dir` back to the
-      same file (stable key order, two-space indent, trailing newline).
-      Running from a git checkout (`etc/start*.sh`) keeps working. Default
-      bind stays `localhost`.
+- [ ] Over-long link configuration and template names. Follow-up of the
+      project-list stub item (2026-10-04). Project and module names are
+      checked against the filesystem name limit, these are not: a link
+      configuration name gives a 500 with a partial write (`project.json`
+      is saved before the link-pair file fails); a user template name
+      (save as template, template import) gives a 500; a template module
+      name gives a 500 while staging (nothing published). Reject them
+      with REST 400 / WebSocket -32602 and write nothing.
+- [ ] User-template management dialog. Follow-up of the menu bar item
+      (2026-10-04). List the user templates in `_templates/` (with invalid
+      ones and their error) and delete them; today they can only be added
+      (Save as template, Load template ▸ import template file).
+
+### Open decisions
+
+- [ ] Unloadable project as a parent: open decision. Follow-up of the
+      project-list stub item (2026-10-04). The server still accepts a
+      stub whose `project.json` is invalid (not newer) as the parent when
+      creating or moving a project (only a newer parent is rejected),
+      while the UI parent pickers disable every stub. Decide: should the
+      server refuse any unloadable parent (REST 400 / WebSocket -32602)?
+
+### Shelved
+
+- [ ] Frontend test runner. Follow-up of the menu bar item (2026-10-04).
+      The frontend has no test runner, so the action registry and shortcut
+      logic (`frontend/src/actions/`), like earlier frontend work, is
+      untested; add Vitest + Testing Library and cover the registry
+      availability rules and the shortcut focus guards.
+      Shelved 2026-10-08 by the user ("bez testów"): the Vitest setup and
+      154 tests are kept in the git stash "shelved: frontend test runner
+      (Vitest)"; not part of phase B.
+
+### Ideas — not requested yet
+
+Feature-scout suggestions and older ideas, ordered roughly by value.
+
 - [ ] Consistency/quality checks ("req lint"). Declarative rules in
       `project.json`: conditional-required (Safety Related ⇒ SIL, Hazard
       Ref, Verification Method), link counts per link configuration (every
@@ -1973,29 +2018,6 @@ to the categories above.
       or two attributes sharing a name, breaks re-import of a project's own
       CSV export — product decision needed: reject such names in
       `add_attribute_definition`, or match those columns by attribute id.
-- [ ] Unloadable project as a parent: open decision. Follow-up of the
-      project-list stub item (2026-10-04). The server still accepts a
-      stub whose `project.json` is invalid (not newer) as the parent when
-      creating or moving a project (only a newer parent is rejected),
-      while the UI parent pickers disable every stub. Decide: should the
-      server refuse any unloadable parent (REST 400 / WebSocket -32602)?
-- [ ] Over-long link configuration and template names. Follow-up of the
-      project-list stub item (2026-10-04). Project and module names are
-      checked against the filesystem name limit, these are not: a link
-      configuration name gives a 500 with a partial write (`project.json`
-      is saved before the link-pair file fails); a user template name
-      (save as template, template import) gives a 500; a template module
-      name gives a 500 while staging (nothing published). Reject them
-      with REST 400 / WebSocket -32602 and write nothing.
-- [ ] User-template management dialog. Follow-up of the menu bar item
-      (2026-10-04). List the user templates in `_templates/` (with invalid
-      ones and their error) and delete them; today they can only be added
-      (Save as template, Load template ▸ import template file).
-- [ ] Frontend test runner. Follow-up of the menu bar item (2026-10-04).
-      The frontend has no test runner, so the action registry and shortcut
-      logic (`frontend/src/actions/`), like earlier frontend work, is
-      untested; add Vitest + Testing Library and cover the registry
-      availability rules and the shortcut focus guards.
 - [ ] Sort/filter the requirements table by attribute value, plus a simple
       full-text search box (module or project scope). Table-stakes for any
       module with more than a screenful of requirements. Not yet requested.
@@ -2016,6 +2038,7 @@ to the categories above.
       modules, attributes, filters and layout, so the spec document, the
       traceability/verification reports and project-specific deliverables
       share one mechanism. Not yet requested.
+
 ## Notes
 
 - Attribute definitions live at the **project** level and apply to every module in it (decided 2026-09-16).
