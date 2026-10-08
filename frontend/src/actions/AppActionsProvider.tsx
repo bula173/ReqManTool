@@ -594,8 +594,9 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       // With page text selected, Ctrl/Cmd+C/X copy that text as usual.
       const key = event.key.toLowerCase();
       if ((key === 'c' || key === 'x') && hasTextSelection()) return;
-      // Escape belongs to an open menu or dialog (it closes it), wherever focus is.
-      if (key === 'escape' && document.querySelector('[role="menu"], [role="dialog"]')) return;
+      // Escape belongs to an open menu, dialog or narrow-screen side-panel
+      // overlay (it closes it), wherever focus is.
+      if (key === 'escape' && document.querySelector('[role="menu"], [role="dialog"], .reqman-panel-overlay')) return;
       const action = shortcutAction(event, stateRef.current);
       if (!action) return;
       event.preventDefault();

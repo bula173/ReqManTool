@@ -428,8 +428,9 @@ export const requirementActions: Action<'requirement'>[] = [
         title: 'Remove requirement',
         children: (
           <Text size="sm">
-            Are you sure you want to remove requirement "{requirement.id}"? Its children move up one level. This
-            cannot be undone.
+            Are you sure you want to remove requirement "{requirement.id}"? Its children move up one level. Its links
+            are deleted too, including links to it from other projects that reference this one. This cannot be
+            undone.
           </Text>
         ),
         labels: { confirm: 'Remove', cancel: 'Cancel' },

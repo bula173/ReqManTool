@@ -21,11 +21,13 @@ interface ModuleTabItemProps {
   tab: ModuleTabRef;
   index: number;
   active: boolean;
+  /** Roving tabindex: the one tab of the bar reachable with Tab (the active one, else the first). */
+  focusable: boolean;
   dropBefore: boolean;
   onDropIndicator: (index: number | null) => void;
 }
 
-function ModuleTabItem({ tab, index, active, dropBefore, onDropIndicator }: ModuleTabItemProps) {
+function ModuleTabItem({ tab, index, active, focusable, dropBefore, onDropIndicator }: ModuleTabItemProps) {
   const { state, run, openMenu } = useAppActions();
   const { commands } = state;
   const projectQuery = useProject(tab.projectId);
@@ -50,7 +52,8 @@ function ModuleTabItem({ tab, index, active, dropBefore, onDropIndicator }: Modu
     <div
       role="tab"
       aria-selected={active}
-      tabIndex={0}
+      aria-keyshortcuts="Delete"
+      tabIndex={focusable ? 0 : -1}
       className="reqman-tab"
       data-drop-before={dropBefore || undefined}
       data-failed={failed || undefined}
@@ -123,11 +126,13 @@ function ModuleTabItem({ tab, index, active, dropBefore, onDropIndicator }: Modu
       <span className="reqman-tab-label">{label}</span>
       {/* Server edition: the module's edit lock (known for the open project's modules). */}
       <ModuleLockBadge lock={moduleLockOf(state, tab.projectId, tab.moduleId)} userId={state.userId} compact />
+      {/* Mouse only: hidden from assistive technology, which closes the tab with Delete (or its menu). */}
       <ActionIcon
         variant="subtle"
         color="gray"
         size="xs"
-        aria-label={`Close ${label}`}
+        aria-hidden
+        title={`Close ${label}`}
         tabIndex={-1}
         onClick={(e) => {
           e.stopPropagation();
@@ -152,6 +157,7 @@ export function ModuleTabBar() {
   const [dropIndex, setDropIndex] = useState<number | null>(null);
   if (state.tabs.length === 0) return null;
   const activeKey = state.projectId && state.moduleId ? `${state.projectId}/${state.moduleId}` : null;
+  const activeShown = state.tabs.some((tab) => tabKey(tab) === activeKey);
 
   return (
     <div className="reqman-tab-bar" role="tablist" aria-label="Open modules">
@@ -161,6 +167,7 @@ export function ModuleTabBar() {
           tab={tab}
           index={index}
           active={tabKey(tab) === activeKey}
+          focusable={activeShown ? tabKey(tab) === activeKey : index === 0}
           dropBefore={dropIndex === index}
           onDropIndicator={setDropIndex}
         />

@@ -584,9 +584,19 @@ export function ModulePage() {
                       data-fade={columns.isSingleLine(ID_COLUMN) ? undefined : ''}
                       title="Click for navigation, right-click for editing; drag onto a requirement of another module to link"
                       draggable
-                      onDragStart={(e) =>
-                        setRequirementDragData(e.dataTransfer, { projectId, moduleId, requirementIds: [req.id] })
-                      }
+                      onDragStart={(e) => {
+                        // The payload is scoped to the data folder: none known yet → no drag.
+                        if (appState.dataDir === null) {
+                          e.preventDefault();
+                          return;
+                        }
+                        setRequirementDragData(e.dataTransfer, {
+                          dataDir: appState.dataDir,
+                          projectId,
+                          moduleId,
+                          requirementIds: [req.id],
+                        });
+                      }}
                       onClick={(e) =>
                         openMenu({
                           x: e.clientX,

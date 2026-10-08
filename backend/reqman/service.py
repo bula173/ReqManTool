@@ -3439,9 +3439,13 @@ class ProjectService:
         A locked referencing project refuses the whole operation (423): its
         links to the requirements being removed would have to be deleted,
         and a locked project is never written. A git sync conflict there is
-        409.
+        409. A link belongs to its configuration's source module, so that
+        module's edit lock there applies too (``ModuleLockedError``, 423).
         """
         others = {other.id: other for other, _, _ in affected}
+        source_modules: dict[str, list[str]] = {}
+        for other, config, _ in affected:
+            source_modules.setdefault(other.id, []).append(config.source_module_id)
         for other_id in sorted(others):
             other = others[other_id]
             if guard_active() and not is_permitted(ACTION_PROJECT_WRITE, other_id):
@@ -3457,6 +3461,7 @@ class ProjectService:
                     "was changed."
                 )
             self._require_no_sync_conflict(other_id)
+            self._check_module_writes(other_id, source_modules[other_id])
 
     def _apply_incoming_cleanup(
         self, affected: list[tuple[Project, LinkConfiguration, list[LinkPair]]], requirement_ids: set[str]

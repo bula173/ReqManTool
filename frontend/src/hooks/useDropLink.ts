@@ -139,12 +139,21 @@ export async function resolveAndLink(ends: LinkEnds, deps: ResolveAndLinkDeps): 
  */
 export function useDropLink(projectId: string) {
   const { state } = useAppActions();
-  const { commands, modules } = state;
+  const { commands, modules, dataDir } = state;
   const linkInProject = useLinkInProject();
   const createLink = linkInProject.mutateAsync;
 
   return useCallback(
     async (payload: RequirementDragPayload, toId: string, toModuleId: string) => {
+      // Ids repeat across data folders: a row dragged from a window showing
+      // another folder never links here.
+      if (dataDir === null || payload.dataDir !== dataDir) {
+        notifications.show({
+          message: 'That requirement is from another data folder; it cannot be linked here.',
+          color: 'yellow',
+        });
+        return;
+      }
       if (payload.requirementIds.length !== 1) {
         notifications.show({ message: 'Drop one requirement at a time to link it.', color: 'yellow' });
         return;
@@ -161,6 +170,6 @@ export function useDropLink(projectId: string) {
         { modules, openDialog: commands.openDialog, createLink },
       );
     },
-    [projectId, modules, commands, createLink],
+    [projectId, modules, commands, createLink, dataDir],
   );
 }

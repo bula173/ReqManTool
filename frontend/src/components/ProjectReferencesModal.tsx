@@ -38,7 +38,10 @@ export function ProjectReferencesModal({ project, onClose }: ProjectReferencesMo
     .filter((p) => p.id !== project.id && p.id !== parentId && (!isProjectStub(p) || stored.includes(p.id)))
     .map((p) => ({ value: p.id, label: isProjectStub(p) ? `${p.name} (cannot be loaded)` : p.name }));
   for (const id of stored) {
-    if (!options.some((o) => o.value === id)) options.push({ value: id, label: `${id} (missing)` });
+    if (options.some((o) => o.value === id)) continue;
+    // The parent listed explicitly as well (it stays referenced while it is the parent).
+    const label = id === parentId ? `${parentName ?? id} (parent)` : `${id} (missing)`;
+    options.push({ value: id, label });
   }
   const inUse = new Map(
     (referencesQuery.data?.references ?? [])

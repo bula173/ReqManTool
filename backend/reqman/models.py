@@ -472,7 +472,7 @@ class Project:
 
     @staticmethod
     def from_dict(data: dict) -> "Project":
-        return Project(
+        project = Project(
             id=data["id"],
             name=data["name"],
             description=data.get("description", ""),
@@ -488,3 +488,8 @@ class Project:
             module_order=module_order_from_list(data.get("module_order")),
             row_styles=_row_styles(data.get("row_styles")),
         )
+        # A (hand-edited) configuration targeting its own project is a local one.
+        for config in project.link_configurations:
+            if config.target_project_id == project.id:
+                config.target_project_id = None
+        return project

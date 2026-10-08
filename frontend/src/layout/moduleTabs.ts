@@ -57,6 +57,17 @@ export function isAttachMessage(data: unknown): data is AttachMessage {
 }
 
 /**
+ * A window-name-safe, reversible encoding of an id: letters, digits and `-`
+ * stay, any other UTF-16 unit (including `_`) becomes `_` plus 4 hex digits.
+ * The output never contains `_-` nor ends with `_`, so `_-` separates two
+ * encoded ids unambiguously (project `a-b` + module `c` ≠ project `a` +
+ * module `b-c`).
+ */
+function windowNamePart(id: string): string {
+  return id.replace(/[^A-Za-z0-9-]/g, (c) => `_${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
+/**
  * Opens (or, when already open, reuses and focuses) the detached window of a
  * module; `highlightId` selects and reveals a requirement in it. Returns null
  * when the browser blocked the popup.
@@ -66,7 +77,7 @@ export function openDetachedWindow(projectId: string, moduleId: string, highligh
   const url = highlightId ? `${path}?highlight=${encodeURIComponent(highlightId)}` : path;
   // One window per module: the same name reuses it. No `noopener`: the window
   // needs `window.opener` to re-attach.
-  const name = `reqman-module-${projectId}-${moduleId}`.replace(/[^A-Za-z0-9_-]/g, '_');
+  const name = `reqman-module-${windowNamePart(projectId)}_-${windowNamePart(moduleId)}`;
   const win = window.open(url, name, 'popup=yes,width=1200,height=800');
   win?.focus();
   return win;
