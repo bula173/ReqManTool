@@ -84,6 +84,28 @@ item first (phase A), then test, review and fix by area (phase B).
 
 ### Next — requested, in delivery order
 
+- [ ] Server edition: access from GitLab/GitHub repository permissions.
+      Requested 2026-10-08, PRIORITY. Decision: variant 2 — the role of a
+      user in a project is derived from their permission on that
+      project's git repository (one source of truth; revoking access in
+      GitLab/GitHub revokes it in ReqManTool). Mapping: GitLab Guest /
+      Reporter, GitHub Read → viewer; GitHub Triage → reviewer; GitLab
+      Developer, GitHub Write → editor; GitLab Maintainer / Owner, GitHub
+      Maintain / Admin → project-admin. Resolved at login and refreshed
+      periodically / on demand (admin "Sync access now"), cached with a
+      short TTL; projects without a remote, or whose provider is not the
+      login provider, fall back to the existing in-app membership (admin
+      UI); server-admin stays in-app. New role **reviewer**: read plus
+      comment and status sign-off, no content edits. Status guards in
+      `ProjectService`: Draft → Reviewed only by a reviewer (or higher)
+      who is not the requirement's last author (independence), Reviewed →
+      Approved only by project-admin (later: an approver role);
+      project-admin only for baselines, lock/unlock, attributes, views,
+      link configurations. Server-only code in `backend/reqman_server/`
+      (provider permission lookup via the GitLab/GitHub API with the
+      user's OAuth token); the local edition is unaffected. REST + WS
+      parity; errors name the missing role and its source ("needs
+      Developer on gitlab.example.com/rbc/rbc-gp").
 ### Phase B — tests, review and follow-ups of delivered items
 
 Collected review findings and leftovers of the items in Done; handled
