@@ -245,6 +245,7 @@ export const appActions: Action<'app'>[] = [
     // Imports into the open module; listed as File ▸ Import ▸ CSV.
     id: 'file.importCsv',
     element: 'app',
+    edits: true,
     label: 'CSV',
     icon: IconFileImport,
     opensDialog: true,
@@ -341,6 +342,7 @@ export const appActions: Action<'app'>[] = [
     // Shares the current widths through the active view in project.json.
     id: 'view.saveColumnWidths',
     element: 'app',
+    edits: true,
     label: 'Save column widths to view',
     icon: IconDeviceFloppy,
     isAvailable: (ctx) => activeView(ctx) !== null && ctx.project !== null,
@@ -361,6 +363,7 @@ export const appActions: Action<'app'>[] = [
   {
     id: 'view.removeViewColumnWidths',
     element: 'app',
+    edits: true,
     label: 'Remove column widths from view',
     icon: IconColumnsOff,
     isAvailable: (ctx) => activeView(ctx)?.column_widths !== undefined,
@@ -377,6 +380,7 @@ export const appActions: Action<'app'>[] = [
     // Project-wide row font/background colors by enum attribute value.
     id: 'view.rowStyles',
     element: 'app',
+    edits: true,
     label: 'Row styles',
     icon: IconPalette,
     opensDialog: true,

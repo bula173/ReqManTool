@@ -190,9 +190,24 @@ def _project_v6_to_v7(data: dict) -> dict:
     return data
 
 
+def _project_v7_to_v8(data: dict) -> dict:
+    """Project format 7 -> 8: project lock.
+
+    Version 8 adds ``Project.locked`` (who locked the project, when and why;
+    see ``models.ProjectLock``). Version 7 had no lock: a stray ``locked``
+    key in a hand-edited version 7 file was ignored then and is dropped here
+    so it keeps meaning nothing. Module, requirement and link-pair files are
+    unchanged. The bump exists so that an older ReqManTool, which would drop
+    the key on save and so silently unlock the project, refuses version 8
+    projects instead.
+    """
+    data.pop("locked", None)
+    return data
+
+
 PROJECT_FORMAT = FileFormat(
     name="project",
-    current=7,
+    current=8,
     migrations={
         1: _project_v1_to_v2,
         2: _project_v2_to_v3,
@@ -200,6 +215,7 @@ PROJECT_FORMAT = FileFormat(
         4: _project_v4_to_v5,
         5: _project_v5_to_v6,
         6: _project_v6_to_v7,
+        7: _project_v7_to_v8,
     },
 )
 CONFIG_FORMAT = FileFormat(name="config", current=1)

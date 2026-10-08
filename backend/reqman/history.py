@@ -169,6 +169,16 @@ def _describe_project(old: Any, new: Any) -> list[str]:
             f"Project references {', '.join(map(str, _list(old.get('references')))) or '(none)'} → "
             f"{', '.join(map(str, _list(new.get('references')))) or '(none)'}"
         )
+    if old.get("locked") != new.get("locked"):
+        lock = new.get("locked")
+        if lock:
+            reason = lock.get("reason") if isinstance(lock, dict) else None
+            reason = " ".join(reason.split()) if isinstance(reason, str) else ""
+            if len(reason) > 80:
+                reason = reason[:79] + "…"
+            entries.append(f"Project locked{f': {reason}' if reason else ''}")
+        else:
+            entries.append("Project unlocked")
     for key, label, skip_system in (
         ("attributes", "Attribute", True),
         ("link_configurations", "Link configuration", False),

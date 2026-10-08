@@ -25,10 +25,13 @@ import {
   IconHierarchy2,
   IconInfoCircle,
   IconLink,
+  IconLock,
+  IconLockOpen,
   IconPalette,
   IconPlus,
   IconTemplate,
   IconTrash,
+  IconTrashX,
 } from '@tabler/icons-react';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -51,6 +54,8 @@ import { AttributeModulesModal } from '../components/AttributeModulesModal';
 import { GitStatusPanel } from '../components/GitStatusPanel';
 import { LinkConfigurationModal } from '../components/LinkConfigurationModal';
 import { ModuleTypeIcon } from '../components/ModuleTypeIcon';
+import { ProjectLockBadge } from '../components/ProjectLockBadge';
+import { describeLock } from '../components/projectLock';
 import { moduleFolderPaths, treePosition } from '../components/moduleTree';
 import { ProjectParentModal } from '../components/ProjectParentModal';
 import { richTextToPlain } from '../components/richText';
@@ -274,6 +279,9 @@ export function ProjectPage() {
     );
   };
 
+  // A locked project refuses every change (server-side); its editing controls are disabled.
+  const locked = !!project.locked;
+
   const attributeLabel = (attrId: string) =>
     project.attributes.find((a) => a.id === attrId)?.name ?? attrId;
 
@@ -281,7 +289,10 @@ export function ProjectPage() {
     <Stack gap="lg">
       <Group justify="space-between" align="flex-start" wrap="nowrap">
         <div>
-          <Title order={2}>{project.name}</Title>
+          <Group gap="xs" wrap="nowrap">
+            <Title order={2}>{project.name}</Title>
+            <ProjectLockBadge lock={project.locked} />
+          </Group>
           {parent && (
             <Text size="sm">
               Subproject of{' '}
@@ -330,6 +341,7 @@ export function ProjectPage() {
             size="xs"
             variant="default"
             leftSection={<IconHierarchy2 size={14} />}
+            disabled={locked}
             onClick={() => setParentOpened(true)}
           >
             Change parent
@@ -355,12 +367,50 @@ export function ProjectPage() {
             size="xs"
             variant="default"
             leftSection={<IconPalette size={14} />}
+            disabled={!isAvailable('view.rowStyles')}
             onClick={() => run('view.rowStyles')}
           >
             Row styles
           </Button>
+          {locked ? (
+            <Button
+              size="xs"
+              variant="default"
+              leftSection={<IconLockOpen size={14} />}
+              disabled={!isAvailable('project.unlock')}
+              onClick={() => run('project.unlock')}
+            >
+              Unlock
+            </Button>
+          ) : (
+            <Button
+              size="xs"
+              variant="default"
+              leftSection={<IconLock size={14} />}
+              disabled={!isAvailable('project.lock')}
+              onClick={() => run('project.lock')}
+            >
+              Lock
+            </Button>
+          )}
+          <Button
+            size="xs"
+            variant="default"
+            color="red"
+            leftSection={<IconTrashX size={14} />}
+            disabled={!isAvailable('project.remove')}
+            onClick={() => run('project.remove')}
+          >
+            Remove
+          </Button>
         </Group>
       </Group>
+
+      {project.locked && (
+        <Alert icon={<IconLock size={16} />} color="orange" p="sm">
+          {describeLock(project.locked)}
+        </Alert>
+      )}
 
       <GitStatusPanel projectId={projectId} />
 
@@ -373,7 +423,7 @@ export function ProjectPage() {
       <Card withBorder>
         <Group justify="space-between" mb="sm">
           <Title order={4}>Attributes</Title>
-          <Button size="xs" leftSection={<IconPlus size={14} />} onClick={() => setAddAttributeOpened(true)}>
+          <Button size="xs" leftSection={<IconPlus size={14} />} disabled={locked} onClick={() => setAddAttributeOpened(true)}>
             Add attribute
           </Button>
         </Group>
@@ -411,10 +461,10 @@ export function ProjectPage() {
                         variant="subtle"
                         aria-label={`Modules for ${attr.name}`}
                         // data-disabled, not disabled, so the tooltip still shows.
-                        data-disabled={attr.required || undefined}
-                        aria-disabled={attr.required}
+                        data-disabled={attr.required || locked || undefined}
+                        aria-disabled={attr.required || locked}
                         onClick={() => {
-                          if (!attr.required) setScopedAttribute(attr);
+                          if (!attr.required && !locked) setScopedAttribute(attr);
                         }}
                       >
                         <IconAdjustments size={16} />
@@ -431,7 +481,7 @@ export function ProjectPage() {
       <Card withBorder>
         <Group justify="space-between" mb="sm">
           <Title order={4}>Link configurations</Title>
-          <Button size="xs" leftSection={<IconPlus size={14} />} onClick={() => setNewLinkConfigOpened(true)}>
+          <Button size="xs" leftSection={<IconPlus size={14} />} disabled={locked} onClick={() => setNewLinkConfigOpened(true)}>
             New link configuration
           </Button>
         </Group>
@@ -468,7 +518,7 @@ export function ProjectPage() {
                   </Table.Td>
                   <Table.Td>
                     <Tooltip label="Remove">
-                      <ActionIcon variant="subtle" color="red" onClick={() => handleRemoveLinkConfig(config)}>
+                      <ActionIcon variant="subtle" color="red" disabled={locked} onClick={() => handleRemoveLinkConfig(config)}>
                         <IconTrash size={16} />
                       </ActionIcon>
                     </Tooltip>
@@ -483,7 +533,7 @@ export function ProjectPage() {
       <Card withBorder>
         <Group justify="space-between" mb="sm">
           <Title order={4}>Views</Title>
-          <Button size="xs" leftSection={<IconPlus size={14} />} onClick={() => setNewViewOpened(true)}>
+          <Button size="xs" leftSection={<IconPlus size={14} />} disabled={locked} onClick={() => setNewViewOpened(true)}>
             New view
           </Button>
         </Group>
@@ -513,7 +563,7 @@ export function ProjectPage() {
                   <Table.Td>{view.attribute_ids.map(attributeLabel).join(', ')}</Table.Td>
                   <Table.Td>
                     <Tooltip label="Remove">
-                      <ActionIcon variant="subtle" color="red" onClick={() => handleRemoveView(view)}>
+                      <ActionIcon variant="subtle" color="red" disabled={locked} onClick={() => handleRemoveView(view)}>
                         <IconTrash size={16} />
                       </ActionIcon>
                     </Tooltip>
@@ -528,7 +578,12 @@ export function ProjectPage() {
       <Card withBorder>
         <Group justify="space-between" mb="sm">
           <Title order={4}>Modules</Title>
-          <Button size="xs" leftSection={<IconPlus size={14} />} onClick={() => run('project.newModule')}>
+          <Button
+            size="xs"
+            leftSection={<IconPlus size={14} />}
+            disabled={!isAvailable('project.newModule')}
+            onClick={() => run('project.newModule')}
+          >
             New module
           </Button>
         </Group>
@@ -569,7 +624,7 @@ export function ProjectPage() {
                       variant="subtle"
                       size="sm"
                       aria-label={`Move ${module.name} up`}
-                      disabled={!position || position.index === 0 || reorderModule.isPending}
+                      disabled={locked || !position || position.index === 0 || reorderModule.isPending}
                       onClick={() => handleReorderModule(module, 'up')}
                     >
                       <IconArrowUp size={14} />
@@ -580,7 +635,9 @@ export function ProjectPage() {
                       variant="subtle"
                       size="sm"
                       aria-label={`Move ${module.name} down`}
-                      disabled={!position || position.index >= position.siblingCount - 1 || reorderModule.isPending}
+                      disabled={
+                        locked || !position || position.index >= position.siblingCount - 1 || reorderModule.isPending
+                      }
                       onClick={() => handleReorderModule(module, 'down')}
                     >
                       <IconArrowDown size={14} />

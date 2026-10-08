@@ -39,6 +39,7 @@ export const projectFolderActions: Action<'project'>[] = [
   {
     id: 'project.newFolder',
     element: 'project',
+    edits: true,
     label: 'New folder',
     icon: IconFolderPlus,
     opensDialog: true,
@@ -56,6 +57,7 @@ export const moduleFolderActions: Action<'module'>[] = [
   {
     id: 'module.moveToFolder',
     element: 'module',
+    edits: true,
     label: 'Move to folder',
     icon: IconFolderSymlink,
     opensDialog: true,
@@ -76,6 +78,7 @@ export const folderActions: Action<'folder'>[] = [
   {
     id: 'folder.newModule',
     element: 'folder',
+    edits: true,
     label: 'New module here',
     icon: IconPlus,
     opensDialog: true,
@@ -88,6 +91,7 @@ export const folderActions: Action<'folder'>[] = [
   {
     id: 'folder.newModuleFromTemplate',
     element: 'folder',
+    edits: true,
     label: 'New module from template here',
     icon: IconTemplate,
     opensDialog: true,
@@ -107,6 +111,7 @@ export const folderActions: Action<'folder'>[] = [
   {
     id: 'folder.newSubfolder',
     element: 'folder',
+    edits: true,
     label: 'New subfolder',
     icon: IconFolderPlus,
     opensDialog: true,
@@ -121,6 +126,7 @@ export const folderActions: Action<'folder'>[] = [
   {
     id: 'folder.rename',
     element: 'folder',
+    edits: true,
     label: 'Rename folder',
     icon: IconPencil,
     opensDialog: true,
@@ -139,6 +145,7 @@ export const folderActions: Action<'folder'>[] = [
   {
     id: 'folder.moveUp',
     element: 'folder',
+    edits: true,
     label: 'Move Up',
     icon: IconArrowUp,
     isAvailable: (ctx) => ctx.target !== null && ctx.target.position.index > 0,
@@ -147,6 +154,7 @@ export const folderActions: Action<'folder'>[] = [
   {
     id: 'folder.moveDown',
     element: 'folder',
+    edits: true,
     label: 'Move Down',
     icon: IconArrowDown,
     isAvailable: (ctx) => ctx.target !== null && ctx.target.position.index < ctx.target.position.siblingCount - 1,
@@ -155,6 +163,7 @@ export const folderActions: Action<'folder'>[] = [
   {
     id: 'folder.moveTo',
     element: 'folder',
+    edits: true,
     label: 'Move to folder',
     icon: IconFolderSymlink,
     opensDialog: true,
@@ -173,6 +182,7 @@ export const folderActions: Action<'folder'>[] = [
     // Only an empty folder can be deleted (the server refuses others); nothing else is removed.
     id: 'folder.delete',
     element: 'folder',
+    edits: true,
     label: 'Delete folder',
     icon: IconFolderX,
     color: 'red',

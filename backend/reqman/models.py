@@ -1,5 +1,5 @@
-"""Persisted data shapes: Project, Module, Requirement, AttributeDefinition,
-LinkConfiguration, LinkPair, View, RowStyle.
+"""Persisted data shapes: Project, ProjectLock, Module, Requirement,
+AttributeDefinition, LinkConfiguration, LinkPair, View, RowStyle.
 
 Plain dataclasses only — no behavior, no validation beyond field defaults.
 Each type carries its own ``to_dict``/``from_dict`` for JSON (de)serialization;
@@ -335,6 +335,54 @@ def module_order_from_list(value: Any, depth: int = 1) -> list:
 
 
 @dataclass
+class ProjectLock:
+    """Who locked a project, when and why (project format 8).
+
+    ``by``/``email``: the git identity of the user who locked it (as for
+    commits); ``at``: an ISO 8601 UTC timestamp; ``reason``: free text;
+    ``baseline``: the baseline the lock was set after ("lock after
+    baseline"), written only when set. The rule that a locked project
+    refuses every change but unlock lives in ``ProjectService``.
+    """
+
+    by: str = ""
+    email: str = ""
+    at: str = ""
+    reason: str = ""
+    baseline: str | None = None
+
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        if self.baseline is None:
+            del data["baseline"]
+        return data
+
+    @staticmethod
+    def from_dict(data: Any) -> "ProjectLock | None":
+        """A lock from its stored value; ``None`` for no lock.
+
+        Tolerant of hand edits: any other truthy value (e.g. ``true``) still
+        means locked, with unknown details, so a lock is never lost by
+        mistake. ``null``/``false``/a missing key mean unlocked.
+        """
+        if isinstance(data, dict):
+
+            def text(key: str) -> str:
+                value = data.get(key)
+                return value if isinstance(value, str) else ""
+
+            baseline = data.get("baseline")
+            return ProjectLock(
+                by=text("by"),
+                email=text("email"),
+                at=text("at"),
+                reason=text("reason"),
+                baseline=baseline if isinstance(baseline, str) and baseline else None,
+            )
+        return ProjectLock() if data else None
+
+
+@dataclass
 class Project:
     id: str
     name: str
@@ -350,6 +398,10 @@ class Project:
     # duplicates, not dropped while a link configuration targets it) live in
     # ``ProjectService``.
     references: list[str] = field(default_factory=list)
+    # The project lock (project format 8), or None. Written only when set,
+    # right after ``references``. While set, ``ProjectService`` refuses every
+    # change of the project except unlocking it.
+    locked: ProjectLock | None = None
     attributes: list[AttributeDefinition] = field(default_factory=list)
     id_counters: dict[str, int] = field(default_factory=dict)
     link_configurations: list[LinkConfiguration] = field(default_factory=list)
@@ -381,6 +433,8 @@ class Project:
             data["parent_project_id"] = self.parent_project_id
         if self.references:
             data["references"] = list(self.references)
+        if self.locked is not None:
+            data["locked"] = self.locked.to_dict()
         return {
             **data,
             "attributes": [a.to_dict() for a in self.attributes],
@@ -401,6 +455,7 @@ class Project:
             description=data.get("description", ""),
             parent_project_id=data.get("parent_project_id"),
             references=_string_list(data.get("references")),
+            locked=ProjectLock.from_dict(data.get("locked")),
             attributes=[AttributeDefinition.from_dict(a) for a in data.get("attributes", [])],
             id_counters=data.get("id_counters", {}),
             views=[View.from_dict(v) for v in data.get("views", [])],

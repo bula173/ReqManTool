@@ -13,12 +13,14 @@ import { ImportTemplateModal } from '../components/ImportTemplateModal';
 import { ImportTestResultsModal } from '../components/ImportTestResultsModal';
 import { KeyboardShortcutsModal } from '../components/KeyboardShortcutsModal';
 import { LinkModal } from '../components/LinkModal';
+import { LockProjectModal } from '../components/LockProjectModal';
 import { ModuleFolderNameModal } from '../components/ModuleFolderNameModal';
 import { MoveRequirementModal } from '../components/MoveRequirementModal';
 import { MoveToFolderModal } from '../components/MoveToFolderModal';
 import { NewModuleModal } from '../components/NewModuleModal';
 import { NewProjectModal } from '../components/NewProjectModal';
 import { ProjectReferencesModal } from '../components/ProjectReferencesModal';
+import { RemoveProjectModal } from '../components/RemoveProjectModal';
 import { RequirementFormModal } from '../components/RequirementFormModal';
 import { RowStylesModal } from '../components/RowStylesModal';
 import { SaveAsTemplateModal } from '../components/SaveAsTemplateModal';
@@ -188,6 +190,17 @@ export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; 
       );
     case 'projectReferences':
       return <ProjectReferencesModal project={dialog.project} onClose={onClose} />;
+    case 'lockProject':
+      return <LockProjectModal project={dialog.project} onClose={onClose} />;
+    case 'removeProject':
+      return (
+        <RemoveProjectModal
+          projectId={dialog.projectId}
+          projectName={dialog.projectName}
+          dataDir={dialog.dataDir}
+          onClose={onClose}
+        />
+      );
     case 'shortcuts':
       return <KeyboardShortcutsModal opened onClose={onClose} />;
     case 'about':

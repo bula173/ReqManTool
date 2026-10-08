@@ -5,6 +5,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
 import {
   subscribeDatasetCleared,
+  subscribeProjectRemoved,
   useConfig,
   useCopyRequirement,
   useDeleteModuleFolder,
@@ -19,6 +20,7 @@ import {
   useMoveModuleFolder,
   useMoveRequirement,
   useProject,
+  useProjects,
   usePurgeModule,
   usePurgeProject,
   useRemoveRequirement,
@@ -28,6 +30,7 @@ import {
   useRequirements,
   useSetViewColumnWidths,
   useTemplates,
+  useUnlockProject,
   useUnlinkRequirements,
   useViews,
   type FindRequirementResult,
@@ -55,7 +58,7 @@ import {
 import { AppActionsContext, type AppActionsValue } from './context';
 import { ContextMenuHost } from './ContextMenuHost';
 import { splitLinkEnd } from './links';
-import { contextFor, getAction, isSupported, shortcutAction } from './registry';
+import { contextFor, getAction, isActionAvailable, isSupported, shortcutAction } from './registry';
 import { CONTEXT_MENU_TARGET_ATTRIBUTE, hasTextSelection, isShortcutBlockedTarget } from './shortcuts';
 import type {
   ActionTargetOverrides,
@@ -113,6 +116,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const [templatesRequested, setTemplatesRequested] = useState(false);
   const templatesQuery = useTemplates(templatesRequested);
   const gitStatusQuery = useGitStatus(projectId ?? undefined);
+  // The projects list (shared with the sidebar): which projects are locked.
+  const projectsQuery = useProjects();
   const enableHistory = useEnableHistory(projectId ?? '');
   const gitPush = useGitPush(projectId ?? '');
   const gitPull = useGitPull(projectId ?? '');
@@ -134,6 +139,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const deleteModuleFolder = useDeleteModuleFolder();
   const purgeModule = usePurgeModule();
   const purgeProject = usePurgeProject();
+  const unlockProject = useUnlockProject();
 
   const { setColorScheme } = useMantineColorScheme();
   const colorScheme = useComputedColorScheme('light');
@@ -284,6 +290,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       purgeModule: (purgeProjectId, purgeModuleId) =>
         purgeModule.mutateAsync({ projectId: purgeProjectId, moduleId: purgeModuleId }),
       purgeProject: (purgeProjectId) => purgeProject.mutateAsync(purgeProjectId),
+      unlockProject: (unlockProjectId) => unlockProject.mutateAsync(unlockProjectId),
       requirements: {
         copy: (id, targetParentId) => copyRequirement.mutateAsync({ id, targetParentId }),
         move: (id, parentId, index) => moveRequirement.mutateAsync({ id, parentId, index }),
@@ -390,6 +397,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       removeRequirement.mutateAsync,
       purgeModule.mutateAsync,
       purgeProject.mutateAsync,
+      unlockProject.mutateAsync,
       enableHistory.mutateAsync,
       gitPush.mutateAsync,
       gitPull.mutateAsync,
@@ -403,6 +411,20 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     ],
   );
 
+  // Locked projects: the list's entries, with the open project's own (fresher) state.
+  const lockedProjectIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const entry of projectsQuery.data ?? []) {
+      if ('locked' in entry && entry.locked) ids.add(entry.id);
+    }
+    const open = projectQuery.data;
+    if (open && projectId === open.id) {
+      if (open.locked) ids.add(open.id);
+      else ids.delete(open.id);
+    }
+    return ids;
+  }, [projectsQuery.data, projectQuery.data, projectId]);
+
   const state: AppState = {
     projectId,
     moduleId,
@@ -415,6 +437,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     clipboard,
     views,
     gitStatus: projectId ? (gitStatusQuery.data ?? null) : null,
+    lockedProjectIds,
+    dataDir,
     activeViewId,
     leftPanelOpen,
     detailPanelOpen,
@@ -440,6 +464,23 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  // A removed project (here or by another client): close its module tabs,
+  // drop a clipboard taken from it and leave its pages.
+  const removeProjectTabs = moduleTabs.removeProject;
+  const routeProjectRef = useRef(projectId);
+  useEffect(() => {
+    routeProjectRef.current = projectId;
+  });
+  useEffect(
+    () =>
+      subscribeProjectRemoved((removedId) => {
+        removeProjectTabs(removedId);
+        setClipboardEntry((entry) => (entry?.clipboard.projectId === removedId ? null : entry));
+        if (routeProjectRef.current === removedId) navigate('/', { replace: true });
+      }),
+    [removeProjectTabs, navigate],
+  );
+
   // When Shift+F10 / the menu key last opened a menu (see the keydown handler).
   const keyboardMenuAt = useRef(-Infinity);
   // Event handlers (shortcuts, menu clicks) read the latest state through a ref.
@@ -451,7 +492,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const run = useCallback((id: string, targets?: ActionTargetOverrides): boolean => {
     const action = getAction(id);
     const ctx = contextFor(action, stateRef.current, targets);
-    if (!isSupported(action, ctx) || !action.isAvailable(ctx)) return false;
+    if (!isSupported(action, ctx) || !isActionAvailable(action, ctx)) return false;
     action.run(ctx);
     return true;
   }, []);
@@ -504,7 +545,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const isAvailable = (id: string, targets?: ActionTargetOverrides): boolean => {
     const action = getAction(id);
     const ctx = contextFor(action, state, targets);
-    return isSupported(action, ctx) && action.isAvailable(ctx);
+    return isSupported(action, ctx) && isActionAvailable(action, ctx);
   };
 
   const openMenu = useCallback((request: MenuRequest) => setMenu(request), []);

@@ -2,7 +2,7 @@ import { Anchor, Group, Loader, ScrollArea, Stack, Table, Text, Title } from '@m
 import { Link, useParams } from 'react-router-dom';
 import { moduleReportExportUrl, useExecutionReport } from '../api/queries';
 import type { ExecutionReport } from '../api/types';
-import { ExportMenu, ObjectRef, RefList, ReportCard, ReportError, StatGrid, StatusBadge } from '../components/ReportParts';
+import { DataSourceLine, ExportMenu, ObjectRef, RefList, ReportCard, ReportError, StatGrid, StatusBadge } from '../components/ReportParts';
 import { cellText } from '../components/reportFormat';
 import { modulePath } from '../layout/moduleTabs';
 
@@ -103,6 +103,7 @@ export function ExecutionReportPage() {
                 . Attributes read: {attributeNote(report)}.
               </Text>
             </Stack>
+            <DataSourceLine projectId={projectId} source={report.data_source} />
           </ReportCard>
 
           <ReportCard title={`Failed and blocked tests (${report.problems.length})`}>

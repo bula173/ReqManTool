@@ -10,9 +10,12 @@ import {
   IconGitCommit,
   IconGridDots,
   IconLink,
+  IconLock,
+  IconLockOpen,
   IconPlus,
   IconReportAnalytics,
   IconTemplate,
+  IconTrashX,
 } from '@tabler/icons-react';
 import { ApiError } from '../api/client';
 import { moduleTypeOf } from '../api/moduleTypes';
@@ -74,6 +77,7 @@ export const projectActions: Action<'project'>[] = [
   {
     id: 'project.newModule',
     element: 'project',
+    edits: true,
     label: 'New module',
     icon: IconPlus,
     opensDialog: true,
@@ -87,6 +91,7 @@ export const projectActions: Action<'project'>[] = [
     // The module template list is fetched by the dialog when it opens (never before).
     id: 'project.newModuleFromTemplate',
     element: 'project',
+    edits: true,
     label: 'New module from template',
     icon: IconTemplate,
     opensDialog: true,
@@ -100,6 +105,7 @@ export const projectActions: Action<'project'>[] = [
     // The projects this one references (cross-project link targets): sidebar menu and project page.
     id: 'project.references',
     element: 'project',
+    edits: true,
     label: 'References',
     icon: IconLink,
     opensDialog: true,
@@ -131,6 +137,63 @@ export const projectActions: Action<'project'>[] = [
     run: (ctx) => {
       const project = loadedProject(ctx);
       if (project) ctx.commands.navigate(`/projects/${encodeURIComponent(project.id)}/reports/traceability`);
+    },
+  },
+  {
+    // Lock: every change of the project is refused (server-side) until unlocked; the dialog asks for a reason.
+    id: 'project.lock',
+    element: 'project',
+    label: 'Lock project',
+    icon: IconLock,
+    opensDialog: true,
+    isAvailable: (ctx) => {
+      const project = loadedProject(ctx);
+      return project !== null && !ctx.lockedProjectIds.has(project.id);
+    },
+    run: (ctx) => {
+      const project = loadedProject(ctx);
+      if (project) ctx.commands.openDialog({ kind: 'lockProject', project });
+    },
+  },
+  {
+    id: 'project.unlock',
+    element: 'project',
+    label: 'Unlock project',
+    icon: IconLockOpen,
+    isAvailable: (ctx) => {
+      const project = loadedProject(ctx);
+      return project !== null && ctx.lockedProjectIds.has(project.id);
+    },
+    run: (ctx) => {
+      const project = loadedProject(ctx);
+      if (!project) return;
+      ctx.commands.unlockProject(project.id).then(
+        () => notifications.show({ message: `Project "${project.name}" unlocked`, color: 'green' }),
+        (err) =>
+          notifications.show({ message: err instanceof ApiError ? err.message : 'Failed to unlock project', color: 'red' }),
+      );
+    },
+  },
+  {
+    // Deletes the project folder after a typed-name confirmation; refused while locked, with
+    // subprojects or while referenced (the dialog lists why). `edits`: unavailable while locked.
+    id: 'project.remove',
+    element: 'project',
+    label: 'Remove project',
+    icon: IconTrashX,
+    color: 'red',
+    opensDialog: true,
+    edits: true,
+    isAvailable: (ctx) => loadedProject(ctx) !== null,
+    run: (ctx) => {
+      const project = loadedProject(ctx);
+      if (!project) return;
+      ctx.commands.openDialog({
+        kind: 'removeProject',
+        projectId: project.id,
+        projectName: project.name,
+        dataDir: ctx.dataDir,
+      });
     },
   },
   {
@@ -166,6 +229,7 @@ export const moduleActions: Action<'module'>[] = [
   {
     id: 'module.moveUp',
     element: 'module',
+    edits: true,
     label: 'Move Up',
     icon: IconArrowUp,
     isAvailable: (ctx) => {
@@ -177,6 +241,7 @@ export const moduleActions: Action<'module'>[] = [
   {
     id: 'module.moveDown',
     element: 'module',
+    edits: true,
     label: 'Move Down',
     icon: IconArrowDown,
     isAvailable: (ctx) => {
@@ -213,6 +278,7 @@ export const moduleActions: Action<'module'>[] = [
     // Also File ▸ Import ▸ Test results (the open module).
     id: 'module.importTestResults',
     element: 'module',
+    edits: true,
     label: 'Import test results',
     icon: IconFileImport,
     opensDialog: true,

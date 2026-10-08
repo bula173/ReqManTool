@@ -3,8 +3,8 @@ endpoint, and the live-sync broadcast connection manager.
 
 Route handlers are intentionally thin — parse the request, call a
 ``ProjectService`` method via ``_wrap`` (which maps ``FileNotFoundError``
-to 404, ``ConflictError`` and ``NewerFormatError`` to 409 and
-``ValueError`` to 400), broadcast on success. All real business
+to 404, ``ProjectLockedError`` to 423, ``ConflictError`` and
+``NewerFormatError`` to 409 and ``ValueError`` to 400), broadcast on success. All real business
 logic lives in ``service.py``; see its module docstring and
 docs/ARCHITECTURE.md for why. ``RPC_METHODS`` mirrors the REST surface
 one-to-one so a WebSocket client (used for live requirement editing by the
@@ -30,7 +30,7 @@ from .csv_import import MAX_CSV_IMPORT_BYTES
 from .test_results_import import MAX_TEST_RESULTS_IMPORT_BYTES
 from .formats import NewerFormatError
 from .git_repo import GitHistory, GitSettings
-from .service import RESULT_IMPORT_OPTIONS, ConflictError, ProjectService
+from .service import RESULT_IMPORT_OPTIONS, ConflictError, ProjectLockedError, ProjectService
 from .store import ProjectStore
 from .templates import MAX_TEMPLATE_IMPORT_BYTES
 from .version import build_id, version_info
@@ -98,6 +98,11 @@ class ConnectionManager:
         others = sorted(service.take_touched_projects() - {project_id})
         for changed_id in [project_id, *others]:
             await self._send_all({"event": "changed", "project_id": changed_id}, exclude)
+
+    async def broadcast_removed(self, project_id: str, exclude: WebSocket | None = None) -> None:
+        """``changed`` with ``removed: true``: the project no longer exists (clients drop it)."""
+        service.take_touched_projects()
+        await self._send_all({"event": "changed", "project_id": project_id, "removed": True}, exclude)
 
     async def broadcast_root_changed(self) -> None:
         await self._send_all({"event": "root_changed"})
@@ -228,6 +233,20 @@ class SaveAsTemplateBody(BaseModel):
 class CreateBaselineBody(BaseModel):
     name: str
     description: str = ""
+    # "Lock after baseline": lock the project once the baseline is created.
+    lock: bool = False
+    lock_reason: str | None = None
+
+
+class LockProjectBody(BaseModel):
+    reason: str | None = None
+
+
+class RemoveProjectBody(BaseModel):
+    # The project name, typed by the user to confirm.
+    confirm_name: Any = None
+    # The data folder the confirmation was shown for (refused when it changed).
+    data_dir: Any = None
 
 
 class SetGitRemoteBody(BaseModel):
@@ -375,6 +394,8 @@ def _wrap(fn, *args, **kwargs):
         return fn(*args, **kwargs)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProjectLockedError as exc:
+        raise HTTPException(status_code=423, detail=str(exc)) from exc
     except (ConflictError, NewerFormatError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
@@ -432,6 +453,35 @@ async def set_project_references(project_id: str, body: SetProjectReferencesBody
     project = _wrap(service.set_project_references, project_id, body.references)
     await manager.broadcast(project_id)
     return project.to_dict()
+
+
+@app.put("/projects/{project_id}/lock")
+async def lock_project(project_id: str, body: LockProjectBody):
+    """Lock the project: every change of it is refused (423) until it is unlocked."""
+    project = _wrap(service.lock_project, project_id, body.reason)
+    await manager.broadcast(project_id)
+    return project.to_dict()
+
+
+@app.delete("/projects/{project_id}/lock")
+async def unlock_project(project_id: str):
+    project = _wrap(service.unlock_project, project_id)
+    await manager.broadcast(project_id)
+    return project.to_dict()
+
+
+@app.get("/projects/{project_id}/removal")
+def get_project_removal_info(project_id: str):
+    """What removing the project would do: blockers (subprojects, referencing projects, lock) and recovery (read-only)."""
+    return _wrap(service.project_removal_info, project_id)
+
+
+@app.delete("/projects/{project_id}")
+async def remove_project(project_id: str, body: RemoveProjectBody):
+    """Delete the project folder (typed-name confirmation); broadcasts ``changed`` with ``removed: true``."""
+    result = _wrap(service.remove_project, project_id, body.confirm_name, body.data_dir)
+    await manager.broadcast_removed(project_id)
+    return result
 
 
 @app.post("/projects/{project_id}/save-as-template")
@@ -600,7 +650,9 @@ async def add_project_from_remote(body: AddProjectFromRemoteBody):
 @app.post("/projects/{project_id}/baselines")
 async def create_baseline(project_id: str, body: CreateBaselineBody):
     try:
-        baseline = _wrap(service.create_baseline, project_id, body.name, body.description)
+        baseline = _wrap(
+            service.create_baseline, project_id, body.name, body.description, body.lock, body.lock_reason
+        )
     except HTTPException as exc:
         # A part-way failure (BaselineFailed) may have committed pending changes.
         if _changed_despite_failure(exc.__cause__):
@@ -1132,6 +1184,10 @@ RPC_METHODS = {
     "project.set_row_styles": lambda p: service.set_row_styles(p["id"], p.get("row_styles")),
     "project.set_references": lambda p: service.set_project_references(p["id"], p.get("references")),
     "project.references": lambda p: service.project_references(p["id"]),
+    "project.lock": lambda p: service.lock_project(p["id"], p.get("reason")),
+    "project.unlock": lambda p: service.unlock_project(p["id"]),
+    "project.removal_info": lambda p: service.project_removal_info(p["id"]),
+    "project.remove": lambda p: service.remove_project(p["id"], p.get("confirm_name"), p.get("data_dir")),
     "project.save_as_template": lambda p: service.save_project_as_template(
         p["id"], p["name"], p.get("description", "")
     ),
@@ -1150,7 +1206,7 @@ RPC_METHODS = {
     "project.git_pull": lambda p: service.git_pull(p["id"]),
     "project.create_from_remote": lambda p: service.add_project_from_remote(p["url"]),
     "baseline.create": lambda p: service.create_baseline(
-        p["project_id"], p["name"], p.get("description", "")
+        p["project_id"], p["name"], p.get("description", ""), bool(p.get("lock", False)), p.get("lock_reason")
     ),
     "baseline.list": lambda p: service.list_baselines(p["project_id"]),
     "baseline.get": lambda p: service.get_baseline(p["project_id"], p["name"]),
@@ -1280,9 +1336,12 @@ def _error_response(request_id, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
 
 
+# WebSocket error code of a change refused because the project is locked (REST 423).
+PROJECT_LOCKED_RPC_CODE = -32004
+
 MUTATING_METHODS = {
     "project.create", "project.set_parent", "project.purge", "project.git_enable", "baseline.create",
-    "project.set_row_styles", "project.set_references",
+    "project.set_row_styles", "project.set_references", "project.lock", "project.unlock",
     "project.git_set_remote", "project.git_set_auto_push", "project.git_push", "project.git_pull",
     "project.create_from_remote",
     "attribute.add", "attribute.set_modules",
@@ -1318,7 +1377,9 @@ async def _dispatch(request: dict, sender: WebSocket | None = None) -> dict:
 
     try:
         result = method(params)
-        if method_name in MUTATING_METHODS:
+        if method_name == "project.remove":
+            await manager.broadcast_removed(params["id"], exclude=sender)
+        elif method_name in MUTATING_METHODS:
             project_id = _project_id_of(method_name, params, result)
             if project_id:
                 await manager.broadcast(project_id, exclude=sender)
@@ -1327,6 +1388,8 @@ async def _dispatch(request: dict, sender: WebSocket | None = None) -> dict:
         return {"jsonrpc": "2.0", "id": request_id, "result": _serialize(result)}
     except FileNotFoundError as exc:
         return _error_response(request_id, -32001, str(exc))
+    except ProjectLockedError as exc:
+        return _error_response(request_id, PROJECT_LOCKED_RPC_CODE, str(exc))
     except (ValueError, KeyError) as exc:
         if method_name in MUTATING_METHODS and _changed_despite_failure(exc):
             project_id = _project_id_of(method_name, params, None)

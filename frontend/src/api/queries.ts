@@ -27,7 +27,10 @@ import type {
   ModuleType,
   Project,
   ProjectListEntry,
+  ProjectLock,
   ProjectReferences,
+  ProjectRemovalInfo,
+  ProjectRemovalResult,
   Requirement,
   RequirementHistory,
   RowStyle,
@@ -114,6 +117,8 @@ export const queryKeys = {
    * `changed` event (any project) refetches them (see `invalidateCrossProject`).
    */
   projectReferences: (projectId: string) => ['projects', projectId, 'references'] as const,
+  /** What removing the project would do (blockers, recovery); refetched with the project. */
+  projectRemoval: (projectId: string) => ['projects', projectId, 'removal'] as const,
   incomingLinks: (projectId: string, moduleId: string) => ['projects', projectId, 'incoming-links', moduleId] as const,
   config: ['config'] as const,
   version: ['version'] as const,
@@ -246,6 +251,87 @@ export function useSetProjectParent(projectId: string) {
       qc.invalidateQueries({ queryKey: queryKeys.projects, exact: true });
       qc.invalidateQueries({ queryKey: queryKeys.project(projectId), exact: true });
     },
+  });
+}
+
+// --- project lifecycle: lock, unlock, remove -------------------------------------
+
+/** Lock a project (optional reason): the server then refuses every change of it until unlocked. */
+export function useLockProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, reason }: { projectId: string; reason: string }) =>
+      api.put<Project>(`/projects/${encodeURIComponent(projectId)}/lock`, { reason }),
+    onSuccess: (project) => {
+      qc.setQueryData(queryKeys.project(project.id), project);
+      qc.invalidateQueries({ queryKey: queryKeys.projects, exact: true });
+      qc.invalidateQueries({ queryKey: queryKeys.projectRemoval(project.id) });
+    },
+  });
+}
+
+/** Unlock a project (the one change a locked project allows). */
+export function useUnlockProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) => api.delete<Project>(`/projects/${encodeURIComponent(projectId)}/lock`),
+    onSuccess: (project) => {
+      qc.setQueryData(queryKeys.project(project.id), project);
+      qc.invalidateQueries({ queryKey: queryKeys.projects, exact: true });
+      qc.invalidateQueries({ queryKey: queryKeys.projectRemoval(project.id) });
+    },
+  });
+}
+
+/** What removing a project would do: blockers (subprojects, referencing projects, lock) and recovery. */
+export function useProjectRemovalInfo(projectId: string | undefined): UseQueryResult<ProjectRemovalInfo> {
+  return useQuery({
+    queryKey: queryKeys.projectRemoval(projectId ?? ''),
+    queryFn: () => api.get<ProjectRemovalInfo>(`/projects/${encodeURIComponent(projectId ?? '')}/removal`),
+    enabled: !!projectId,
+  });
+}
+
+const projectRemovedListeners = new Set<(projectId: string) => void>();
+
+/**
+ * Drops a removed project from the cache (its queries are removed, the
+ * projects list refetched) and tells `subscribeProjectRemoved` listeners
+ * (module tabs, the open route). Called after this client's removal and by
+ * live sync for `{"event":"changed","removed":true}`.
+ */
+export function handleProjectRemoved(qc: QueryClient, projectId: string): void {
+  qc.removeQueries({
+    predicate: (query) => query.queryKey[0] === 'projects' && query.queryKey[1] === projectId,
+  });
+  qc.invalidateQueries({ queryKey: queryKeys.projects, exact: true });
+  invalidateCrossProject(qc);
+  projectRemovedListeners.forEach((listener) => listener(projectId));
+}
+
+/** Calls `listener` with the id of every project removed (here or by another client); returns the unsubscribe function. */
+export function subscribeProjectRemoved(listener: (projectId: string) => void): () => void {
+  projectRemovedListeners.add(listener);
+  return () => {
+    projectRemovedListeners.delete(listener);
+  };
+}
+
+/**
+ * Removes a project folder. `confirmName`: the project name the user typed;
+ * `dataDir`: the data folder the confirmation was shown for (409 when it
+ * changed meanwhile). 423 while locked, 409 with subprojects or projects
+ * referencing it.
+ */
+export function useRemoveProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, confirmName, dataDir }: { projectId: string; confirmName: string; dataDir: string | null }) =>
+      api.delete<ProjectRemovalResult>(`/projects/${encodeURIComponent(projectId)}`, {
+        confirm_name: confirmName,
+        data_dir: dataDir,
+      }),
+    onSuccess: (_result, { projectId }) => handleProjectRemoved(qc, projectId),
   });
 }
 
@@ -666,10 +752,15 @@ export function useBaselines(projectId: string | undefined): UseQueryResult<Base
 export function useCreateBaseline(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string; description?: string }) =>
-      api.post<Baseline>(`/projects/${projectId}/baselines`, body),
-    onSuccess: () => {
+    mutationFn: (body: { name: string; description?: string; lock?: boolean; lock_reason?: string }) =>
+      api.post<Baseline & { locked: ProjectLock | null }>(`/projects/${projectId}/baselines`, body),
+    onSuccess: (result) => {
       qc.invalidateQueries({ queryKey: queryKeys.baselines(projectId) });
+      if (result.locked) {
+        // "Lock after baseline": the project and the list show the lock.
+        qc.invalidateQueries({ queryKey: queryKeys.projects, exact: true });
+        qc.invalidateQueries({ queryKey: queryKeys.project(projectId), exact: true });
+      }
     },
   });
 }

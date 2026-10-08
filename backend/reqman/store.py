@@ -36,6 +36,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import threading
 import uuid
 from contextlib import contextmanager
@@ -439,6 +440,54 @@ class ProjectStore:
         if self.project_path_exists(project_id):
             raise FileExistsError(f"Cannot create project '{project_id}': '{target}' already exists")
         os.rename(staging._project_dir(project_id), target)
+
+    def delete_project(self, project_id: str) -> str | None:
+        """Delete a project's folder and everything in it (including its own ``.git``).
+
+        Never touches anything outside the folder: the folder must be a real
+        directory (no symlink or junction) directly inside the data
+        directory, else ``ValueError`` and nothing is deleted. It is first
+        moved into the staging directory in one rename, so the project
+        disappears from the data directory at once (never half-deleted),
+        then removed. Returns ``None``, or the path of what was left behind
+        in the staging directory when that removal failed part-way (the
+        project is gone from the data directory either way).
+        """
+        if not self.project_exists(project_id):
+            raise FileNotFoundError(f"Project '{project_id}' not found")
+        folder = self._project_dir(project_id)
+        is_junction = getattr(os.path, "isjunction", None)
+        if folder.is_symlink() or (is_junction is not None and is_junction(folder)) or not folder.is_dir():
+            raise ValueError(
+                f"Project '{project_id}' is not a plain folder in the data directory (a link?); "
+                "remove it by hand"
+            )
+        if os.path.realpath(folder.parent) != os.path.realpath(self.root):
+            raise ValueError(f"Project '{project_id}' is not inside the data directory; remove it by hand")
+        staging_parent = self.root / STAGING_DIR_NAME
+        staging_parent.mkdir(exist_ok=True)
+        trash = staging_parent / f"removed-{uuid.uuid4().hex}"
+        os.rename(folder, trash)
+        self._format_cache.pop(project_id, None)
+
+        def make_writable(func: Any, path: str, _exc: Any) -> None:
+            # Git object files are read-only; on Windows they cannot be deleted as they are.
+            os.chmod(path, 0o700)
+            func(path)
+
+        leftover: str | None = None
+        try:
+            if sys.version_info >= (3, 12):
+                shutil.rmtree(trash, onexc=make_writable)
+            else:  # pragma: no cover - older Pythons
+                shutil.rmtree(trash, onerror=make_writable)
+        except OSError:
+            leftover = str(trash)
+        try:
+            staging_parent.rmdir()
+        except OSError:
+            pass  # not empty (a leftover or another staging in progress) or already gone
+        return leftover
 
     # --- modules -------------------------------------------------------------
 

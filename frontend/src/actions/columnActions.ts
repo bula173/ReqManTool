@@ -34,6 +34,7 @@ export const columnActions: Action<'column'>[] = [
     // attributes, which apply to every module.
     id: 'column.attributeModules',
     element: 'column',
+    edits: true,
     label: 'Attribute modules',
     icon: IconAdjustments,
     opensDialog: true,

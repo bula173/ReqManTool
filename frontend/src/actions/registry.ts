@@ -92,6 +92,38 @@ export function resolveTarget<E extends ElementType>(element: E, state: AppState
   }
 }
 
+/**
+ * The project an action's context applies to: the target project, the
+ * project of the target module/folder/tab, else the open project.
+ */
+export function actionProjectId(ctx: ActionContext): string | null {
+  switch (ctx.element) {
+    case 'project':
+      return (ctx.target as ActionTargets['project'])?.id ?? null;
+    case 'module':
+    case 'folder':
+    case 'tab':
+      return (ctx.target as { projectId: string } | null)?.projectId ?? null;
+    default:
+      return ctx.projectId;
+  }
+}
+
+/** Whether a project is locked (`AppState.lockedProjectIds`). */
+export function isProjectLocked(state: AppState, projectId: string | null | undefined): boolean {
+  return !!projectId && state.lockedProjectIds.has(projectId);
+}
+
+/**
+ * Whether an action can run: its own `isAvailable`, and, for an action that
+ * `edits`, its project is not locked. Every menu, shortcut and button goes
+ * through this (never `action.isAvailable` alone).
+ */
+export function isActionAvailable<E extends ElementType>(action: Action<E>, ctx: ActionContext<E>): boolean {
+  if (action.edits && isProjectLocked(ctx, actionProjectId(ctx as ActionContext))) return false;
+  return action.isAvailable(ctx);
+}
+
 /** Whether the target supports the action (see `Action.isSupported`); unsupported ones are hidden and never run. */
 export function isSupported<E extends ElementType>(action: Action<E>, ctx: ActionContext<E>): boolean {
   return action.isSupported ? action.isSupported(ctx) : true;
@@ -126,7 +158,7 @@ export function shortcutAction(event: KeyboardEvent, state: AppState): Action | 
     const bound = action.shortcuts?.some(
       (shortcut) => matchesShortcut(event, shortcut) && !(shortcut.whenNoTarget && ctx.target !== null),
     );
-    if (bound && isSupported(action, ctx) && action.isAvailable(ctx)) return action;
+    if (bound && isSupported(action, ctx) && isActionAvailable(action, ctx)) return action;
   }
   return null;
 }
@@ -210,6 +242,10 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
       divider,
       action('module.purge'),
       action('project.purge'),
+      divider,
+      action('project.lock'),
+      action('project.unlock'),
+      action('project.remove'),
     ],
   },
   {
@@ -355,6 +391,10 @@ export const PROJECT_NODE_MENU: MenuEntry[] = [
   action('project.commits'),
   divider,
   action('file.saveAsTemplate'),
+  divider,
+  action('project.lock'),
+  action('project.unlock'),
+  action('project.remove'),
 ];
 
 /**

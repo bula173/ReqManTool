@@ -1,8 +1,8 @@
-import { Alert, Button, Group, Modal, Stack, Text, Textarea, TextInput } from '@mantine/core';
+import { Alert, Button, Checkbox, Group, Modal, Stack, Text, Textarea, TextInput } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import { ApiError } from '../api/client';
-import { useCreateBaseline } from '../api/queries';
+import { useCreateBaseline, useProject } from '../api/queries';
 
 interface CreateBaselineModalProps {
   projectId: string;
@@ -33,12 +33,16 @@ function nameError(raw: string): string | null {
 /**
  * "Create baseline": commits pending changes, fast-forwards the `baseline`
  * branch and creates the annotated `baseline/<name>` tag. A duplicate name
- * or a repository that is not recording is a 409, shown inline.
+ * or a repository that is not recording is a 409, shown inline. "Lock
+ * after baseline" locks the project with it (the lock is committed first, so
+ * the baseline is the locked state); hidden while the project is locked.
  */
 export function CreateBaselineModal({ projectId, opened, onClose }: CreateBaselineModalProps) {
   const createBaseline = useCreateBaseline(projectId);
+  const projectQuery = useProject(projectId);
+  const alreadyLocked = !!projectQuery.data?.locked;
   const form = useForm({
-    initialValues: { name: '', description: '' },
+    initialValues: { name: '', description: '', lock: false, lockReason: '' },
     validate: { name: nameError },
   });
 
@@ -50,10 +54,17 @@ export function CreateBaselineModal({ projectId, opened, onClose }: CreateBaseli
 
   const handleSubmit = form.onSubmit((values) => {
     createBaseline.mutate(
-      { name: values.name.trim(), description: values.description },
+      {
+        name: values.name.trim(),
+        description: values.description,
+        ...(values.lock && !alreadyLocked ? { lock: true, lock_reason: values.lockReason.trim() } : {}),
+      },
       {
         onSuccess: (baseline) => {
-          notifications.show({ message: `Baseline "${baseline.name}" created`, color: 'green' });
+          notifications.show({
+            message: `Baseline "${baseline.name}" created${values.lock && baseline.locked ? '; project locked' : ''}`,
+            color: 'green',
+          });
           close();
         },
       },
@@ -77,6 +88,27 @@ export function CreateBaselineModal({ projectId, opened, onClose }: CreateBaseli
             {...form.getInputProps('name')}
           />
           <Textarea label="Description" placeholder="What this baseline marks" {...form.getInputProps('description')} />
+          {alreadyLocked ? (
+            <Text size="sm" c="dimmed">
+              The project is locked; the baseline is taken of the locked state.
+            </Text>
+          ) : (
+            <>
+              <Checkbox
+                label="Lock the project after the baseline"
+                description="Every change is then refused until someone unlocks it. The baseline includes the lock."
+                {...form.getInputProps('lock', { type: 'checkbox' })}
+              />
+              {form.values.lock && (
+                <TextInput
+                  label="Lock reason"
+                  placeholder={`Baseline ${form.values.name.trim() || '<name>'}`}
+                  maxLength={500}
+                  {...form.getInputProps('lockReason')}
+                />
+              )}
+            </>
+          )}
           {createBaseline.isError && (
             <Alert color="red" p="xs">
               <Text size="sm">

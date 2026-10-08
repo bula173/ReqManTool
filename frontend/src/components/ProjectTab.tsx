@@ -12,7 +12,7 @@ import {
 } from '@tabler/icons-react';
 import { useState, type DragEvent, type MouseEvent, type ReactNode } from 'react';
 import { useAppActions } from '../actions/context';
-import { FOLDER_NODE_MENU, MODULE_NODE_MENU, PROJECT_NODE_MENU } from '../actions/registry';
+import { FOLDER_NODE_MENU, MODULE_NODE_MENU, PROJECT_NODE_MENU, isProjectLocked } from '../actions/registry';
 import { contextMenuTargetProps } from '../actions/shortcuts';
 import type { ActionTargetOverrides, MenuEntry } from '../actions/types';
 import { ApiError } from '../api/client';
@@ -20,6 +20,7 @@ import { useModules, useModuleTree, useProjects } from '../api/queries';
 import { isProjectStub, type Project } from '../api/types';
 import { buildProjectForest } from './projectTree';
 import { ModuleTypeIcon } from './ModuleTypeIcon';
+import { ProjectLockBadge } from './ProjectLockBadge';
 import { buildModuleTreeNodes, folderSubtreeIds, type ModuleTreeNode } from './moduleTree';
 
 /** Collapsed module folders (`<projectId>/<folderId>`), remembered per browser. */
@@ -116,6 +117,8 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
   const parent = projects.find((p) => forest.childrenOf.get(p.id)?.some((child) => child.id === projectId));
   const subprojects = forest.childrenOf.get(projectId) ?? [];
   const canAddSubproject = isAvailable('project.newSubproject', { project });
+  // Modules and folders of a locked project cannot be moved (no drag and drop).
+  const editable = readable && !isProjectLocked(state, projectId);
   const moduleIds = (modulesQuery.data ?? []).map((m) => m.id);
   // Modules shown flat (in display order) until the tree has loaded, or if it failed to load.
   const nodes = buildModuleTreeNodes(treeQuery.data, modulesQuery.data ?? []);
@@ -129,11 +132,12 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
 
   // --- drag and drop: drop a module or folder onto a folder (or the project row: top level) ---
   const canDrop = (targetFolderId: string | null) =>
+    editable &&
     drag !== null &&
     drag.projectId === projectId &&
     (targetFolderId === null || !drag.blocked.has(targetFolderId));
   const dragProps = (kind: 'module' | 'folder', id: string, blocked: Set<string> = new Set()) =>
-    readable
+    editable
       ? {
           draggable: true,
           onDragStart: (event: DragEvent) => {
@@ -237,11 +241,12 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
           px="sm"
           truncate="end"
           style={dropHighlight(null)}
-          title={readable ? 'Drop a module or folder here to move it to the top level' : undefined}
-          {...(readable ? dropProps(null) : {})}
+          title={editable ? 'Drop a module or folder here to move it to the top level' : undefined}
+          {...(editable ? dropProps(null) : {})}
           {...menuProps(project.name, PROJECT_NODE_MENU, { project })}
         >
-          {project.name}
+          {project.name}{' '}
+          {!isProjectStub(project) && <ProjectLockBadge lock={project.locked} compact />}
         </Text>
         {parent && (
           <NavLink
@@ -304,18 +309,22 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
               </Text>
             )}
             {nodes.map((node) => renderNode(node, project))}
-            <NavLink
-              label="New module"
-              leftSection={<IconPlus size={14} />}
-              onClick={() => run('project.newModule', { project })}
-              c="dimmed"
-            />
-            <NavLink
-              label="New folder"
-              leftSection={<IconFolderPlus size={14} />}
-              onClick={() => run('project.newFolder', { project })}
-              c="dimmed"
-            />
+            {editable && (
+              <>
+                <NavLink
+                  label="New module"
+                  leftSection={<IconPlus size={14} />}
+                  onClick={() => run('project.newModule', { project })}
+                  c="dimmed"
+                />
+                <NavLink
+                  label="New folder"
+                  leftSection={<IconFolderPlus size={14} />}
+                  onClick={() => run('project.newFolder', { project })}
+                  c="dimmed"
+                />
+              </>
+            )}
           </>
         )}
       </ScrollArea>

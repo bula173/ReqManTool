@@ -176,6 +176,12 @@ export interface Project {
    * /projects/{id}/references` (WS `project.set_references`).
    */
   references?: string[];
+  /**
+   * The project lock (project format 8), omitted when unlocked. While set,
+   * the server refuses every change of the project (REST 423, WS -32004)
+   * except unlocking (`DELETE /projects/{id}/lock`, WS `project.unlock`).
+   */
+  locked?: ProjectLock | null;
   attributes: AttributeDefinition[];
   link_configurations: LinkConfiguration[];
   views: View[];
@@ -190,6 +196,57 @@ export interface Project {
    * Set with `PUT /projects/{id}/row-styles` (WS `project.set_row_styles`).
    */
   row_styles?: RowStyle[];
+}
+
+/** Who locked a project, when (ISO 8601 UTC) and why; `baseline`: set by "lock after baseline". */
+export interface ProjectLock {
+  by: string;
+  email: string;
+  at: string;
+  reason: string;
+  baseline?: string;
+}
+
+/** HTTP status of a change refused because the project is locked. */
+export const PROJECT_LOCKED_STATUS = 423;
+
+/** GET /projects/{id}/removal (WS `project.removal_info`): what removing the project would do. */
+export interface ProjectRemovalInfo {
+  project_id: string;
+  name: string;
+  locked: ProjectLock | null;
+  /** Block the removal (409): move or remove them first. */
+  subprojects: { id: string; name: string }[];
+  /** Projects referencing this one: block the removal (409); remove the references first. */
+  referenced_by: { id: string; name: string }[];
+  can_remove: boolean;
+  /** The project's git status (null when history is turned off on the server). */
+  history: GitStatus | null;
+  /** Whether and how the project could be recovered after the removal (server-written). */
+  recovery: string;
+}
+
+/** DELETE /projects/{id} (WS `project.remove`). */
+export interface ProjectRemovalResult {
+  removed: string;
+  name: string;
+  /** Set when part of the folder could not be deleted (left in the data folder's staging directory). */
+  leftover: string | null;
+}
+
+/**
+ * Which data a report was computed from: always the project's current
+ * files; `commit` is the repository HEAD then, `baselines` the baselines at
+ * that commit (the data is that baseline when nothing is pending).
+ */
+export interface ReportDataSource {
+  /** The git state (`ready`, `paused`, `no_repo`, …; `off` when history is turned off). */
+  history: string | null;
+  commit: string | null;
+  pending_changes: number;
+  baselines: string[];
+  latest_baseline: { name: string; commit: string } | null;
+  locked: ProjectLock | null;
 }
 
 /**
@@ -688,6 +745,7 @@ export interface VerificationReport {
   requirements: (ReportItem & { status: VerificationStatus; tests: VerificationTest[] })[];
   totals: Record<VerificationStatus | 'total' | 'excluded', number>;
   percent: Record<VerificationStatus, number>;
+  data_source: ReportDataSource;
 }
 
 export interface ExecutionTestCase {
@@ -717,6 +775,7 @@ export interface ExecutionReport {
   executors: string[];
   /** [first, last] execution date of the executed records, or null. */
   date_range: [string, string] | null;
+  data_source: ReportDataSource;
 }
 
 /** GET /projects/{id}/modules/{module}/verification-status (WS `report.verification_status`): computed, never stored. */

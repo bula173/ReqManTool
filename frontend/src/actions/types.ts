@@ -168,6 +168,13 @@ export type DialogRequest =
   | { kind: 'dropLink'; projectId: string; fromId: string; toId: string; options: LinkOption[] }
   /** The projects a project references (its link configurations may target their modules). */
   | { kind: 'projectReferences'; project: Project }
+  /** Lock a project (reason); unlocking needs no dialog. */
+  | { kind: 'lockProject'; project: Project }
+  /**
+   * Remove a project (typed-name confirmation). `dataDir` is the data folder
+   * the dialog was opened in: it closes (and the server refuses) when that changed.
+   */
+  | { kind: 'removeProject'; projectId: string; projectName: string; dataDir: string | null }
   | { kind: 'shortcuts' }
   | { kind: 'about' };
 
@@ -199,6 +206,8 @@ export interface AppCommands {
   /** Hard-delete every requirement of a module / of every module of a project; resolve with the count. */
   purgeModule: (projectId: string, moduleId: string) => Promise<{ purged: number }>;
   purgeProject: (projectId: string) => Promise<{ purged: number }>;
+  /** Unlock a project (`DELETE /projects/{id}/lock`); locking and removing go through their dialogs. */
+  unlockProject: (projectId: string) => Promise<Project>;
   /** Requirement mutations of the open module (TanStack mutations; invalidate their queries). */
   requirements: {
     copy: (requirementId: string, targetParentId: string | null) => Promise<Requirement>;
@@ -268,6 +277,13 @@ export interface AppState {
   views: View[];
   /** The open project's history (git) status, once loaded. */
   gitStatus: GitStatus | null;
+  /**
+   * The ids of the locked projects (`Project.locked`): from the projects list
+   * and the open project. Actions marked `edits` are unavailable for them.
+   */
+  lockedProjectIds: ReadonlySet<string>;
+  /** The data folder (null until known); dialogs that delete capture it. */
+  dataDir: string | null;
   activeViewId: string | null;
   /**
    * Whether the left (navigation) / right (requirement detail) side panel is
@@ -335,6 +351,12 @@ export interface Action<E extends ElementType = ElementType> {
   isChecked?(ctx: ActionContext<E>): boolean;
   /** Ends with an ellipsis in menus when the action opens a dialog. */
   opensDialog?: boolean;
+  /**
+   * The action changes project data: it is unavailable while the project it
+   * applies to is locked (see `isActionAvailable`); the server refuses such
+   * a change anyway (423).
+   */
+  edits?: boolean;
   run(ctx: ActionContext<E>): void;
   /** Present for actions that are a list of choices: rendered as a submenu instead of an item. */
   items?(ctx: ActionContext<E>): DynamicMenuItem[];

@@ -29,13 +29,21 @@ import os
 import re
 import threading
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from .csv_import import RESERVED_COLUMNS
 from .formats import PROJECT_FORMAT, NewerFormatError, upgrade
-from .git_repo import DEFAULT_LOG_LIMIT, LOG_LIMIT, GitError, GitHistory, RepoConflict, local_remote_path
+from .git_repo import (
+    DEFAULT_LOG_LIMIT,
+    LOG_LIMIT,
+    GitError,
+    GitHistory,
+    RepoConflict,
+    local_remote_path,
+    validate_baseline_name,
+)
 from .history import FileChange, build_snapshot, compare_snapshots, describe_changes
 from . import module_tree, richtext
 from .models import (
@@ -47,6 +55,7 @@ from .models import (
     Module,
     ModuleFolder,
     Project,
+    ProjectLock,
     Requirement,
     RowStyle,
     View,
@@ -186,6 +195,8 @@ REPORT_EXCLUDED_OBJECT_TYPES = frozenset({"heading", "information", "definition"
 
 # The most projects one project may reference (``Project.references``).
 MAX_PROJECT_REFERENCES = 100
+# The longest project lock reason (characters, after whitespace is collapsed).
+MAX_LOCK_REASON_LENGTH = 500
 
 # The most link configurations one traceability chain may have.
 MAX_TRACE_CHAIN = 10
@@ -222,6 +233,24 @@ class ConflictError(ValueError):
     """The request clashes with existing data (REST 409; WebSocket treats it like any ValueError)."""
 
 
+class ProjectLockedError(ConflictError):
+    """A change of a locked project (REST 423 Locked; WebSocket error code -32004).
+
+    Raised by the one lock guard (``ProjectService._require_unlocked``)
+    before anything is written.
+    """
+
+
+# Marks a ``_records_history`` method that may run while its project is locked (unlocking it).
+_ALLOWED_WHILE_LOCKED = "_reqman_allowed_while_locked"
+
+
+def _allowed_while_locked(method: Callable) -> Callable:
+    """Exempt a mutation from the project lock guard (apply below ``_records_history``)."""
+    setattr(method, _ALLOWED_WHILE_LOCKED, True)
+    return method
+
+
 def _records_history(method: Callable) -> Callable:
     """Auto-commit the projects a successful mutation wrote (see ``ProjectService._auto_commit``).
 
@@ -234,9 +263,17 @@ def _records_history(method: Callable) -> Callable:
     anything is written, while that project has a git sync conflict — its
     ``current`` branch and the configured remote's have diverged (see
     ``GitHistory.sync_conflict_message``); the user resolves it in git.
+
+    Such a method is also the project lock guard: while the project is
+    locked (``Project.locked``) it is refused with ``ProjectLockedError``
+    before anything is written, unless marked ``_allowed_while_locked``
+    (unlocking). Every change of a project, its modules, folders,
+    requirements, links, views, attributes, references and row styles,
+    and every import into it, goes through here.
     """
     parameters = list(inspect.signature(method).parameters)
     guards_project = len(parameters) > 1 and parameters[1] == "project_id"
+    guards_lock = guards_project and not getattr(method, _ALLOWED_WHILE_LOCKED, False)
 
     @functools.wraps(method)
     def wrapper(self: "ProjectService", *args: Any, **kwargs: Any) -> Any:
@@ -246,6 +283,8 @@ def _records_history(method: Callable) -> Callable:
         if guards_project:
             project_id = args[0] if args else kwargs.get("project_id")
             if isinstance(project_id, str):
+                if guards_lock:
+                    self._require_unlocked(project_id)
                 self._require_no_sync_conflict(project_id)
         with self.store.recording_writes() as touched:
             result = method(self, *args, **kwargs)
@@ -734,29 +773,60 @@ class ProjectService:
 
     # --- baselines (git) ---------------------------------------------------------
 
-    def create_baseline(self, project_id: str, name: str, description: str = "") -> dict[str, Any]:
+    def create_baseline(
+        self,
+        project_id: str,
+        name: str,
+        description: str = "",
+        lock: bool = False,
+        lock_reason: Any = None,
+    ) -> dict[str, Any]:
         """Create a named baseline: commit pending changes, tag ``baseline/<name>``, fast-forward ``baseline``.
 
         See ``GitHistory.create_baseline`` for the rules. A nested/foreign/
         paused/absent repository, a duplicate name or a hand-moved
         ``baseline`` branch is ``ConflictError`` (409); an invalid name or
         git off/missing is ``ValueError`` (400).
+
+        Allowed while the project is locked (it changes no data). With
+        ``lock`` ("lock after baseline"), the project is locked
+        (``lock_project``; reason ``lock_reason`` or "Baseline <name>",
+        recording the baseline name) unless it is locked already. The lock
+        is written and committed *before* the tag, so the baseline is
+        exactly the locked state and reports computed while the project
+        stays locked are at that baseline's commit; if the baseline then
+        fails, the lock is undone. The result is the baseline plus
+        ``locked``: the project's lock afterwards (or null).
         """
-        self.store.load_project(project_id)
+        project = self.store.load_project(project_id)
         self._require_no_sync_conflict(project_id)
+        locking = bool(lock) and project.locked is None
+        if locking:
+            reason = self._checked_lock_reason(lock_reason)
+            checked_name = validate_baseline_name(name)
+            project = self.lock_project(project_id, reason or f"Baseline {checked_name}", checked_name)
         from . import __version__
 
         try:
-            return self.history.create_baseline(
-                self.store.project_path(project_id),
-                name,
-                description or "",
-                __version__,
-                PROJECT_FORMAT.current,
-                self._describer(project_id),
-            )
-        except RepoConflict as exc:
-            raise ConflictError(str(exc)) from exc
+            try:
+                result = self.history.create_baseline(
+                    self.store.project_path(project_id),
+                    name,
+                    description or "",
+                    __version__,
+                    PROJECT_FORMAT.current,
+                    self._describer(project_id),
+                )
+            except RepoConflict as exc:
+                raise ConflictError(str(exc)) from exc
+        except Exception:
+            if locking:
+                try:
+                    self.unlock_project(project_id)
+                except Exception:  # noqa: BLE001 - report the baseline failure, not this one
+                    logger.exception("Could not undo the lock of %s after a failed baseline", project_id)
+            raise
+        return {**result, "locked": project.locked.to_dict() if project.locked is not None else None}
 
     def list_baselines(self, project_id: str) -> dict[str, Any]:
         """The project's baselines (from its ``baseline/*`` tags), newest first. Read-only."""
@@ -1131,6 +1201,226 @@ class ProjectService:
             project.parent_project_id = parent_project_id
             self.store.save_project(project)
         return project
+
+    # --- project lifecycle: lock, unlock, remove ---------------------------------
+
+    @staticmethod
+    def _locked_message(project: Project) -> str:
+        """"Project 'x' is locked (by ..., on ...: reason)." for a locked project."""
+        lock = project.locked or ProjectLock()
+        details = []
+        if lock.by:
+            details.append(f"by {lock.by}")
+        if lock.at:
+            details.append(f"on {lock.at[:10]}")
+        text = " ".join(details)
+        if lock.reason:
+            text = f"{text}: {lock.reason}" if text else lock.reason
+        return f"Project '{project.name}' is locked{f' ({text})' if text else ''}."
+
+    def _require_unlocked(self, project_id: str) -> None:
+        """The project lock guard: refuse (``ProjectLockedError``) any change of a locked project.
+
+        A project that cannot be loaded is left to the operation itself,
+        which reports it (404, newer format, broken file).
+        """
+        try:
+            project = self.store.load_project(project_id)
+        except (OSError, ValueError):
+            return
+        if project.locked is not None:
+            raise ProjectLockedError(
+                f"{self._locked_message(project)} Unlock it to make changes; nothing was changed."
+            )
+
+    @staticmethod
+    def _checked_lock_reason(reason: Any) -> str:
+        if reason is None:
+            return ""
+        if not isinstance(reason, str):
+            raise ValueError("reason must be a string")
+        text = " ".join(reason.split())
+        if len(text) > MAX_LOCK_REASON_LENGTH:
+            raise ValueError(f"The lock reason is too long: at most {MAX_LOCK_REASON_LENGTH} characters")
+        return text
+
+    @_records_history
+    def lock_project(self, project_id: str, reason: Any = None, baseline: str | None = None) -> Project:
+        """Lock a project: every change of it is then refused until it is unlocked (409 if already locked).
+
+        Records who (the git identity commits use), when (UTC) and why, and
+        the baseline when locked right after creating one. Locking writes
+        project.json (and so commits, with history on).
+        """
+        project = self.store.load_project(project_id)
+        text = self._checked_lock_reason(reason)
+        if project.locked is not None:
+            raise ConflictError(f"{self._locked_message(project)} Unlock it first to lock it again.")
+        name, email = self.history.user_identity(self.store.project_path(project_id))
+        project.locked = ProjectLock(
+            by=name,
+            email=email,
+            at=datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            reason=text,
+            baseline=baseline,
+        )
+        self.store.save_project(project)
+        return project
+
+    @_records_history
+    @_allowed_while_locked
+    def unlock_project(self, project_id: str) -> Project:
+        """Unlock a project (the one change a locked project allows). Not locked: nothing is written."""
+        project = self.store.load_project(project_id)
+        if project.locked is not None:
+            project.locked = None
+            self.store.save_project(project)
+        return project
+
+    def _removal_blockers(self, project_id: str) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+        """``(subprojects, referencing projects)`` of ``project_id``, each ``{id, name}``, sorted by id.
+
+        Subprojects by their stored parent. A project that cannot be loaded
+        (a stub) is read best-effort from its raw project.json, so a broken
+        subproject or referencing project still blocks the removal.
+        """
+        subprojects: list[dict[str, str]] = []
+        referencing: list[dict[str, str]] = []
+        for other_id in self.store.list_project_ids():
+            if other_id == project_id:
+                continue
+            try:
+                other = self.store.load_project(other_id)
+                parent, references, name = other.parent_project_id, other.references, other.name
+            except (OSError, ValueError):
+                try:
+                    raw = json.loads(self.store.read_project_text(other_id))
+                except (OSError, ValueError, RecursionError):
+                    continue
+                if not isinstance(raw, dict):
+                    continue
+                parent = raw.get("parent_project_id")
+                references = raw.get("references") if isinstance(raw.get("references"), list) else []
+                name = self._stub_name(other_id)
+            entry = {"id": other_id, "name": name if isinstance(name, str) else other_id}
+            if parent == project_id:
+                subprojects.append(entry)
+            elif project_id in references:
+                referencing.append(entry)
+        return subprojects, referencing
+
+    def _recovery_hint(self, status: dict[str, Any] | None) -> str:
+        """How a removed project could be recovered, from its git status (``None``: history off)."""
+        state = (status or {}).get("state")
+        if state == "nested":
+            return (
+                f"The data folder is inside the git repository at '{status.get('enclosing_repo')}'. If the "
+                "project folder is committed there, it can be restored from that repository with git "
+                "(e.g. git restore or git checkout); changes not committed there are lost."
+            )
+        if state in ("ready", "paused"):
+            remote = status.get("remote") or {}
+            url = remote.get("url")
+            if not url:
+                return (
+                    "The project's history (its .git folder) lives inside the project folder and is "
+                    "deleted with it, including its baselines. It has no remote, so the removal cannot "
+                    "be undone unless the data folder is backed up elsewhere. Set a remote and push "
+                    "first if you may need it again."
+                )
+            unsaved = []
+            if status.get("pending_changes"):
+                unsaved.append("uncommitted changes")
+            if remote.get("ahead"):
+                unsaved.append(f"{remote['ahead']} unpushed commit(s)")
+            elif remote.get("ahead") is None:
+                unsaved.append("possibly unpushed commits (the remote was never fetched)")
+            tail = (
+                f" Not on the remote, and lost: {', '.join(unsaved)} — push first."
+                if unsaved
+                else " Everything is pushed."
+            )
+            return (
+                "The project's history (its .git folder) lives inside the project folder and is deleted "
+                f"with it. A copy remains at its remote {url}: recover it with File ▸ Add project from "
+                f"remote (git clone).{tail}"
+            )
+        return (
+            "The project has no git history of its own, so the removal cannot be undone unless the data "
+            "folder is backed up elsewhere."
+        )
+
+    def project_removal_info(self, project_id: str) -> dict[str, Any]:
+        """What removing the project would do and whether it is allowed (read-only).
+
+        ``subprojects`` and ``referenced_by`` block the removal (as does
+        ``locked``); ``history`` is the project's git status (``None`` with
+        history off) and ``recovery`` explains, from it, whether and how the
+        project could be recovered after removal.
+        """
+        project = self.store.load_project(project_id)
+        subprojects, referencing = self._removal_blockers(project_id)
+        status = self.history.status(self.store.project_path(project_id)) if self.history.enabled else None
+        return {
+            "project_id": project_id,
+            "name": project.name,
+            "locked": project.locked.to_dict() if project.locked is not None else None,
+            "subprojects": subprojects,
+            "referenced_by": referencing,
+            "can_remove": project.locked is None and not subprojects and not referencing,
+            "history": status,
+            "recovery": self._recovery_hint(status),
+        }
+
+    def remove_project(self, project_id: str, confirm_name: Any, data_dir: Any = None) -> dict[str, Any]:
+        """Delete a project's folder, with everything in it (its modules, links and own git history).
+
+        Safety rules, all checked before anything is deleted:
+        ``confirm_name`` must be the project's name (typed by the user, 400);
+        ``data_dir``, when given, must still be this service's data directory
+        (409: the folder was switched while the confirmation was open, and
+        project ids repeat across folders); a locked project is refused
+        (423); so is a project with subprojects or one another project
+        references (409, listing them): move or remove those first. Nothing
+        outside the project folder is touched (``ProjectStore.delete_project``).
+        No referencing project exists, so no other project holds links to it.
+        """
+        project = self.store.load_project(project_id)
+        if data_dir is not None:
+            if not isinstance(data_dir, str) or os.path.realpath(data_dir) != os.path.realpath(self.store.root):
+                raise ConflictError(
+                    "The data folder changed since the removal was confirmed; nothing was removed. "
+                    "Open the project again to remove it."
+                )
+        if not isinstance(confirm_name, str) or confirm_name.strip() != project.name.strip():
+            raise ValueError(f"Type the project name '{project.name}' to confirm its removal; nothing was removed")
+        if project.locked is not None:
+            raise ProjectLockedError(f"{self._locked_message(project)} Unlock it to remove it; nothing was removed.")
+        subprojects, referencing = self._removal_blockers(project_id)
+        if subprojects or referencing:
+            parts = []
+            if subprojects:
+                parts.append("it has subprojects " + ", ".join(f"'{p['name']}' ({p['id']})" for p in subprojects))
+            if referencing:
+                parts.append(
+                    "it is referenced by " + ", ".join(f"'{p['name']}' ({p['id']})" for p in referencing)
+                )
+            todo = []
+            if subprojects:
+                todo.append("move or remove the subprojects")
+            if referencing:
+                todo.append("remove those references")
+            raise ConflictError(
+                f"Project '{project.name}' cannot be removed: {' and '.join(parts)}. "
+                f"{' and '.join(todo).capitalize()} first; nothing was removed."
+            )
+        project_dir = self.store.project_path(project_id)
+        with self.history.folder_lock(project_dir):
+            leftover = self.store.delete_project(project_id)
+        self.history.forget(project_dir)
+        if leftover is not None:
+            logger.warning("Removed project %s, but could not delete all of %s", project_id, leftover)
+        return {"removed": project_id, "name": project.name, "leftover": leftover}
 
     # --- project references -----------------------------------------------------
 
@@ -2391,8 +2681,22 @@ class ProjectService:
         return affected
 
     def _check_incoming_cleanup(self, affected: list[tuple[Project, LinkConfiguration, list[LinkPair]]]) -> None:
-        """Refuse (409) before anything is written if a referencing project to clean up has a git sync conflict."""
-        for other_id in sorted({other.id for other, _, _ in affected}):
+        """Refuse before anything is written if a referencing project to clean up cannot be changed.
+
+        A locked referencing project refuses the whole operation (423): its
+        links to the requirements being removed would have to be deleted,
+        and a locked project is never written. A git sync conflict there is
+        409.
+        """
+        others = {other.id: other for other, _, _ in affected}
+        for other_id in sorted(others):
+            other = others[other_id]
+            if other.locked is not None:
+                raise ProjectLockedError(
+                    f"{self._locked_message(other)} It links to the requirement(s) being removed, and those "
+                    "links would have to be deleted there. Unlock it, or remove the links first; nothing "
+                    "was changed."
+                )
             self._require_no_sync_conflict(other_id)
 
     def _apply_incoming_cleanup(
@@ -4324,7 +4628,48 @@ class ProjectService:
                     records.setdefault(test_id, []).append(record)
         return records, readers
 
+    def _report_data_source(self, project: Project) -> dict[str, Any]:
+        """Which data a report was computed from (shown in its header and exports).
+
+        Reports are computed from the project's current files: ``commit`` is
+        the HEAD of its repository and ``pending_changes`` the data files
+        changed since; ``baselines`` are the baselines tagged at that commit
+        (the data then *is* that baseline when nothing is pending) and
+        ``latest_baseline`` the newest one. ``history`` is the git state
+        (``off`` when history is turned off). ``locked``: the project's lock.
+        A git problem leaves the fields empty; it never fails the report.
+        """
+        source: dict[str, Any] = {
+            "history": "off",
+            "commit": None,
+            "pending_changes": 0,
+            "baselines": [],
+            "latest_baseline": None,
+            "locked": project.locked.to_dict() if project.locked is not None else None,
+        }
+        if not self.history.enabled:
+            return source
+        try:
+            project_dir = self.store.project_path(project.id)
+            status = self.history.status(project_dir)
+            source["history"] = status.get("state")
+            source["commit"] = (status.get("head") or {}).get("commit")
+            source["pending_changes"] = status.get("pending_changes") or 0
+            if source["commit"]:
+                baselines = self.history.list_baselines(project_dir).get("baselines") or []
+                source["baselines"] = [b["name"] for b in baselines if b.get("commit") == source["commit"]]
+                if baselines:
+                    source["latest_baseline"] = {"name": baselines[0]["name"], "commit": baselines[0]["commit"]}
+        except (GitError, OSError, ValueError, KeyError) as exc:
+            logger.debug("No data source for the report of %s: %s", project.id, exc)
+        return source
+
     def verification_report(self, project_id: str, module_id: str) -> dict[str, Any]:
+        """``_verification_report`` plus ``data_source`` (``_report_data_source``)."""
+        report = self._verification_report(project_id, module_id)
+        return {**report, "data_source": self._report_data_source(self.store.load_project(project_id))}
+
+    def _verification_report(self, project_id: str, module_id: str) -> dict[str, Any]:
         """Verification status of every requirement of a ``requirements`` module.
 
         Covering test cases: objects of ``test_cases`` modules linked to the
@@ -4422,6 +4767,11 @@ class ProjectService:
         }
 
     def execution_report(self, project_id: str, module_id: str) -> dict[str, Any]:
+        """``_execution_report`` plus ``data_source`` (``_report_data_source``)."""
+        report = self._execution_report(project_id, module_id)
+        return {**report, "data_source": self._report_data_source(self.store.load_project(project_id))}
+
+    def _execution_report(self, project_id: str, module_id: str) -> dict[str, Any]:
         """The test execution report of a ``test_execution`` module (one campaign).
 
         Planned test cases: the objects of the ``test_cases`` modules linked
@@ -4574,7 +4924,7 @@ class ProjectService:
         none. Never stored, never exported, not an attribute definition: it
         cannot be written, imported or put in a view's stored attributes.
         """
-        report = self.verification_report(project_id, module_id)
+        report = self._verification_report(project_id, module_id)
         return {
             "project_id": project_id,
             "module_id": module_id,

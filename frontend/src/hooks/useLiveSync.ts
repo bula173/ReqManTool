@@ -1,11 +1,13 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { WS_URL } from '../api/client';
-import { clearDatasetCache, invalidateCrossProject, queryKeys } from '../api/queries';
+import { clearDatasetCache, handleProjectRemoved, invalidateCrossProject, queryKeys } from '../api/queries';
 
 interface ChangedEvent {
   event: 'changed';
   project_id: string;
+  /** The project was removed (its folder deleted): drop it, close its tabs. */
+  removed?: boolean;
 }
 
 interface RootChangedEvent {
@@ -23,6 +25,8 @@ type LiveSyncEvent = ChangedEvent | RootChangedEvent | TemplatesChangedEvent;
  * endpoint. Whenever a {"event":"changed","project_id":...} broadcast
  * arrives, invalidates every cached query touching that project so views
  * refetch automatically (e.g. another tab's edit shows up without reload).
+ * With `"removed": true` the project was removed: its queries are dropped
+ * and `subscribeProjectRemoved` listeners close its tabs (`handleProjectRemoved`).
  * A {"event":"root_changed"} broadcast (the data directory was switched)
  * clears the cache, since the whole project/module/requirement set is now a
  * different dataset; only the backend version query is kept (see
@@ -64,7 +68,9 @@ export function useLiveSync(): void {
         try {
           const data = JSON.parse(event.data) as LiveSyncEvent;
           const qc = queryClientRef.current;
-          if (data.event === 'changed' && data.project_id) {
+          if (data.event === 'changed' && data.project_id && data.removed) {
+            handleProjectRemoved(qc, data.project_id);
+          } else if (data.event === 'changed' && data.project_id) {
             const projectId = data.project_id;
             qc.invalidateQueries({ queryKey: ['projects'] });
             qc.invalidateQueries({

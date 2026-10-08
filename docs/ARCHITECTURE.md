@@ -628,6 +628,93 @@ shared library project (e.g. a SUBSET-026 project).
   (`commands.goToRequirement`); badge tooltips look the requirement up in
   that project.
 
+### Project lifecycle: lock and remove
+
+- **Lock** (project format 8): `Project.locked` = `{by, email, at, reason,
+  baseline?}` (`models.ProjectLock`), written right after `references`,
+  only when set. `by`/`email` is the git identity commits use
+  (`GitHistory.user_identity`: `REQMAN_GIT_AUTHOR_*`, else git's config,
+  also without a repository, else the login name; git is not run with
+  history off), `at` an ISO 8601 UTC timestamp, `reason` free text
+  (whitespace collapsed, at most 500 characters), `baseline` the baseline
+  name for "lock after baseline". A hand-edited truthy non-object value
+  still means locked (never lost by mistake). `PUT /projects/{id}/lock`
+  `{reason}` (WS `project.lock` `{id, reason}`) and `DELETE
+  /projects/{id}/lock` (WS `project.unlock` `{id}`) both broadcast
+  `changed` and commit ("Project locked: …" / "Project unlocked");
+  unlocking an unlocked project writes nothing.
+- **The guard**: `_records_history`, which wraps every public mutation
+  whose first parameter is `project_id`, calls
+  `ProjectService._require_unlocked` before anything is written, so every
+  change of a locked project — project settings, parent, references, row
+  styles, attributes, modules, module folders and order, requirements,
+  links, link configurations, views and column widths, CSV / test result
+  imports, module templates, purges — is refused with
+  `ProjectLockedError` (a `ConflictError`): REST **423**, WebSocket error
+  code **-32004** (`PROJECT_LOCKED_RPC_CODE`). Only `unlock_project` is
+  exempt (`_allowed_while_locked`). Not data changes and so allowed: reading,
+  exports, reports, save as template, creating a baseline, git enable /
+  push / pull / remote settings (a pull may bring in another clone's
+  unlock), creating a subproject *under* a locked project, linking from
+  another project to a locked one (the link lives in the referencing
+  project).
+- **Cascades into a locked project are refused**: removing a requirement,
+  or purging a module or project, whose requirements a locked referencing
+  project links to would delete links there; `_check_incoming_cleanup`
+  refuses the originating operation (423) before anything is written.
+- **Remove**: `DELETE /projects/{id}` `{confirm_name, data_dir}` (WS
+  `project.remove` `{id, confirm_name, data_dir}`) deletes the project
+  folder with everything in it — including its own `.git`, so its history
+  and baselines go too. `confirm_name` must be the project name (400);
+  `data_dir`, when given, must still be the server's data directory (409:
+  project ids repeat across data folders, so a confirmation opened before
+  a folder switch can never remove a project of another folder); refused
+  while locked (423), and while the project has subprojects (stored
+  parent) or another project references it (explicitly; a subproject
+  references it implicitly) — 409 listing them; unloadable projects are
+  read best-effort from their raw file so they still block. With no
+  referencing project, no other project holds links to it, so nothing
+  outside the folder needs cleaning. `ProjectStore.delete_project` touches
+  nothing outside the folder: it must be a real directory (no symlink or
+  junction) directly in the data directory; it is renamed into
+  `.reqman-staging/` in one step (gone from the list at once, never
+  half-deleted) and then deleted (`leftover` names what could not be
+  deleted). Broadcast: `{"event": "changed", "project_id": id, "removed":
+  true}` (`ConnectionManager.broadcast_removed`); clients drop the
+  project's cached queries, refetch the list, close its module tabs, drop
+  a clipboard taken from it and leave its pages (`handleProjectRemoved`,
+  `subscribeProjectRemoved`). `GET /projects/{id}/removal` (WS
+  `project.removal_info`, read-only) answers what would happen:
+  `subprojects`, `referenced_by`, `locked`, `can_remove`, the git
+  `history` status and a server-written `recovery` hint (a remote: clone
+  it back, and what is not pushed is lost; nested in an enclosing
+  repository: restore it from there; otherwise not recoverable without a
+  backup).
+- **Baseline glue**: `POST /projects/{id}/baselines` takes `lock` and
+  `lock_reason` (WS `baseline.create` too): the project is locked first
+  (reason default "Baseline <name>", `baseline` recorded), then the
+  baseline is tagged, so the baseline is exactly the locked state; a
+  failed baseline undoes the lock. The response adds `locked`. Verification
+  and test execution reports carry `data_source` (`history`, HEAD
+  `commit`, `pending_changes`, the `baselines` tagged at that commit, the
+  `latest_baseline`, `locked`), shown under the report summary and in the
+  DOCX/XLSX header ("Data: …"); reports are still always computed from the
+  current data.
+- **UI**: project menu (sidebar project node, Edit menu) "Lock project…",
+  "Unlock project", "Remove project…" (`project.lock` / `project.unlock` /
+  `project.remove`); the project page has Lock/Unlock and Remove buttons
+  and a lock alert; a lock badge (`ProjectLockBadge`) shows on the project
+  page, module page, workspace tree and Project tab. Registry actions
+  that change data are marked `edits: true`; `isActionAvailable` (used by
+  every menu, shortcut and button) makes them unavailable while their
+  project is locked (`AppState.lockedProjectIds`, from the projects list
+  and the open project). Inline cell editing, the detail panel, row
+  drop-to-link, outline and module-tree drag and drop and the project
+  page's editing buttons are disabled too. The remove dialog
+  (`RemoveProjectModal`) captures the data folder when opened, closes on a
+  folder switch, refuses while the current folder differs and sends it
+  as `data_dir`.
+
 ### Project templates
 
 A template is a JSON file holding a project's *structure* — attribute
@@ -783,7 +870,7 @@ files.
 
 `project.json` and the app config file (`.reqman/config.json`) start with
 an integer `format_version` (`reqman/formats.py`: `PROJECT_FORMAT`,
-`CONFIG_FORMAT`; project currently 7, config 1). Module, requirement and
+`CONFIG_FORMAT`; project currently 8, config 1). Module, requirement and
 link-pair files have no version of their own; they are governed by their
 project's version. Templates keep their own, separate `format_version`.
 Project format 2 added `AttributeDefinition.modules` (per-module attribute
@@ -810,7 +897,11 @@ folders"): the 6 → 7 step turns every `module_order` id string into
 (a version 6 reader ignored them) and a non-list `module_order`, and
 rewrites no module, requirement or link-pair file. The bump makes an older
 ReqManTool refuse a version 7 project instead of dropping its folders (and
-every module in one) from the order on save.
+every module in one) from the order on save. Project format 8 added
+`Project.locked` (see "Project lifecycle: lock and remove"); the 7 → 8 step
+drops a stray `locked` key and rewrites no module, requirement or link-pair
+file. The bump makes an older ReqManTool refuse a version 8 project instead
+of dropping the lock on save, which would silently unlock it.
 
 Only optional attributes can be scoped to modules: a required attribute
 always applies to every module. `ProjectService._check_required_scope`
@@ -1412,9 +1503,9 @@ resource:
 
 | Resource | Routes |
 |---|---|
-| Projects | `POST/GET /projects` (`GET` lists unloadable projects as `{id, name, error}` stubs; `POST` body: `name`, `description`, optional `template_id`, optional `parent_project_id`), `GET /projects/{id}`, `PUT /projects/{id}/parent` (`{"parent_project_id": id or null}`), `GET/PUT /projects/{id}/references` (`{"references": [ids]}`; WS `project.references` / `project.set_references`), `PUT /projects/{id}/row-styles` (`{"row_styles": [...]}`; WS `project.set_row_styles`; 400 invalid) |
+| Projects | `POST/GET /projects` (`GET` lists unloadable projects as `{id, name, error}` stubs; `POST` body: `name`, `description`, optional `template_id`, optional `parent_project_id`), `GET /projects/{id}`, `PUT /projects/{id}/parent` (`{"parent_project_id": id or null}`), `GET/PUT /projects/{id}/references` (`{"references": [ids]}`; WS `project.references` / `project.set_references`), `PUT/DELETE /projects/{id}/lock` (lock `{reason}` / unlock; WS `project.lock` / `project.unlock`), `GET /projects/{id}/removal` (WS `project.removal_info`), `DELETE /projects/{id}` (`{confirm_name, data_dir}`; WS `project.remove`; broadcasts `changed` with `removed: true`) — see "Project lifecycle: lock and remove"; a change of a locked project is 423, `PUT /projects/{id}/row-styles` (`{"row_styles": [...]}`; WS `project.set_row_styles`; 400 invalid) |
 | History (git) | `GET /projects/{id}/git` (status; WS `project.git_status`), `POST /projects/{id}/git/enable` (WS `project.git_enable`, broadcasts `changed`, also after a part-way failure; 409 nested/foreign/detached/merge etc. in progress/`current` not checked out, 400 git off or missing or a failed step), `GET /projects/{id}/git/log?limit=` (WS `project.git_log`), `GET .../modules/{m}/requirements/{r}/history` (WS `requirement.history`) — see "Project history (git)" |
-| Baselines (git) | `POST /projects/{id}/baselines` (`{name, description}`; WS `baseline.create`, broadcasts `changed`; 409 duplicate name / not `ready` / `baseline` moved by hand, 400 invalid name or git off/missing), `GET /projects/{id}/baselines` (WS `baseline.list`), `GET /projects/{id}/baselines/{name}` (WS `baseline.get`; 409 for a newer-format baseline), `GET .../baselines/{name}/modules/{m}/requirements` (WS `baseline.requirements`), `GET /projects/{id}/baselines/compare?from=&to=` (`to`/`from` = a baseline name or `current`; WS `baseline.compare`) — reads are read-only; see "Project history (git)" |
+| Baselines (git) | `POST /projects/{id}/baselines` (`{name, description, lock?, lock_reason?}`; WS `baseline.create`, broadcasts `changed`; 409 duplicate name / not `ready` / `baseline` moved by hand, 400 invalid name or git off/missing), `GET /projects/{id}/baselines` (WS `baseline.list`), `GET /projects/{id}/baselines/{name}` (WS `baseline.get`; 409 for a newer-format baseline), `GET .../baselines/{name}/modules/{m}/requirements` (WS `baseline.requirements`), `GET /projects/{id}/baselines/compare?from=&to=` (`to`/`from` = a baseline name or `current`; WS `baseline.compare`) — reads are read-only; see "Project history (git)" |
 | Templates | `GET /templates` → `[{id, source, name, description, modules: [{key, name, prefix, type}], error}]`, `POST /projects/{id}/save-as-template` (`{name, description}`; 409 on a name clash; broadcasts `templates_changed`), `POST /templates/import` (raw template JSON request body, `Content-Type: application/json` required (415 otherwise), UTF-8 with optional BOM, at most 1 MiB (413); invalid → 400, name clash → 409; returns the template summary; broadcasts `templates_changed`; WS: `template.import` `{text}`) |
 | Attributes | `POST /projects/{id}/attributes` (optional `modules`, `module_types`; WS `attribute.add`), `PUT /projects/{id}/attributes/{attr}/modules` (`{modules, module_types, drop_values}`; WS `attribute.set_modules`) |
 | Link configurations | `POST/GET /projects/{id}/link-configurations` (create: optional `target_project_id`, a referenced project), `DELETE .../link-configurations/{config_id}` |
@@ -1452,7 +1543,11 @@ broadcasts `changed`), `project.save_as_template` (`{id, name,
 description}`) and `template.import` (`{text}`: the template file's
 content), both in `TEMPLATE_MUTATING_METHODS`: they broadcast
 `templates_changed` instead of `changed`. A 409 conflict on the REST side
-is a `-32602` error over WebSocket, like other validation errors.
+is a `-32602` error over WebSocket, like other validation errors; a change
+of a locked project (REST 423) is error code `-32004`. Project lifecycle:
+`project.lock` / `project.unlock` (`{id}`, broadcast `changed`),
+`project.removal_info` (read-only) and `project.remove` (`{id,
+confirm_name, data_dir}`, broadcasts `changed` with `removed: true`).
 
 ## Frontend structure
 

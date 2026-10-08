@@ -42,6 +42,7 @@ export const linkActions: Action<'link'>[] = [
   {
     id: 'link.remove',
     element: 'link',
+    edits: true,
     label: 'Remove link',
     icon: IconLinkOff,
     color: 'red',

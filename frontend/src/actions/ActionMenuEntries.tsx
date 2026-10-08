@@ -2,7 +2,7 @@ import { Menu, Text } from '@mantine/core';
 import { IconCheck } from '@tabler/icons-react';
 import { useEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
 import { useAppActions } from './context';
-import { contextFor, getAction, isSupported } from './registry';
+import { contextFor, getAction, isActionAvailable, isSupported } from './registry';
 import { formatShortcut } from './shortcuts';
 import type { Action, ActionIcon, ActionTargetOverrides, AppState, MenuEntry } from './types';
 
@@ -96,13 +96,13 @@ export function ActionMenuEntries({ entries, targets }: { entries: MenuEntry[]; 
       if (entry.kind === 'divider') return false;
       if (entry.kind === 'submenu') return hasAvailableEntry(entry.entries);
       const action = getAction(entry.id);
-      return action.isAvailable(contextFor(action, state, targets));
+      return isActionAvailable(action, contextFor(action, state, targets));
     });
 
   const renderAction = (id: string, key: string) => {
     const action = getAction(id);
     const ctx = contextFor(action, state, targets);
-    const available = action.isAvailable(ctx);
+    const available = isActionAvailable(action, ctx);
     const shortcut = action.shortcuts?.[0];
     const leftSection = action.isChecked ? checkSection(action.isChecked(ctx)) : iconSection(action.icon);
 

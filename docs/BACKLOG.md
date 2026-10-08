@@ -1252,6 +1252,51 @@
       menus and both requirement menus ("Project commits", "Module
       commits", "Requirement commits"). Not covered: tests; follow-ups
       in the backlog ("Commit browser: follow-ups").
+- [x] **Project lifecycle: remove project, lock project, baseline
+      modules** (2026-10-08; requested 2026-10-04, absorbs the former
+      "Baselines" item). Lock: `Project.locked` = `ProjectLock {by, email,
+      at, reason, baseline?}` (who from the git commit identity), written
+      only when set; PROJECT_FORMAT 7 → 8 (older tools would otherwise drop
+      the lock on save). One guard `_require_unlocked` inside
+      `_records_history` before any write; only unlock is exempt; errors
+      REST 423 / WS -32004. Allowed while locked: reads, exports, reports,
+      save as template, create baseline, git enable/push/pull/remote,
+      creating a subproject under a locked parent, linking from another
+      project into it (stored in the other project). Cascades into a
+      locked referencing project (requirement removal, module/project
+      purge) are refused 423 before writing. History messages "Project
+      locked: <reason>" / "Project unlocked". Remove: typed-name
+      confirmation; refused 409 while it has subprojects or referencing
+      projects (listed; broken projects count), 423 while locked, 409 if
+      the data folder changed (server checks `data_dir`), 400 on name
+      mismatch; the folder must be a real directory directly in the data
+      folder (no symlink/junction), renamed into `.reqman-staging/` then
+      deleted. The project's `.git` is inside its folder, so history and
+      baselines go too; a server-written recovery hint by git state
+      (remote: clone back + what is unpushed; nested in another repo:
+      restore from it; else: no recovery without a backup). Broadcast
+      `{"event":"changed","project_id":…,"removed":true}`; clients close
+      its tabs, clear the clipboard and navigate away. Baseline glue:
+      create baseline accepts `lock`/`lock_reason` (locks first, then
+      tags; the lock is undone if the baseline fails); verification and
+      execution reports and their DOCX/XLSX exports carry `data_source`
+      ("Data: … = baseline v1"). Endpoints: `PUT/DELETE
+      /projects/{project_id}/lock`, `GET /projects/{project_id}/removal`,
+      `DELETE /projects/{project_id}` (`{confirm_name, data_dir}`),
+      baselines POST `lock`, `lock_reason`; WS `project.lock`,
+      `project.unlock`, `project.removal_info`, `project.remove`.
+      Backend: `backend/reqman/{models.py, service.py, store.py, app.py,
+      history.py, git_repo.py, report_export.py, formats.py}`; design in
+      `docs/ARCHITECTURE.md` ("Project lifecycle: lock and remove"). UI:
+      `LockProjectModal`, `RemoveProjectModal`, `ProjectLockBadge`,
+      `projectLock.ts` (new); lock badge on the project page, module page
+      and sidebar, lock alert, Lock/Unlock buttons and menu entries,
+      Remove project in the project menus; `edits: true` on 37
+      data-changing registry actions disables them while locked, as are
+      inline editing, the detail panel, drag-and-drop and row actions;
+      "Lock after baseline" in `CreateBaselineModal`. Not covered: tests,
+      browser verification; follow-ups in the backlog ("Project
+      lifecycle: follow-ups").
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -1520,23 +1565,16 @@ to the categories above.
       requirement ids, so rewrite prompts can modify instead of
       duplicating (shows a diff preview before applying). Users can add,
       edit, export and import their own prompts.
-- [ ] Project lifecycle: remove project, lock project, baseline modules.
-      Requested 2026-10-04 (absorbs the former "Baselines" item).
-      (1) Remove project: deletes the project folder after a typed-name
-      confirmation; refused while it has subprojects or other projects
-      reference it (listed in the error); user data is git-tracked, so
-      the dialog points at git for recovery; broadcasts a change so all
-      clients drop it. REST + WebSocket. (2) Lock project:
-      `Project.locked` with who/when/reason; while locked every mutating
-      operation on the project, its modules, requirements, links, views
-      and attributes is rejected server-side (one guard in
-      `ProjectService`, a dedicated "project is locked" error) except
-      unlock; the UI shows a lock badge and disables editing, menus and
-      drag-and-drop. (3) Baselines: delivered by the git
-      integration item (baseline branch + annotated `baseline/<name>`
-      tags); this item adds the UI glue — "lock after baseline", and
-      baseline references from sign-off records, verification and test
-      execution reports, and impact analysis.
+- [ ] Project lifecycle: follow-ups (2026-10-08). (1) Baseline
+      references from sign-off records and impact analysis (those
+      features do not exist yet). (2) Reports are always computed from
+      the current data: no "compute against a baseline", and the
+      traceability report has no data source. (3) For a locked project
+      "References…" and "Row styles" open nothing (no read-only view).
+      (4) The Purge confirm text does not mention the lock. (5) The
+      remove dialog compares the name exactly while the server trims.
+      (6) No browser verification, no frontend tests; backend tests
+      pending (phase B).
 - [ ] Side panels: follow-ups (2026-10-08). (1) Interactive behaviour is
       not browser-verified: dragging, shortcuts (including Option+Cmd+B
       on macOS and Firefox's own Ctrl+B), overlays, Escape. (2) Focus is
@@ -1551,7 +1589,10 @@ to the categories above.
       (`root_changed`), and the captured project id is then purged in
       the new folder, where ids can repeat. Fix: close purge modals in
       the `subscribeDatasetCleared` listener, or capture `dataDir` and
-      refuse a confirm when it no longer matches. (2) On read-only
+      refuse a confirm when it no longer matches. 2026-10-08: the new
+      Remove project dialog has this protection (it captures `dataDir`,
+      the server checks `data_dir`); the purge dialogs are still
+      unprotected. (2) On read-only
       baseline pages, File ▸ Export and Edit ▸ Purge project are enabled
       but act on the CURRENT data; export there silently delivers current
       content. Fix: add `baselineName` to AppState and either disable

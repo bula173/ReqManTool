@@ -21,6 +21,7 @@ import { LEFT_PANEL_TAB_STORAGE_KEY, LEFT_PANEL_TABS, type LeftPanelTab } from '
 import { ModuleOutline } from './ModuleOutline';
 import { ProjectTab } from './ProjectTab';
 import { ancestorIds, buildProjectForest, type ProjectForest } from './projectTree';
+import { ProjectLockBadge } from './ProjectLockBadge';
 
 interface NodeContext {
   forest: ProjectForest;
@@ -171,7 +172,15 @@ function ProjectNode({
 
   return (
     <NavLink
-      label={project.name}
+      label={
+        project.locked ? (
+          <>
+            {project.name} <ProjectLockBadge lock={project.locked} compact />
+          </>
+        ) : (
+          project.name
+        )
+      }
       leftSection={<IconFolders size={16} />}
       active={activeProjectId === projectId}
       opened={opened}

@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { moduleReportExportUrl, useVerificationReport } from '../api/queries';
 import type { VerificationReport, VerificationStatus } from '../api/types';
-import { ExportMenu, ObjectRef, ReportCard, ReportError, StatGrid, StatusBadge } from '../components/ReportParts';
+import { DataSourceLine, ExportMenu, ObjectRef, ReportCard, ReportError, StatGrid, StatusBadge } from '../components/ReportParts';
 import { STATUS_LABELS } from '../components/reportFormat';
 import { modulePath } from '../layout/moduleTabs';
 
@@ -83,6 +83,7 @@ export function VerificationReportPage() {
               {report.totals.excluded > 0 && ` ${report.totals.excluded} headings/information objects left out.`}
             </Text>
             <AttributeSources report={report} />
+            <DataSourceLine projectId={projectId} source={report.data_source} />
           </ReportCard>
 
           <ReportCard

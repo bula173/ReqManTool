@@ -3,7 +3,8 @@ import { IconDownload, IconInfoCircle } from '@tabler/icons-react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError } from '../api/client';
-import { modulePath } from '../layout/moduleTabs';
+import type { ReportDataSource } from '../api/types';
+import { modulePath, projectPath } from '../layout/moduleTabs';
 import { STATUS_COLORS, STATUS_LABELS } from './reportFormat';
 
 /** Shared building blocks of the report pages (traceability, verification, test execution). */
@@ -142,5 +143,42 @@ export function RefList({
         <ObjectRef key={id} projectId={projectId} moduleId={moduleId} id={id} text={texts?.get(id)} />
       ))}
     </Group>
+  );
+}
+
+/**
+ * Which data the report was computed from: the project's current files at a
+ * commit (and the baseline tagged there, linked), uncommitted changes, the
+ * latest baseline otherwise, and the project lock.
+ */
+export function DataSourceLine({ projectId, source }: { projectId: string; source: ReportDataSource | undefined }) {
+  if (!source) return null;
+  const baselineLink = (name: string) => (
+    <Anchor key={name} component={Link} to={`${projectPath(projectId)}/baselines/${encodeURIComponent(name)}`} size="xs">
+      {name}
+    </Anchor>
+  );
+  return (
+    <Text size="xs" c="dimmed" mt={4}>
+      Data: the current project{' '}
+      {source.commit ? (
+        <>
+          at commit <code>{source.commit.slice(0, 12)}</code>
+          {source.baselines.length > 0 && (
+            <>
+              {' '}
+              = baseline {source.baselines.map((name, index) => [index > 0 ? ', ' : '', baselineLink(name)])}
+            </>
+          )}
+          {source.pending_changes > 0 && ` plus ${source.pending_changes} uncommitted change(s)`}
+          {source.latest_baseline && !source.baselines.includes(source.latest_baseline.name) && (
+            <> (latest baseline: {baselineLink(source.latest_baseline.name)}, not the same data)</>
+          )}
+        </>
+      ) : (
+        '(no git history: not tied to a commit or baseline)'
+      )}
+      {source.locked && '; the project is locked'}.
+    </Text>
   );
 }

@@ -34,6 +34,7 @@ import {
   LINK_NAVIGATION_MENU,
   REQUIREMENT_CONTEXT_MENU,
   REQUIREMENT_NAVIGATION_MENU,
+  isProjectLocked,
 } from '../actions/registry';
 import { contextMenuTargetProps } from '../actions/shortcuts';
 import { applicableAttributes } from '../api/applicability';
@@ -48,6 +49,7 @@ import {
   useViews,
 } from '../api/queries';
 import { EditableAttributeCell } from '../components/EditableAttributeCell';
+import { ProjectLockBadge } from '../components/ProjectLockBadge';
 import { RequirementDetailPanel } from '../components/RequirementDetailPanel';
 import { StatusBadge } from '../components/ReportParts';
 import { ResizableHeaderCell, type ColumnMenuKind } from '../components/ResizableHeaderCell';
@@ -275,6 +277,8 @@ export function ModulePage() {
     });
   const selectedId = appState.selectedRequirement?.id ?? null;
   const selectedRequirement = requirements.find((r) => r.id === selectedId) ?? null;
+  // A locked project refuses every change (server-side): no inline editing, no drop-to-link, no row actions.
+  const locked = isProjectLocked(appState, projectId);
 
   const toggleExpanded = (id: string) => {
     setCollapsed((prev) => {
@@ -317,6 +321,7 @@ export function ModulePage() {
         <Group gap="xs">
           <Title order={2}>{module.name}</Title>
           <Badge variant="outline">{module.prefix}</Badge>
+          <ProjectLockBadge lock={projectQuery.data.locked} />
         </Group>
         <Text c="dimmed">{module.description || 'No description'}</Text>
       </div>
@@ -440,7 +445,7 @@ export function ModulePage() {
                   data-row-bold={appearance.bold || undefined}
                   data-drop-target={dropTargetId === req.id || undefined}
                   onDragOver={(e) => {
-                    if (!hasRequirementDragData(e.dataTransfer)) return;
+                    if (locked || !hasRequirementDragData(e.dataTransfer)) return;
                     e.preventDefault();
                     e.dataTransfer.dropEffect = 'link';
                     if (dropTargetId !== req.id) setDropTargetId(req.id);
@@ -450,7 +455,7 @@ export function ModulePage() {
                     setDropTargetId((current) => (current === req.id ? null : current));
                   }}
                   onDrop={(e) => {
-                    if (!hasRequirementDragData(e.dataTransfer)) return;
+                    if (locked || !hasRequirementDragData(e.dataTransfer)) return;
                     e.preventDefault();
                     setDropTargetId(null);
                     const payload = readRequirementDragData(e.dataTransfer);
@@ -512,7 +517,7 @@ export function ModulePage() {
                               attr={attr}
                               value={req.attributes[attr.id]}
                               onSave={(value) => handleCellSave(req, attr.id, value)}
-                              disabled={updateRequirement.isPending}
+                              disabled={updateRequirement.isPending || locked}
                               projectId={projectId}
                               onNavigateToLinked={handleNavigateToLinked}
                               onLinkMenu={(link, kind, position) => openLinkMenu(req, attr.id, link, kind, position)}
@@ -545,17 +550,29 @@ export function ModulePage() {
                     <div className="reqman-cell-clip">
                       <Group gap={4} wrap="nowrap">
                         <Tooltip label="Add child">
-                          <ActionIcon variant="subtle" onClick={() => run('requirement.addChild', { requirement: req })}>
+                          <ActionIcon
+                            variant="subtle"
+                            disabled={locked}
+                            onClick={() => run('requirement.addChild', { requirement: req })}
+                          >
                             <IconPlus size={16} />
                           </ActionIcon>
                         </Tooltip>
                         <Tooltip label="Move to parent">
-                          <ActionIcon variant="subtle" onClick={() => run('requirement.moveTo', { requirement: req })}>
+                          <ActionIcon
+                            variant="subtle"
+                            disabled={locked}
+                            onClick={() => run('requirement.moveTo', { requirement: req })}
+                          >
                             <IconArrowsMove size={16} />
                           </ActionIcon>
                         </Tooltip>
                         <Tooltip label="Link to">
-                          <ActionIcon variant="subtle" onClick={() => run('requirement.link', { requirement: req })}>
+                          <ActionIcon
+                            variant="subtle"
+                            disabled={locked}
+                            onClick={() => run('requirement.link', { requirement: req })}
+                          >
                             <IconLink size={16} />
                           </ActionIcon>
                         </Tooltip>
@@ -563,6 +580,7 @@ export function ModulePage() {
                           <ActionIcon
                             variant="subtle"
                             color="red"
+                            disabled={locked}
                             onClick={() => run('requirement.delete', { requirement: req })}
                           >
                             <IconTrash size={16} />
@@ -587,7 +605,7 @@ export function ModulePage() {
           attributes={attributes}
           requirement={selectedRequirement}
           onSave={handleCellSave}
-          saving={updateRequirement.isPending}
+          saving={updateRequirement.isPending || locked}
           onNavigateToLinked={handleNavigateToLinked}
           onClose={() => run('view.toggleDetailPanel')}
           verification={isRequirementsModule && selectedRequirement ? verificationOf(selectedRequirement.id) : undefined}

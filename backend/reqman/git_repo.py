@@ -1010,6 +1010,47 @@ class GitHistory:
             email = email or f"{login}@localhost"
         return name, email
 
+    def user_identity(self, project_dir: Path) -> tuple[str, str]:
+        """``(name, email)`` of the user, for attribution outside commits (e.g. who locked a project).
+
+        The same identity commits get: ``REQMAN_GIT_AUTHOR_*``, else git's
+        own (the project repository's config, the user's config,
+        ``GIT_AUTHOR_*``), else the login name. Works without a repository
+        (git's global config); with history turned off or git missing, git
+        is not run and the login name is used. Never raises.
+        """
+        name, email = self.settings.author_name, self.settings.author_email
+        if name and email:
+            return name, email
+        if self.settings.enabled and self.git_version() is not None:
+            try:
+                info = self.detect(project_dir)
+                if info.state in (STATE_READY, STATE_PAUSED) and info.git_dir is not None:
+                    return self._identity(info)
+                result = self._run(["var", "GIT_AUTHOR_IDENT"], project_dir, check=False, read_only=True)
+                match = re.match(r"^(.*?) <(.*)> \d+ [+-]\d{4}$", result.stdout.decode("utf-8", "replace").strip())
+                if result.returncode == 0 and match:
+                    name = name or match.group(1).strip() or None
+                    email = email or match.group(2).strip() or None
+            except (GitError, OSError):
+                pass
+        if not (name and email):
+            try:
+                login = getpass.getuser()
+            except Exception:  # noqa: BLE001 - no login name available
+                login = "reqman"
+            name = name or login
+            email = email or f"{login}@localhost"
+        return name, email
+
+    def folder_lock(self, project_dir: Path) -> threading.Lock:
+        """The lock git operations on ``project_dir`` hold (e.g. to remove the folder between them)."""
+        return self._lock(project_dir)
+
+    def forget(self, project_dir: Path) -> None:
+        """Drop what is remembered about a project folder that was removed (its last error)."""
+        self._last_errors.pop(str(project_dir), None)
+
     def _can_squash(self, info: RepoInfo, head: _Head, identity: tuple[str, str]) -> bool:
         window = self.settings.squash_window_seconds
         if window <= 0 or len(head.parents) != 1 or session_of(head.body) is None:

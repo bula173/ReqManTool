@@ -184,6 +184,44 @@ def traceability_to_xlsx(report: dict[str, Any], project_name: str) -> bytes:
     return _xlsx_bytes(workbook)
 
 
+# --- data source (which commit / baseline a report was computed from) -----------------
+
+
+def data_source_text(report: dict[str, Any]) -> str | None:
+    """One line naming the data a report was computed from; ``None`` when the report has no ``data_source``."""
+    source = report.get("data_source")
+    if not isinstance(source, dict):
+        return None
+    commit = source.get("commit")
+    if not commit:
+        text = "Current data (no git history)"
+    else:
+        text = f"Current data at commit {commit[:12]}"
+        if source.get("baselines"):
+            text += f" (baseline {', '.join(source['baselines'])})"
+        if source.get("pending_changes"):
+            text += f" plus {source['pending_changes']} uncommitted change(s)"
+        latest = source.get("latest_baseline")
+        if latest and latest.get("name") not in (source.get("baselines") or []):
+            text += f"; latest baseline: {latest['name']} ({str(latest.get('commit') or '')[:12]})"
+    lock = source.get("locked")
+    if isinstance(lock, dict):
+        by = f" by {lock['by']}" if lock.get("by") else ""
+        text += f"; project locked{by}"
+    return text
+
+
+def _data_source_row(report: dict[str, Any]) -> list[list[Any]]:
+    text = data_source_text(report)
+    return [["Data", text]] if text else []
+
+
+def _docx_data_source(document: Any, report: dict[str, Any]) -> None:
+    text = data_source_text(report)
+    if text:
+        document.add_paragraph(_docx_text(f"Data: {text}"))
+
+
 # --- verification report ------------------------------------------------------------
 
 
@@ -213,6 +251,7 @@ def verification_to_xlsx(report: dict[str, Any], project_name: str) -> bytes:
         ["Test case modules", ", ".join(m["name"] for m in report["test_modules"]) or "(none)"],
         ["Execution modules", ", ".join(m["name"] for m in report["execution_modules"]) or "(none)"],
         ["Generated", date.today().isoformat()],
+        *_data_source_row(report),
         [],
         ["Status", "Requirements", "%"],
     ]
@@ -245,6 +284,7 @@ def verification_to_docx(report: dict[str, Any], project_name: str) -> bytes:
     document.add_heading(_docx_text(f"Verification report: {module['name']}"), level=0)
     document.add_paragraph(_docx_text(f"Project: {project_name}"))
     document.add_paragraph(f"Generated: {date.today().isoformat()}")
+    _docx_data_source(document, report)
     document.add_paragraph(_docx_text(
         "Test case modules: " + (", ".join(m["name"] for m in report["test_modules"]) or "(none)")
     ))
@@ -300,6 +340,7 @@ def execution_to_xlsx(report: dict[str, Any], project_name: str) -> bytes:
         ["Module", report["module"]["name"]],
         ["Test case modules", ", ".join(m["name"] for m in report["test_modules"]) or "(none)"],
         ["Generated", date.today().isoformat()],
+        *_data_source_row(report),
         [],
     ]
     rows += _execution_summary_rows(report)
@@ -339,6 +380,7 @@ def execution_to_docx(report: dict[str, Any], project_name: str) -> bytes:
     document.add_heading(_docx_text(f"Test execution report: {report['module']['name']}"), level=0)
     document.add_paragraph(_docx_text(f"Project: {project_name}"))
     document.add_paragraph(f"Generated: {date.today().isoformat()}")
+    _docx_data_source(document, report)
     document.add_paragraph(_docx_text(
         "Test case modules: " + (", ".join(m["name"] for m in report["test_modules"]) or "(none)")
     ))

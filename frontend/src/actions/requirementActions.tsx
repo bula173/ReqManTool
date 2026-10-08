@@ -152,6 +152,7 @@ export const requirementActions: Action<'requirement'>[] = [
   {
     id: 'requirement.cut',
     element: 'requirement',
+    edits: true,
     label: 'Cut',
     icon: IconCut,
     shortcuts: [{ key: 'x', mod: true }],
@@ -178,6 +179,7 @@ export const requirementActions: Action<'requirement'>[] = [
   {
     id: 'requirement.pasteAsChild',
     element: 'requirement',
+    edits: true,
     label: 'Paste as child',
     icon: IconClipboard,
     shortcuts: [{ key: 'v', mod: true }],
@@ -200,6 +202,7 @@ export const requirementActions: Action<'requirement'>[] = [
     // one is unavailable, i.e. with the copied requirement itself selected.
     id: 'requirement.pasteAsSibling',
     element: 'requirement',
+    edits: true,
     label: 'Paste as sibling',
     icon: IconClipboardPlus,
     shortcuts: [{ key: 'v', mod: true }],
@@ -221,6 +224,7 @@ export const requirementActions: Action<'requirement'>[] = [
   {
     id: 'requirement.pasteAtRoot',
     element: 'requirement',
+    edits: true,
     label: 'Paste at root',
     icon: IconClipboard,
     // Ctrl/Cmd+V falls back to this only when no requirement is selected;
@@ -236,6 +240,7 @@ export const requirementActions: Action<'requirement'>[] = [
     // The module page's "Add Requirement" button: a new top-level requirement.
     id: 'requirement.addTopLevel',
     element: 'requirement',
+    edits: true,
     label: 'New requirement',
     icon: IconPlus,
     opensDialog: true,
@@ -248,6 +253,7 @@ export const requirementActions: Action<'requirement'>[] = [
   {
     id: 'requirement.addChild',
     element: 'requirement',
+    edits: true,
     label: 'Add child',
     icon: IconSubtask,
     opensDialog: true,
@@ -267,6 +273,7 @@ export const requirementActions: Action<'requirement'>[] = [
     // A new requirement under the same parent, placed right after the target.
     id: 'requirement.addSibling',
     element: 'requirement',
+    edits: true,
     label: 'Add sibling',
     icon: IconRowInsertBottom,
     opensDialog: true,
@@ -286,6 +293,7 @@ export const requirementActions: Action<'requirement'>[] = [
   {
     id: 'requirement.moveUp',
     element: 'requirement',
+    edits: true,
     label: 'Move Up',
     icon: IconArrowUp,
     shortcuts: [{ key: 'ArrowUp', alt: true }],
@@ -298,6 +306,7 @@ export const requirementActions: Action<'requirement'>[] = [
   {
     id: 'requirement.moveDown',
     element: 'requirement',
+    edits: true,
     label: 'Move Down',
     icon: IconArrowDown,
     shortcuts: [{ key: 'ArrowDown', alt: true }],
@@ -310,6 +319,7 @@ export const requirementActions: Action<'requirement'>[] = [
   {
     id: 'requirement.moveTo',
     element: 'requirement',
+    edits: true,
     label: 'Move to parent',
     icon: IconArrowsMove,
     opensDialog: true,
@@ -328,6 +338,7 @@ export const requirementActions: Action<'requirement'>[] = [
   {
     id: 'requirement.link',
     element: 'requirement',
+    edits: true,
     label: 'Link to',
     icon: IconLink,
     opensDialog: true,
@@ -346,6 +357,7 @@ export const requirementActions: Action<'requirement'>[] = [
   {
     id: 'requirement.delete',
     element: 'requirement',
+    edits: true,
     label: 'Delete',
     icon: IconTrash,
     color: 'red',

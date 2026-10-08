@@ -100,6 +100,8 @@ export interface ModuleTabs {
   /** Adds a tab (at the end) unless it is open already. */
   add: (tab: ModuleTabRef) => void;
   remove: (keys: string[]) => void;
+  /** Closes every tab of a project (it was removed). */
+  removeProject: (projectId: string) => void;
   /** Moves a tab so that it ends up at position `toIndex` (dropped on the tab at that position). */
   move: (key: string, toIndex: number) => void;
 }
@@ -140,6 +142,10 @@ export function useModuleTabs(dataDir: string | null): ModuleTabs {
     (keys: string[]) => update((current) => current.filter((t) => !keys.includes(tabKey(t)))),
     [update],
   );
+  const removeProject = useCallback(
+    (projectId: string) => update((current) => current.filter((t) => t.projectId !== projectId)),
+    [update],
+  );
   const move = useCallback(
     (key: string, toIndex: number) =>
       update((current) => {
@@ -153,5 +159,5 @@ export function useModuleTabs(dataDir: string | null): ModuleTabs {
     [update],
   );
 
-  return { tabs, add, remove, move };
+  return { tabs, add, remove, removeProject, move };
 }
