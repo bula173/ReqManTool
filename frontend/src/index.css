@@ -130,12 +130,22 @@ th:hover > div > .reqman-col-menu-button,
   right: 0;
   width: 2px;
   border-radius: 1px;
+  /* Always visible, so the column edge (and the drag zone) can be found. */
+  background: var(--mantine-color-default-border);
 }
 
 .reqman-col-resize-handle:hover::after,
 .reqman-col-resize-handle:focus-visible::after,
 .reqman-col-resize-handle[data-resizing]::after {
+  top: 0;
+  bottom: 0;
+  width: 3px;
   background: var(--mantine-color-blue-filled);
+}
+
+/* Header cells: a visible vertical divider between columns. */
+.reqman-resizable-table thead th + th {
+  border-left: 1px solid var(--mantine-color-default-border);
 }
 
 .reqman-col-resize-handle:focus-visible {
