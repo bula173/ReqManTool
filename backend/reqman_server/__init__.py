@@ -24,6 +24,14 @@ pages' REST routes and WebSocket methods (``admin.py``, the latter through
 Slice 3: module edit locks (``module_locks.py``): check out a module for
 exclusive editing, installed as ``HOOKS.lock_service``; lock state in
 ``module_locks.json``; REST routes and WebSocket methods (``module.*``).
+
+Slice 4: attribution and audit. The audit log (``audit.py``,
+``audit.jsonl``) records logins, failed logins, logouts, admin changes,
+broken module locks and — through ``HOOKS.audit`` — the core's project
+create/lock/unlock/remove/purge; server admins read it (``GET
+/admin/audit``, ``admin.audit.list``). Commit authorship and the per-user
+squash window, and ``by`` in live-sync events, are core behavior driven by
+the request identity.
 """
 
 from __future__ import annotations
@@ -34,6 +42,7 @@ from typing import Any
 from reqman.extensions import EditionContext
 
 from .admin import AdminService, build_admin_router, build_rpc_methods
+from .audit import AuditLog, AuditService, build_audit_router, build_audit_rpc_methods
 from .memberships import MembershipRegistry
 from .module_locks import ModuleLockRegistry, ModuleLocks, build_lock_router, build_lock_rpc_methods
 from .middleware import AuthMiddleware
@@ -52,6 +61,7 @@ USERS_FILE = "users.json"
 SESSIONS_FILE = "sessions.json"
 MEMBERSHIPS_FILE = "memberships.json"
 MODULE_LOCKS_FILE = "module_locks.json"
+AUDIT_FILE = "audit.jsonl"
 
 
 class ServerEditionImpl:
@@ -63,6 +73,7 @@ class ServerEditionImpl:
         self.users: UserRegistry | None = None
         self.memberships: MembershipRegistry | None = None
         self.locks: ModuleLocks | None = None
+        self.audit: AuditLog | None = None
 
     def install(self, app, context: EditionContext) -> None:
         settings = load_server_settings(
@@ -70,6 +81,7 @@ class ServerEditionImpl:
         )
         settings.state_dir.mkdir(parents=True, exist_ok=True)
         users = UserRegistry(settings.state_dir / USERS_FILE, admins=settings.admins, admin_groups=settings.admin_groups)
+        audit = AuditLog(settings.state_dir / AUDIT_FILE, users)
         memberships = MembershipRegistry(settings.state_dir / MEMBERSHIPS_FILE)
         permissions = Permissions(settings, users, memberships)
         guard = MembershipGuard(permissions)
@@ -86,30 +98,36 @@ class ServerEditionImpl:
             require_checkout=settings.require_module_checkout,
             project_exists=context.project_exists,
             module_exists=context.module_exists,
+            audit=audit,
         )
         clients = {p.id: OidcClient(p) for p in settings.providers}
         app.include_router(
             build_router(
                 settings, clients, sessions, PendingLogins(), users, permissions,
-                locks=lock_registry, broadcast=context.broadcast,
+                locks=lock_registry, broadcast=context.broadcast, audit=audit,
             )
         )
         admin = AdminService(
-            permissions, guard, users, memberships, sessions, context.project_exists, locks=lock_registry
+            permissions, guard, users, memberships, sessions, context.project_exists, locks=lock_registry, audit=audit
         )
+        audit_service = AuditService(audit, permissions)
         app.include_router(build_admin_router(admin, context.broadcast))
+        app.include_router(build_audit_router(audit_service))
         app.include_router(build_lock_router(locks, context.broadcast))
         # The core asks these at its choke points (ProjectService) and in its WebSocket dispatcher.
         context.hooks.permission_guard = guard
         context.hooks.lock_service = locks
         context.hooks.project_events = MembershipEvents(memberships, locks=lock_registry)
+        context.hooks.audit = audit
         context.hooks.rpc_methods.update(build_rpc_methods(admin, context.broadcast))
         context.hooks.rpc_methods.update(build_lock_rpc_methods(locks, context.broadcast))
+        context.hooks.rpc_methods.update(build_audit_rpc_methods(audit_service))
         app.add_middleware(
             AuthMiddleware, settings=settings, sessions=sessions, users=users, frontend_dir=context.frontend_dir
         )
         self.settings, self.sessions, self.users, self.memberships = settings, sessions, users, memberships
         self.locks = locks
+        self.audit = audit
         if not settings.cookie_secure:
             logger.warning("Server edition: the session cookie is not marked Secure (cookie_secure: false)")
         logger.info(

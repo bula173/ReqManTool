@@ -68,8 +68,14 @@ from .extensions import (
     ACTION_PROJECT_CREATE,
     ACTION_PROJECT_READ,
     ACTION_PROJECT_WRITE,
+    AUDIT_PROJECT_CREATE,
+    AUDIT_PROJECT_LOCK,
+    AUDIT_PROJECT_PURGE,
+    AUDIT_PROJECT_REMOVE,
+    AUDIT_PROJECT_UNLOCK,
     HOOKS,
     AccessDeniedError,
+    audit,
     check_module_write,
     check_permission,
     current_identity,
@@ -974,6 +980,7 @@ class ProjectService:
             HOOKS.project_events.project_created(current_identity(), project_id)
         except Exception:  # noqa: BLE001 - the project was created; report it, keep it
             logger.exception("Project %s was created, but the edition could not record it", project_id)
+        audit(AUDIT_PROJECT_CREATE, project_id)
 
     def _project_removed(self, project_id: str) -> None:
         try:
@@ -1833,6 +1840,7 @@ class ProjectService:
             baseline=baseline,
         )
         self.store.save_project(project)
+        audit(AUDIT_PROJECT_LOCK, project_id, reason=text, baseline=baseline)
         return project
 
     @_records_history
@@ -1844,6 +1852,7 @@ class ProjectService:
         if project.locked is not None:
             project.locked = None
             self.store.save_project(project)
+            audit(AUDIT_PROJECT_UNLOCK, project_id)
         return project
 
     def _removal_blockers(self, project_id: str) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
@@ -1993,6 +2002,7 @@ class ProjectService:
         if leftover is not None:
             logger.warning("Removed project %s, but could not delete all of %s", project_id, leftover)
         self._project_removed(project_id)
+        audit(AUDIT_PROJECT_REMOVE, project_id, name=project.name)
         return {"removed": project_id, "name": project.name, "leftover": leftover}
 
     # --- project references -----------------------------------------------------
@@ -3364,6 +3374,7 @@ class ProjectService:
         total = 0
         for module_id in module_ids:
             total += self._purge_module(project_id, module_id)
+        audit(AUDIT_PROJECT_PURGE, project_id, requirements=total)
         return total
 
     # --- link configurations ("link modules") ----------------------------------

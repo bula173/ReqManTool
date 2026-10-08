@@ -675,6 +675,8 @@ def test_history_on_unborn_repo_is_available_and_uncommitted(root, clock):
         "entries": [],
         "blame": {},
         "truncated": False,
+        "created": None,
+        "modified": None,
         "uncommitted": True,
     }
 

@@ -201,6 +201,23 @@ export function RequirementDetailPanel({
                 </Text>
                 <Text fw={600}>{requirement.id}</Text>
               </div>
+              {history?.available && (history.created || history.modified) && (
+                <div>
+                  <Text size="xs" c="dimmed">
+                    Created / last changed (from the git history)
+                  </Text>
+                  {history.created && (
+                    <Text size="xs" title={history.created.author_email}>
+                      Created by {history.created.author_name}, {formatDate(history.created.date)}
+                    </Text>
+                  )}
+                  {history.modified && history.modified.commit !== history.created?.commit && (
+                    <Text size="xs" title={history.modified.author_email}>
+                      Last changed by {history.modified.author_name}, {formatDate(history.modified.date)}
+                    </Text>
+                  )}
+                </div>
+              )}
               {verification && (
                 <div>
                   <Tooltip

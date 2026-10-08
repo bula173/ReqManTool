@@ -204,7 +204,9 @@ class ConnectionManager:
     edition; ``None`` in the local edition). A ``changed`` event of a project
     is only sent to connections whose user may read that project (the
     permission guard), so project ids never reach other users; ``removed``
-    events go to everyone (the members are forgotten with the project).
+    events go to everyone (the members are forgotten with the project). In
+    the server edition a ``changed`` event carries ``by: {user_id, name}``,
+    the user whose request made the change.
     """
 
     def __init__(self) -> None:
@@ -229,12 +231,22 @@ class ConnectionManager:
         """
         others = sorted(service.take_touched_projects() - {project_id})
         for changed_id in [project_id, *others]:
-            await self._send_all({"event": "changed", "project_id": changed_id}, exclude)
+            await self._send_all(self._with_author({"event": "changed", "project_id": changed_id}), exclude)
 
     async def broadcast_removed(self, project_id: str, exclude: WebSocket | None = None) -> None:
         """``changed`` with ``removed: true``: the project no longer exists (clients drop it)."""
         service.take_touched_projects()
-        await self._send_all({"event": "changed", "project_id": project_id, "removed": True}, exclude)
+        await self._send_all(
+            self._with_author({"event": "changed", "project_id": project_id, "removed": True}), exclude
+        )
+
+    @staticmethod
+    def _with_author(message: dict) -> dict:
+        """Server edition: ``by: {user_id, name}`` of the user whose change it was (none in local mode)."""
+        identity = current_identity()
+        if identity is not None:
+            message["by"] = {"user_id": identity.user_id, "name": identity.name}
+        return message
 
     async def broadcast_root_changed(self) -> None:
         await self._send_all({"event": "root_changed"})

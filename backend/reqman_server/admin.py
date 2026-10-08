@@ -21,7 +21,9 @@ WebSocket methods (``HOOKS.rpc_methods``, same rules and results):
 Every change broadcasts ``{"event": "permissions_changed"}``: clients
 refetch their roles and the project list. A refusal is ``AccessDeniedError``
 (REST 403, WebSocket -32003); a project admin cannot leave their project
-without a project admin (400; server admins can).
+without a project admin (400; server admins can). Every change is written
+to the audit log (``audit.py``: ``admin.user_update``, ``admin.member_set``,
+``admin.member_remove``) when one is given.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from pydantic import BaseModel
 
 from reqman.extensions import ACTION_PROJECT_ADMIN, AccessDeniedError, RequestIdentity, current_identity
 
+from .audit import AUDIT_MEMBER_REMOVE, AUDIT_MEMBER_SET, AUDIT_USER_UPDATE, AuditLog
 from .memberships import MembershipRegistry
 from .permissions import MembershipGuard, Permissions
 from .sessions import SessionStore
@@ -55,8 +58,10 @@ class AdminService:
         sessions: SessionStore,
         project_exists: Callable[[str], bool] | None,
         locks: Any = None,
+        audit: AuditLog | None = None,
     ) -> None:
         self.permissions = permissions
+        self.audit = audit
         self.guard = guard
         self.users = users
         self.memberships = memberships
@@ -121,7 +126,12 @@ class AdminService:
         logger.info(
             "Server admin %s changed user %s: active=%s server_admin=%s", actor.id, user_id, active, server_admin
         )
+        self._audit(AUDIT_USER_UPDATE, None, user_id, {"active": active, "server_admin": server_admin})
         return user.admin_view()
+
+    def _audit(self, action: str, project_id: str | None, target: str, details: dict[str, Any]) -> None:
+        if self.audit is not None:
+            self.audit.safe_record(current_identity(), action, project_id, details, target_user_id=target)
 
     # --- project members (project admins, server admins) ------------------------------
 
@@ -176,6 +186,8 @@ class AdminService:
             self._keep_a_project_admin(actor, project_id, target.id)
         self.memberships.set_role(project_id, target.id, role, added_by=actor.id)
         logger.info("%s set %s as %s of project %s", actor.id, target.id, role, project_id)
+        if current != role:
+            self._audit(AUDIT_MEMBER_SET, project_id, target.id, {"role": role, "previous_role": current})
         return self.list_members(project_id)
 
     def remove_member(self, project_id: Any, user_id: Any) -> dict[str, Any]:
@@ -189,6 +201,7 @@ class AdminService:
             self._keep_a_project_admin(actor, project_id, user_id)
         self.memberships.remove(project_id, user_id)
         logger.info("%s removed %s from project %s", actor.id, user_id, project_id)
+        self._audit(AUDIT_MEMBER_REMOVE, project_id, user_id, {"previous_role": current})
         return self.list_members(project_id)
 
     def _keep_a_project_admin(self, actor: User, project_id: str, leaving: str) -> None:

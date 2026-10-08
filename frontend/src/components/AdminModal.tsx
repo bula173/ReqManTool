@@ -17,17 +17,18 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconTrash, IconUserPlus } from '@tabler/icons-react';
+import { IconRefresh, IconTrash, IconUserPlus } from '@tabler/icons-react';
 import { useMemo, useState } from 'react';
 import {
   useAdminUsers,
+  useAuditLog,
   useProjectMembers,
   useRemoveProjectMember,
   useSetProjectMember,
   useUpdateUser,
 } from '../api/auth';
 import { useProjects } from '../api/queries';
-import { PROJECT_ROLES, PROJECT_ROLE_LABELS, isProjectStub, type ProjectRole } from '../api/types';
+import { PROJECT_ROLES, PROJECT_ROLE_LABELS, isProjectStub, type AuditEntry, type ProjectRole } from '../api/types';
 import { useAuth } from '../auth/context';
 
 const ROLE_OPTIONS = PROJECT_ROLES.map((role) => ({ value: role, label: PROJECT_ROLE_LABELS[role] }));
@@ -326,7 +327,141 @@ function MembersTab({ initialProjectId }: { initialProjectId: string | null }) {
   );
 }
 
-/** Server edition administration: users (server admins) and project members (project admins). */
+const AUDIT_FILTERS = [
+  { value: '', label: 'All events' },
+  { value: 'auth.', label: 'Logins and logouts' },
+  { value: 'auth.login_failed', label: 'Failed logins' },
+  { value: 'admin.', label: 'Users and members' },
+  { value: 'project.', label: 'Projects' },
+  { value: 'module.', label: 'Module locks' },
+];
+
+const AUDIT_ACTION_LABELS: Record<string, string> = {
+  'auth.login': 'Logged in',
+  'auth.login_failed': 'Login failed',
+  'auth.logout': 'Logged out',
+  'admin.user_update': 'User changed',
+  'admin.member_set': 'Member role set',
+  'admin.member_remove': 'Member removed',
+  'module.lock_break': 'Module lock broken',
+  'project.create': 'Project created',
+  'project.lock': 'Project locked',
+  'project.unlock': 'Project unlocked',
+  'project.remove': 'Project removed',
+  'project.purge': 'Project purged',
+};
+
+function auditValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'boolean') return value ? 'yes' : 'no';
+  return JSON.stringify(value);
+}
+
+/** What happened, in one line: the target user and the details. */
+function auditSummary(entry: AuditEntry): string {
+  const parts: string[] = [];
+  if (entry.target_user_id) parts.push(`user ${entry.target_user_name || entry.target_user_id}`);
+  for (const [key, value] of Object.entries(entry.details ?? {})) {
+    parts.push(`${key.replace(/_/g, ' ')}: ${auditValue(value)}`);
+  }
+  return parts.join(' · ');
+}
+
+/** Server admins: the audit log (logins, admin changes, project lifecycle), newest first. */
+function AuditTab() {
+  const [filter, setFilter] = useState('');
+  const audit = useAuditLog(filter, true);
+  const entries = audit.data?.pages.flatMap((page) => page.entries) ?? [];
+  return (
+    <Stack gap="xs">
+      <Group justify="space-between" align="flex-end">
+        <Select
+          label="Show"
+          data={AUDIT_FILTERS}
+          value={filter}
+          onChange={(value) => setFilter(value ?? '')}
+          allowDeselect={false}
+          w={220}
+        />
+        <Button
+          variant="default"
+          leftSection={<IconRefresh size={16} />}
+          onClick={() => audit.refetch()}
+          loading={audit.isRefetching && !audit.isFetchingNextPage}
+          disabled={audit.isLoading}
+        >
+          Refresh
+        </Button>
+      </Group>
+      {audit.isLoading ? (
+        <Center p="md">
+          <Loader size="sm" aria-label="Loading the audit log" />
+        </Center>
+      ) : audit.isError ? (
+        <Alert color="red">Failed to load the audit log: {errorText(audit.error)}</Alert>
+      ) : entries.length === 0 ? (
+        <Text c="dimmed">No events recorded{filter ? ' of this kind' : ''} yet.</Text>
+      ) : (
+        <>
+          <Table striped withTableBorder>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Time</Table.Th>
+                <Table.Th>Event</Table.Th>
+                <Table.Th>By</Table.Th>
+                <Table.Th>Project</Table.Th>
+                <Table.Th>Details</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {entries.map((entry, index) => (
+                <Table.Tr key={`${entry.time}-${index}`}>
+                  <Table.Td>
+                    <Text size="xs" style={{ whiteSpace: 'nowrap' }}>
+                      {formatDate(entry.time)}
+                    </Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <Tooltip label={entry.action} withArrow openDelay={300}>
+                      <Text size="sm" style={{ whiteSpace: 'nowrap' }}>
+                        {AUDIT_ACTION_LABELS[entry.action] ?? entry.action}
+                      </Text>
+                    </Tooltip>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="sm">{entry.user_name || entry.user_id || '—'}</Text>
+                    {entry.ip && (
+                      <Text size="xs" c="dimmed">
+                        {entry.ip}
+                      </Text>
+                    )}
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="sm">{entry.project_id ?? '—'}</Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="xs" style={{ wordBreak: 'break-word' }}>
+                      {auditSummary(entry) || '—'}
+                    </Text>
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+          {audit.hasNextPage && (
+            <Center>
+              <Button variant="subtle" onClick={() => audit.fetchNextPage()} loading={audit.isFetchingNextPage}>
+                Load older events
+              </Button>
+            </Center>
+          )}
+        </>
+      )}
+    </Stack>
+  );
+}
+
+/** Server edition administration: users and the audit log (server admins), project members (project admins). */
 export function AdminModal({
   opened,
   onClose,
@@ -345,6 +480,7 @@ export function AdminModal({
           <Tabs.List mb="md">
             {access.serverAdmin && <Tabs.Tab value="users">Users</Tabs.Tab>}
             <Tabs.Tab value="members">Project members</Tabs.Tab>
+            {access.serverAdmin && <Tabs.Tab value="audit">Audit log</Tabs.Tab>}
           </Tabs.List>
           {access.serverAdmin && (
             <Tabs.Panel value="users">
@@ -354,6 +490,11 @@ export function AdminModal({
           <Tabs.Panel value="members">
             <MembersTab initialProjectId={initialProjectId} />
           </Tabs.Panel>
+          {access.serverAdmin && (
+            <Tabs.Panel value="audit">
+              <AuditTab />
+            </Tabs.Panel>
+          )}
         </Tabs>
       )}
     </Modal>

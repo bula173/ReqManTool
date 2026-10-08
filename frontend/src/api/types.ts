@@ -753,6 +753,13 @@ export interface RequirementHistory {
   blame: Record<string, HistoryCommit>;
   /** Older history exists beyond the listed entries. */
   truncated: boolean;
+  /**
+   * Who created the requirement (the newest listed creation; null when the
+   * history is truncated before it) and who changed it last: computed from
+   * git, never stored in the requirement file.
+   */
+  created: HistoryCommit | null;
+  modified: HistoryCommit | null;
   /** The requirement file has changes that are not committed yet. */
   uncommitted: boolean;
 }
@@ -1129,6 +1136,27 @@ export interface UserPermissions {
   roles: Record<string, ProjectRole>;
   /** The role group rules give in every project (`"projects": ["*"]`), or null. */
   default_role: ProjectRole | null;
+}
+
+/** One entry of the server edition's audit log (GET /admin/audit; keys without a value are absent). */
+export interface AuditEntry {
+  /** ISO 8601, UTC. */
+  time: string;
+  /** e.g. `auth.login`, `admin.member_set`, `project.lock`, `module.lock_break`. */
+  action: string;
+  user_id?: string;
+  user_name?: string;
+  project_id?: string;
+  target_user_id?: string;
+  target_user_name?: string;
+  ip?: string;
+  details?: Record<string, unknown>;
+}
+
+/** A page of the audit log, newest first; `next_before` fetches the next (older) page, null at the end. */
+export interface AuditPage {
+  entries: AuditEntry[];
+  next_before: number | null;
 }
 
 /** A user on the server admins' page (GET /admin/users). */

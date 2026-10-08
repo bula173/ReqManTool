@@ -1,6 +1,13 @@
-import { useMutation, useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query';
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+  type UseQueryResult,
+} from '@tanstack/react-query';
 import { API_BASE_URL, ApiError, api, enableServerSession, setCsrfToken } from './client';
-import type { AdminUser, AuthSession, EditionInfo, ProjectMembers, ProjectRole } from './types';
+import type { AdminUser, AuditPage, AuthSession, EditionInfo, ProjectMembers, ProjectRole } from './types';
 
 /**
  * Query keys of the edition and the server-edition session. Under `version`
@@ -14,6 +21,8 @@ export const authKeys = {
   /** Admin pages (server edition): the user list, and the members of one project. */
   adminUsers: ['admin', 'users'] as const,
   members: (projectId: string) => ['admin', 'members', projectId] as const,
+  /** The audit log (server admins), per action filter (`''` = all). */
+  audit: (action: string) => ['admin', 'audit', action] as const,
 };
 
 /**
@@ -132,5 +141,28 @@ export function useRemoveProjectMember(projectId: string) {
       qc.setQueryData(authKeys.members(projectId), data);
       invalidatePermissions(qc);
     },
+  });
+}
+
+/** Entries per page of the audit log. */
+export const AUDIT_PAGE_SIZE = 100;
+
+/**
+ * GET /admin/audit (server admins): the audit log, newest first, page by page
+ * (`fetchNextPage` loads older entries). `action` filters by an action or a
+ * prefix ending in `.` (`auth.`, `admin.`, `project.`, `module.`); `''` = all.
+ */
+export function useAuditLog(action: string, enabled: boolean) {
+  return useInfiniteQuery({
+    queryKey: authKeys.audit(action),
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: String(AUDIT_PAGE_SIZE) });
+      if (pageParam !== null) params.set('before', String(pageParam));
+      if (action) params.set('action', action);
+      return api.get<AuditPage>(`/admin/audit?${params.toString()}`);
+    },
+    initialPageParam: null as number | null,
+    getNextPageParam: (last) => last.next_before,
+    enabled,
   });
 }

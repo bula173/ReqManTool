@@ -12,6 +12,8 @@
 - ``POST /auth/logout``: ends the session and clears the cookie (needs the
   CSRF token when a session exists). The user's module edit locks are
   released when no other session of theirs is left.
+- Logins, failed logins (of a login started in this browser) and logouts
+  are written to the audit log (``audit.py``) when one is given.
 - ``GET /health``: liveness probe, public.
 """
 
@@ -26,6 +28,7 @@ from typing import Any, Awaitable, Callable
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
+from .audit import AUDIT_LOGIN, AUDIT_LOGIN_FAILED, AUDIT_LOGOUT, AuditLog
 from .middleware import cookie_value
 from .oidc import OidcClient, OidcError, pkce_pair
 from .permissions import Permissions
@@ -56,8 +59,19 @@ def build_router(
     permissions: Permissions | None = None,
     locks: Any = None,
     broadcast: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    audit: AuditLog | None = None,
 ) -> APIRouter:
     router = APIRouter()
+
+    def client_ip(request: Request) -> str | None:
+        return request.client.host if request.client else None
+
+    def login_failed(request: Request, provider_id: str, reason: str, user_id: str | None = None) -> None:
+        if audit is not None:
+            audit.safe_record(
+                None, AUDIT_LOGIN_FAILED, None, {"provider": provider_id, "reason": reason},
+                user_id=user_id, ip=client_ip(request),
+            )
 
     def base_url(request: Request) -> str:
         return settings.base_url or str(request.base_url).rstrip("/")
@@ -121,28 +135,50 @@ def build_router(
         error_description: str | None = None,
     ):
         login = pending.take(state)
+        # Only failures of a login started in this browser are audited: anyone
+        # can call this public route, and must not be able to fill the log.
+        binding = cookie_value(request.scope, LOGIN_COOKIE) or ""
+        genuine = (
+            login is not None
+            and login.provider == provider_id
+            and secrets.compare_digest(binding.encode(), login.browser_binding.encode())
+        )
         if error:
             logger.info("Login with %s refused by the provider: %s", provider_id, error)
-            return login_error(f"The login was cancelled or refused ({(error_description or error)[:200]}).")
+            message = f"The login was cancelled or refused ({(error_description or error)[:200]})."
+            if genuine:
+                login_failed(request, provider_id, message)
+            return login_error(message)
         if login is None or login.provider != provider_id:
             return login_error("The login has expired or was already used; please log in again.")
-        binding = cookie_value(request.scope, LOGIN_COOKIE) or ""
-        if not secrets.compare_digest(binding.encode(), login.browser_binding.encode()):
+        if not genuine:
             return login_error("The login was started in another browser; please log in again.")
         client = clients.get(provider_id)
         if client is None or not code:
+            login_failed(request, provider_id, "The login response is incomplete")
             return login_error("The login response is incomplete; please log in again.")
         try:
             tokens = client.exchange_code(code, login.redirect_uri, login.code_verifier)
             claims = client.identity_from_tokens(tokens, login.nonce, want_groups=settings.wants_groups)
+            known = {u.id for u in users.all()}
             user = users.login(claims)
         except OidcError as exc:
+            login_failed(request, provider_id, str(exc))
             return login_error(str(exc))
         except InactiveUserError as exc:
             logger.info("Login refused for a deactivated user (%s, %s)", provider_id, claims.subject)
+            refused = next(
+                (u for u in users.all() if u.provider == provider_id and u.subject == claims.subject), None
+            )
+            login_failed(request, provider_id, str(exc), user_id=refused.id if refused else None)
             return login_error(str(exc))
         token, _session = sessions.create(user.id, provider=provider_id)
         logger.info("User %s (%s) logged in with %s", user.id, user.username or user.email, provider_id)
+        if audit is not None:
+            audit.safe_record(
+                None, AUDIT_LOGIN, None, {"provider": provider_id, "first_login": user.id not in known or None},
+                user_id=user.id, user_name=user.name, ip=client_ip(request),
+            )
         response = frontend_redirect(login.next_path)
         response.delete_cookie(LOGIN_COOKIE, path="/auth/")
         response.set_cookie(
@@ -175,6 +211,8 @@ def build_router(
         sessions.delete(token)
         if session is not None:
             logger.info("User %s logged out", session.user_id)
+            if audit is not None:
+                audit.safe_record(None, AUDIT_LOGOUT, user_id=session.user_id, ip=client_ip(request))
             # ``module_locks.ModuleLockRegistry``: give the user's module locks back on the last logout.
             if locks is not None and not sessions.has_user(session.user_id):
                 for project_id in locks.release_user(session.user_id):

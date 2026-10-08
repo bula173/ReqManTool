@@ -1295,11 +1295,13 @@ so a project's repository never contains another project's files.
   attributes, link configurations, views and module order. Entries go into
   the subject while it stays within 72 characters ("; +N more"), the full
   list into the body (at most 200 lines). Auto-commits end with a
-  `ReqMan-Session: <id>` trailer.
+  `ReqMan-Session: <id>` trailer (server edition: followed by
+  `ReqMan-User: <user id>`).
 - **Squash.** A change amends the previous commit instead of adding one
   when that commit has the `ReqMan-Session` trailer (so never the initial
   commit or a user's commit), exactly one parent, the same author name and
-  email, a committer time within the squash window (default 10 minutes,
+  email, the same `ReqMan-User` trailer (server edition: the squash window
+  is per logged-in user; local commits carry none), a committer time within the squash window (default 10 minutes,
   measured from the previous change, so a session lasts while changes keep
   coming), and no ref other than `refs/heads/current` contains it (no tag
   such as `baseline/<name>`, no `baseline` or other branch, no
@@ -1351,7 +1353,11 @@ so a project's repository never contains another project's files.
   for a rename. As a guard, history stops at a revision whose content names
   another requirement id; the oldest own revision is then listed as
   `added` (not `truncated`). `blame` maps each current attribute to the
-  last listed commit that changed it. `uncommitted` is true when the file
+  last listed commit that changed it. `created` / `modified` are the
+  commit (author, dates, subject) of the newest listed `added` entry and of
+  the newest entry, or null — the requirement's "created by" and "last
+  changed by", computed from git and never stored in the requirement file
+  (the detail panel shows them). `uncommitted` is true when the file
   differs from HEAD. A project without a readable repository (off, git
   missing, no repository, nested, foreign) answers `available: false` with
   the `reason`, not an error; a missing requirement is 404.
@@ -1676,8 +1682,9 @@ multi-user edition: one shared instance, every user logs in. It is
 delivered in slices: slice 1 is the mode switch and authentication; slice
 2 adds users, roles, project membership, permission enforcement and the
 admin pages ("Roles, membership and permissions" below); slice 3 adds
-module edit locks ("Module edit locks" below). The audit log and the
-licence-file gate come later.
+module edit locks ("Module edit locks" below); slice 4 adds attribution
+and the audit log ("Attribution and audit" below). The licence-file gate
+comes later.
 
 ### Separation
 
@@ -1736,6 +1743,12 @@ the import path).
   (`check_module_write`, skipped without a call while `NoLocks` is
   installed: `module_locks_active()`). See "Module edit locks".
 - `EditionContext.module_exists(project_id, module_id)`.
+- `AuditTrail` (`HOOKS.audit`; `record(identity, action, project_id,
+  details)`; local: `NoAudit`, skipped without a call): told by
+  `ProjectService` (`extensions.audit(...)`) after `project.create`,
+  `project.lock` (reason, baseline), `project.unlock` (only when it was
+  locked), `project.remove` (name) and `project.purge` (requirement count)
+  succeeded; a failing trail is logged, never raised.
 
 ### Configuration
 
@@ -1979,6 +1992,64 @@ menu and as buttons on the module page. `ModuleLockBadge` ("Locked by X"
 module page, its sidebar node and its tab; the module page also shows a
 read-only notice, and inline editing, drag-and-drop and the outline's
 drag moves follow `isModuleReadOnly`.
+
+### Attribution and audit (slice 4)
+
+**Commit authorship.** Commits made for a request are authored and
+committed as the logged-in user (`RequestIdentity` name and e-mail from the
+identity provider; slice 1). Each auto-commit made for a logged-in user
+also carries a `ReqMan-User: <user id>` trailer after `ReqMan-Session`, and
+a change only squashes into a commit with the same trailer, so a change of
+user B never amends user A's pending commit — even when both accounts share
+a name and e-mail address. Local commits carry no `ReqMan-User` trailer and
+squash exactly as before; a server change never squashes into a local
+commit (or the other way round).
+
+**Created by / modified by.** Not stored: there are no `created_by` /
+`modified_by` keys in requirement files and no format bump. A new
+requirement key would need project format 9 (an older ReqManTool would
+drop it on save), would make every edit rewrite the file, and would
+duplicate what git already records with the right author in both editions.
+The requirement history (`GET .../requirements/{r}/history`) returns them
+as `created` / `modified` (see "Git history"); in the local edition the
+author is the git identity. They need history to be on; a requirement whose
+creation is older than the listed history has `created: null`.
+
+**Live sync.** In the server edition every `changed` event (also with
+`removed: true`) carries `by: {user_id, name}` of the user whose request
+made the change; the local edition sends none. The frontend types it and
+does not show it yet.
+
+**Audit log** (`reqman_server/audit.py`): `audit.jsonl` in the state
+directory, append-only JSON lines (`O_APPEND`, owner-only permissions),
+one per event: `{time, action, user_id, user_name, project_id?,
+target_user_id?, target_user_name?, ip?, details?}` (absent keys have no
+value; strings cut at 500 characters). Actions: `auth.login` (provider,
+`first_login`), `auth.login_failed` (provider, reason; only for a callback
+that matches a login started in this browser — the callback is public, so
+anything else is not logged, and nobody can fill the log anonymously),
+`auth.logout`; `admin.user_update` (the flags set), `admin.member_set`
+(role, previous role; nothing when the role is unchanged),
+`admin.member_remove` (previous role); `module.lock_break` (module, reason
+and time of the broken lock; the previous owner is the target user); and
+from the core through `HOOKS.audit`: `project.create`, `project.lock`,
+`project.unlock`, `project.remove`, `project.purge`. Locks released by a
+logout or a deactivation have no entry of their own. A write failure is
+logged, never fails the action. No rotation: an administrator can move the
+file away (a new one starts with the next event). Unparsable lines (hand
+edits, a write cut short) are skipped when reading.
+
+**Read API** (server admins only; others 403 / -32003): `GET /admin/audit?
+limit=&before=&action=&user_id=&project_id=` and WebSocket
+`admin.audit.list` (same params): `{entries, next_before}`, newest first,
+read backwards from the end of the file; `limit` 1–500 (default 100);
+`before` is the byte offset `next_before` of the previous page returned
+(null: no older entries), so pages stay stable while entries are
+appended; `action` is an action or a prefix ending in `.` (`auth.`);
+`user_id` matches the actor or the target. Frontend: an "Audit log" tab in
+`AdminModal` for server admins (`useAuditLog`, an infinite query under
+`['admin', 'audit', filter]`, so `permissions_changed` refetches it; a
+filter by kind, Refresh, "Load older events").
 
 ### API and frontend
 

@@ -52,7 +52,9 @@ Safety rules, all enforced here:
   saved), and the status says why.
 - **Squash safely.** A change amends the previous commit only if that commit
   carries the ``ReqMan-Session`` trailer, has exactly one parent, has the
-  same author name and email, was last committed within the squash window,
+  same author name and email (and, in the server edition, the same
+  ``ReqMan-User`` trailer: the logged-in user's id, so the squash window is
+  per user), was last committed within the squash window,
   and no ref other than ``refs/heads/current`` contains it (no tag, no
   ``baseline`` or other branch, no remote-tracking branch, no stash).
 - **A git failure never loses data**: the files are already saved; the error
@@ -83,7 +85,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .extensions import current_identity
-from .history import FileChange, Revision, commit_message, requirement_history, session_of
+from .history import FileChange, Revision, commit_message, requirement_history, session_of, user_of
 
 logger = logging.getLogger("reqman.git")
 
@@ -205,6 +207,12 @@ def _request_identity() -> tuple[str, str] | None:
     if identity is None or not identity.name or not identity.email:
         return None
     return identity.name, identity.email
+
+
+def _request_user_id() -> str | None:
+    """The user id of the logged-in user of the current request (server edition), else ``None``."""
+    identity = current_identity()
+    return identity.user_id if identity is not None and identity.user_id else None
 
 
 # States of a project folder (``RepoInfo.state`` / ``status()["state"]``).
@@ -1113,6 +1121,10 @@ class GitHistory:
             return False
         if (head.author_name, head.author_email) != identity:
             return False
+        # Server edition: the squash window is per user, by user id (two accounts
+        # may share a name and e-mail); local commits carry no user and match.
+        if user_of(head.body) != _request_user_id():
+            return False
         if self.clock() - head.committer_time > window:
             return False
         refs = self._repo(info, ["for-each-ref", "--contains", head.commit, "--format=%(refname)"])
@@ -1232,7 +1244,7 @@ class GitHistory:
                     changes.append(FileChange(path=path, old=old, new=new))
                 entries = describe(changes) if describe else []
             session = session_of(head.body) if (amend and head) else uuid.uuid4().hex[:12]
-            message = commit_message(entries, session)
+            message = commit_message(entries, session, _request_user_id())
 
         name, email = identity
         env = {
@@ -2547,6 +2559,8 @@ class GitHistory:
             "entries": [],
             "blame": {},
             "truncated": False,
+            "created": None,
+            "modified": None,
             "uncommitted": False,
         }
         if info.state not in (STATE_READY, STATE_PAUSED):

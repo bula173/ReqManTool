@@ -66,10 +66,10 @@ requirement (subtree) ✅, multi-select + bulk attribute edit
 ❌, sibling reordering (drag or move up/down) ✅, soft delete with a
 "Show deleted" toggle and undelete ❌.
 
-**Administration** — user accounts / permissions (who can edit vs. view) ❌
-— out of scope so far (single-user local tool, see Notes); user handling
-requested 2026-10-04, see backlog, concurrent-edit protection (two people editing the same requirement at once
-— currently last-write-wins, no lock/conflict warning) ❌, role sign-off
+**Administration** — user accounts / permissions (who can edit vs. view) ✅
+in the server edition (login, users, project membership roles; the local
+edition stays single-user), concurrent-edit protection (two people editing the same requirement at once
+— server edition: module edit locks; per-requirement ETag still open) ✅, role sign-off
 records with an independence check (EN 50128 roles) ❌, tool qualification
 evidence (EN 50128 §6.7) ❌.
 
@@ -83,49 +83,6 @@ Updated 2026-10-08. Mode chosen by the user: implement every requested
 item first (phase A), then test, review and fix by area (phase B).
 
 ### Next — requested, in delivery order
-
-- [ ] Server edition: login (GitLab / OIDC / LDAP), users, project
-      membership, module edit locks. Requested 2026-10-06 (replaces the
-      2026-10-04 "User handling" item; scope change confirmed by the user).
-      Two editions from one codebase: **local** (free) — today's single-
-      user mode, no login, identity from git config, must keep working
-      unchanged; **server** (paid) — one shared instance in the company,
-      every user logs in, works on assigned projects. `mode: local|server`
-      in the app config. Persistence stays JSON + one git repo per
-      project (no database); the single server process allocates all ids,
-      so the distributed-id problem disappears in server mode.
-      (1) Authentication, pluggable providers: GitLab OAuth2/OIDC first
-      (users must have a GitLab account), then generic OIDC (Keycloak,
-      Entra ID), LDAP/Active Directory bind, and trusted reverse-proxy
-      header (Cloudflare Access / oauth2-proxy); HTTP-only secure session
-      cookie, CSRF protection, logout; every REST route and the WebSocket
-      handshake require a session in server mode. (2) Users and roles:
-      user registry in the server's config dir (`users.json`: id, name,
-      email, provider subject, server-admin flag, active) — auto-created
-      on first login; optional group → role mapping from GitLab groups /
-      LDAP groups; per-project membership with roles viewer / editor /
-      project-admin, enforced in `ProjectService` (one guard, REST + WS
-      parity); admin pages for users and memberships; users only see
-      projects they belong to. (3) Module edit locks: an editor checks out
-      a module (exclusive lock: owner, since, optional reason, auto-expiry
-      on inactivity, admin "break lock"); other users get read-only plus a
-      "locked by X" badge; writes to a module locked by someone else are
-      rejected (423); live sync shows lock changes. Optional per-
-      requirement ETag still protects against stale writes by the lock
-      owner's own tabs. (4) Attribution: git commits authored as the
-      logged-in user (name/email from the IdP), squash window per user;
-      created_by / modified_by system attributes; identity in live-sync
-      events; login/logout and admin actions in an audit log (append-only
-      JSON lines). (5) Editions/licensing — decided 2026-10-06: the
-      repository (community/local edition) is dual-licensed AGPL-3.0-only
-      + commercial (see `LICENSING.md`); the server-edition features live
-      in a separate, commercially licensed package/repo (`reqman-server`)
-      that plugs into the core through explicit extension points (auth
-      provider, request identity, permission guard, lock service), and is
-      gated by a signed licence file. The core must stay fully usable
-      without it. Depends on: the
-      git integration (done), distribution package (server install),
-      git remotes (server can mirror project repos to GitLab).
 
 ### Phase B — tests, review and follow-ups of delivered items
 
@@ -452,6 +409,31 @@ area by area once phase A is complete.
       evaluated in the Python third-party list. (7) Tests pending (phase
       B); `tests/test_version.py::test_app_startup_prewarms_git_build`
       was adjusted.
+- [ ] Server edition: follow-ups (2026-10-08). (1) LDAP/Active Directory
+      bind and trusted reverse-proxy header providers (Cloudflare Access /
+      oauth2-proxy): only the provider type is validated today. (2) Signed
+      licence-file gate. (3) `LICENSING.md` says the server edition is not
+      in this repository, but `backend/reqman_server/` now is: reword
+      `LICENSING.md` or move the package (user decision). (4) Optional
+      JWKS signature verification of the ID token. (5) Close the user's
+      other open WebSockets immediately at logout. (6) Logged-out page
+      loads of non-client routes get a 401 JSON response. (7) Per-user
+      provider connections and a remote-host allowlist for non-admins.
+      (8) User picker for project admins. (9) Memberships and locks are
+      keyed by project id and not scoped per data folder. (10) An open
+      project shows an error after access is lost instead of closing its
+      tab. (11) No push event when a module lock expires (1-minute
+      refetch). (12) Lock badges only for the open project. (13) Per-
+      requirement ETag/If-Match against stale writes by the lock owner's
+      own tabs. (14) `git_pull` and remove-project interplay with module
+      locks. (15) Audit log rotation/size cap; failed-login rate limiting.
+      (16) The `by` identity in `changed` events is not shown in the UI.
+      (17) The Audit log tab lacks user/project filters. (18) Project
+      admins cannot see their projects' audit entries. (19) Lock releases
+      at logout/deactivation are not audited. (20) `reqman init` writes
+      no `server` section template. (21) Tests pending for all four
+      slices (phase B; fake-IdP end-to-end scripts are in the session
+      scratchpad).
 
 ### Open decisions
 

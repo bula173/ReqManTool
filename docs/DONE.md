@@ -1527,3 +1527,65 @@ Newest entries are appended at the end.
       (`hooks/columnLayout.ts`, `order`); "Reset column order" sits next
       to "Reset column widths". Not covered: saving the order to a named
       view (no update-view endpoint for `View.attribute_ids` yet).
+- [x] **Server edition: login (GitLab / OIDC), users, project membership,
+      module edit locks** (2026-10-08; requested 2026-10-06, replaces the
+      2026-10-04 "User handling" item). Delivered in four slices (commits
+      9c99c78, 92dfe27, 86d9a76, plus slice 4); design in
+      `docs/ARCHITECTURE.md` ("Server edition"). Slice 1, mode and login:
+      `mode: local|server` (env `REQMAN_MODE` > config `mode` > local); the
+      local edition is unchanged and never imports server code. Server-only
+      package `backend/reqman_server/` (not in the AGPL wheel, runs from a
+      checkout); core extension points in `backend/reqman/extensions.py`
+      (`RequestIdentity` ContextVar, `PermissionGuard`, `ModuleLockService`,
+      `ProjectEvents`, `rpc_methods`, audit). GitLab and generic OIDC
+      login (discovery, PKCE, state bound to a browser cookie, nonce; the
+      ID token comes from the token endpoint over TLS and is validated for
+      iss/aud/azp/exp/iat/nonce, no signature check per OIDC Core
+      §3.1.3.7; no new dependency); server-side sessions (HttpOnly,
+      SameSite=Lax, Secure configurable, idle and max age, `sessions.json`
+      stores token hashes); CSRF synchronizer token `X-CSRF-Token`;
+      WebSocket origin check; 401 / WS close 4401; `users.json` (the first
+      user or `server.admins` become admin); git commits authored as the
+      logged-in user. Routes `GET /edition`, `/auth/login/{p}`,
+      `/auth/callback/{p}`, `/auth/me`, `POST /auth/logout`, `/health`.
+      Non-admins cannot change the data folder or use `/fs`; `/config` is
+      redacted. Slice 2, membership: `memberships.json` (viewer / editor /
+      project-admin; server admins may do everything; group → role rules
+      from the `groups` claim; `server.project_creation` everyone|admins,
+      the creator becomes project admin); one guard wrapping the
+      `ProjectService` methods (403 / WS -32003, checked before the
+      project lock); project list and live-sync events filtered per user;
+      `permissions_changed` event; admin API `/admin/users`,
+      `/admin/projects/{id}/members` + WS `admin.*`; provider connections
+      and remote URLs admin-only in server mode. Slice 3, module edit
+      locks: `module_locks.json` (owner, since, reason, idle expiry
+      `server.module_lock_idle_minutes`, default 60; optional
+      `server.require_module_checkout`); writes by others refused with 423
+      / WS -32005; links checked on the link configuration's source
+      module; structure operations (move/reorder/folders) and project-level
+      changes not covered; admins must break a lock (project-admin right);
+      locks released on logout (when no other session) and on
+      deactivation; `module_locks_changed` event; REST `GET
+      /projects/{id}/module-locks`, `PUT/DELETE
+      /projects/{id}/modules/{m}/lock`, `POST .../lock/break`, WS
+      `module.locks/lock/unlock/break_lock`. Slice 4, attribution and
+      audit: per-user squash window through a `ReqMan-User: <id>` commit
+      trailer in server mode (local commits unchanged); created_by /
+      modified_by computed from git history (`created` / `modified` in the
+      requirement history response), not stored, no format bump; `changed`
+      events carry `by: {user_id, name}` in server mode; append-only
+      `audit.jsonl` (login, failed login, logout, admin user/member
+      changes, lock break, project create/lock/unlock/remove/purge) with
+      admin-only `GET /admin/audit` (paging by byte offset, filters) + WS
+      `admin.audit.list`. Decisions: a 403 reveals that a hidden project
+      exists; memberships and locks are keyed by project id, not by data
+      folder; no ID-token signature check (see above). Backend:
+      `backend/reqman/{extensions.py, app.py, service.py, git_repo.py,
+      history.py}`, `backend/reqman_server/` (incl. `routes.py`,
+      `admin.py`, `module_locks.py`, `audit.py`, `settings.py`). UI:
+      `AuthGate`, `LoginPage`, `UserMenu` (role badge), `AdminModal`
+      (users, project members, Audit log tab), editing disabled for
+      viewers, module lock badges with check-out / release / break
+      actions, created/modified by in `RequirementDetailPanel`. Not
+      covered: LDAP and reverse-proxy providers, licence-file gate, tests;
+      follow-ups in the backlog ("Server edition: follow-ups").

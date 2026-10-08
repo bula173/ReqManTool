@@ -62,6 +62,7 @@ from reqman.extensions import (
     current_identity,
 )
 
+from .audit import AUDIT_MODULE_LOCK_BREAK
 from .jsonfile import read_json_file, write_json_file
 from .users import UserRegistry
 
@@ -278,8 +279,11 @@ class ModuleLocks:
         require_checkout: bool = False,
         project_exists: Callable[[str], bool] | None = None,
         module_exists: Callable[[str, str], bool] | None = None,
+        audit: Any = None,
     ) -> None:
         self.registry = registry
+        # ``audit.AuditLog`` (optional): broken locks are written to the audit log.
+        self.audit = audit
         self.guard = guard
         self.users = users
         self.require_checkout = require_checkout
@@ -398,6 +402,12 @@ class ModuleLocks:
                 "User %s broke the lock of module %s/%s held by %s",
                 identity.user_id, project_id, module_id, released.user_id,
             )
+            if self.audit is not None:
+                self.audit.safe_record(
+                    identity, AUDIT_MODULE_LOCK_BREAK, project_id,
+                    {"module_id": module_id, "reason": released.reason, "since": _iso(released.since)},
+                    target_user_id=released.user_id,
+                )
         return {
             "project_id": project_id,
             "module_id": module_id,

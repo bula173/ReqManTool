@@ -36,9 +36,15 @@ plugs in through exactly these interfaces:
   ``module_id``, plus the link, attribute-scope and purge cascades). The
   local edition's ``NoLocks`` is skipped without a call
   (``module_locks_active``).
+- **Audit trail** (``AuditTrail``): told about the project-level
+  administrative actions the core carries out (``AUDIT_*``: project create,
+  lock, unlock, remove, purge) after they succeeded, with the acting
+  identity. The edition writes them to its audit log together with its own
+  events (logins, admin changes). The local edition's ``NoAudit`` is
+  skipped without a call; a failing trail is logged, never raised.
 
-``HOOKS`` holds the active guard, lock service, project event listener and
-extra WebSocket methods (no-ops / empty by default).
+``HOOKS`` holds the active guard, lock service, project event listener,
+audit trail and extra WebSocket methods (no-ops / empty by default).
 This module must stay dependency-free and must never import
 ``reqman_server``.
 """
@@ -46,6 +52,7 @@ This module must stay dependency-free and must never import
 from __future__ import annotations
 
 import importlib
+import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -173,6 +180,43 @@ class NoLocks:
         return None
 
 
+# --- audit trail ----------------------------------------------------------------------
+
+# Project-level administrative actions the core reports to the audit trail.
+AUDIT_PROJECT_CREATE = "project.create"
+AUDIT_PROJECT_LOCK = "project.lock"
+AUDIT_PROJECT_UNLOCK = "project.unlock"
+AUDIT_PROJECT_REMOVE = "project.remove"
+AUDIT_PROJECT_PURGE = "project.purge"
+
+_logger = logging.getLogger("reqman.extensions")
+
+
+class AuditTrail(Protocol):
+    """Records an administrative action (one of the ``AUDIT_*`` constants) done by ``identity``."""
+
+    def record(
+        self,
+        identity: RequestIdentity | None,
+        action: str,
+        project_id: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None: ...
+
+
+class NoAudit:
+    """The local edition's audit trail: nothing is recorded."""
+
+    def record(
+        self,
+        identity: RequestIdentity | None,
+        action: str,
+        project_id: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        return None
+
+
 # --- project events -------------------------------------------------------------------
 
 
@@ -201,6 +245,7 @@ class Hooks:
     permission_guard: PermissionGuard = field(default_factory=AllowAllGuard)
     lock_service: ModuleLockService = field(default_factory=NoLocks)
     project_events: ProjectEvents = field(default_factory=NoProjectEvents)
+    audit: AuditTrail = field(default_factory=NoAudit)
     # Extra WebSocket JSON-RPC methods: name -> callable(params) returning the
     # result or an awaitable of it. Core methods win on a name clash.
     rpc_methods: dict[str, Callable[[dict], Any]] = field(default_factory=dict)
@@ -224,6 +269,17 @@ def check_module_write(project_id: str, module_id: str) -> None:
     service = HOOKS.lock_service
     if type(service) is not NoLocks:
         service.check_write(_current_identity.get(), project_id, module_id)
+
+
+def audit(action: str, project_id: str | None = None, **details: Any) -> None:
+    """Tell the audit trail that the current identity did ``action``. Free in local mode; never raises."""
+    trail = HOOKS.audit
+    if type(trail) is NoAudit:
+        return
+    try:
+        trail.record(_current_identity.get(), action, project_id, {k: v for k, v in details.items() if v is not None})
+    except Exception:  # noqa: BLE001 - the action itself succeeded; report, never fail it
+        _logger.exception("Could not record %s of %s in the audit log", action, project_id)
 
 
 def check_permission(action: str, project_id: str | None = None) -> None:

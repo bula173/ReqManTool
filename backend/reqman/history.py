@@ -10,7 +10,8 @@ project (for attribute and link names).
   commit into short entries such as ``"SYRS-0012: Status Draft → Reviewed"``
   or ``"SYRS-0013 added"``; ``commit_message`` joins them into a subject,
   an optional body and the ``ReqMan-Session`` trailer that marks a commit
-  ReqManTool may squash into.
+  ReqManTool may squash into (plus, in the server edition, the
+  ``ReqMan-User`` trailer: the squash window is per user).
 - ``requirement_history`` turns the versions of one requirement file (newest
   first, as ``git log --first-parent`` lists them) into a change list with
   per-attribute diffs, and derives the attribute blame from it: for each
@@ -27,6 +28,9 @@ from typing import Any, Iterable
 from .richtext import is_rich, to_plain
 
 SESSION_TRAILER = "ReqMan-Session"
+# Server edition: the id of the logged-in user an auto-commit was made for.
+USER_TRAILER = "ReqMan-User"
+_TRAILER_VALUE = re.compile(r"[A-Za-z0-9._@+-]{1,128}")
 
 # Subject line budget: entries are added while the subject stays this short.
 MAX_SUBJECT_LENGTH = 72
@@ -381,12 +385,14 @@ def describe_changes(changes: list[FileChange], project: Any = None) -> list[str
     return entries
 
 
-def commit_message(entries: list[str], session_id: str | None = None) -> str:
+def commit_message(entries: list[str], session_id: str | None = None, user_id: str | None = None) -> str:
     """A commit message: entries joined into the subject while it stays short, the rest in the body.
 
     With ``session_id``, a ``ReqMan-Session: <id>`` trailer marks the commit
     as an auto-commit that a later change of the same editing session may
-    amend (squash).
+    amend (squash). With ``user_id`` (server edition: the logged-in user), a
+    ``ReqMan-User: <id>`` trailer follows it, so the squash window is per
+    user (``user_of``); a value that is not a plain token is left out.
     """
     entries = [e for e in entries if e] or ["Update project data"]
     subject = entries[0]
@@ -402,21 +408,36 @@ def commit_message(entries: list[str], session_id: str | None = None) -> str:
         if len(entries) > len(listed):
             body += f"\n… and {len(entries) - len(listed)} more"
         parts.append(body)
+    trailers = []
     if session_id:
-        parts.append(f"{SESSION_TRAILER}: {session_id}")
+        trailers.append(f"{SESSION_TRAILER}: {session_id}")
+    if session_id and user_id and _TRAILER_VALUE.fullmatch(user_id):
+        trailers.append(f"{USER_TRAILER}: {user_id}")
+    if trailers:
+        parts.append("\n".join(trailers))
     return "\n\n".join(parts) + "\n"
 
 
-def session_of(message: str) -> str | None:
-    """The ``ReqMan-Session`` trailer value of a commit message, or ``None``."""
+def _trailer(message: str, name: str) -> str | None:
+    """The value of trailer ``name`` in the last paragraph of a commit message, or ``None``."""
     paragraphs = [p for p in message.strip().split("\n\n") if p.strip()]
     if not paragraphs:
         return None
     for line in paragraphs[-1].splitlines():
         key, sep, value = line.partition(":")
-        if sep and key.strip() == SESSION_TRAILER and value.strip():
+        if sep and key.strip() == name and value.strip():
             return value.strip()
     return None
+
+
+def session_of(message: str) -> str | None:
+    """The ``ReqMan-Session`` trailer value of a commit message, or ``None``."""
+    return _trailer(message, SESSION_TRAILER)
+
+
+def user_of(message: str) -> str | None:
+    """The ``ReqMan-User`` trailer value of a commit message (server edition), or ``None``."""
+    return _trailer(message, USER_TRAILER)
 
 
 # --- requirement history ----------------------------------------------------------
@@ -455,7 +476,9 @@ def requirement_history(
     history is complete and its oldest own revision is listed (``added``).
 
     ``blame`` maps each attribute the requirement has now to the last listed
-    commit that changed it (including setting it at creation).
+    commit that changed it (including setting it at creation). ``created``
+    and ``modified`` are the commit (author, dates, subject) of the newest
+    listed creation and of the newest listed change, or ``None``.
     """
     usable: list[tuple[Revision, Any]] = []
     for revision in revisions:
@@ -505,7 +528,18 @@ def requirement_history(
     latest_attrs = latest.get("attributes") if isinstance(latest.get("attributes"), dict) else {}
     blame = {key: value for key, value in blame.items() if key in latest_attrs}
     entries.reverse()
-    return {"entries": entries, "blame": blame, "truncated": truncated}
+    # Who created the requirement (its newest listed creation: none when the
+    # history is truncated before it) and who changed it last, from git: no
+    # created_by / modified_by is stored in the requirement file.
+    meta_keys = ("commit", "author_name", "author_email", "authored_date", "date", "subject")
+    created = next((e for e in entries if e["change"] == "added"), None)
+    return {
+        "entries": entries,
+        "blame": blame,
+        "truncated": truncated,
+        "created": {k: created[k] for k in meta_keys} if created else None,
+        "modified": {k: entries[0][k] for k in meta_keys} if entries else None,
+    }
 
 
 # --- baseline compare ----------------------------------------------------------

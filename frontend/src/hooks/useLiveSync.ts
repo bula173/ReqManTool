@@ -10,6 +10,8 @@ interface ChangedEvent {
   project_id: string;
   /** The project was removed (its folder deleted): drop it, close its tabs. */
   removed?: boolean;
+  /** Server edition: the user whose change it was (absent in the local edition). Not shown yet. */
+  by?: { user_id: string; name: string };
 }
 
 interface RootChangedEvent {
