@@ -264,6 +264,38 @@ export interface TemplateSummary {
   error: string | null;
 }
 
+/** One entry of GET /module-templates (WS `module_template.list`). */
+export interface ModuleTemplateSummary {
+  /** Namespaced: `builtin:<id>` or `user:<id>` (its own namespace, separate from project templates). */
+  id: string;
+  source: TemplateSource;
+  name: string;
+  description: string;
+  /** The module it creates by default (name, prefix and description can be overridden); null when invalid. */
+  module: { name: string; prefix: string; description: string; type: ModuleType } | null;
+  /** Names of the attributes the template makes apply to the module. */
+  attributes: string[];
+  /** The view it adds (unless the project has a view of that name), or null. */
+  view: string | null;
+  /** Number of headings in its heading skeleton. */
+  headings: number;
+  /** Why the template cannot be used, or null if it is valid. */
+  error: string | null;
+}
+
+/** Result of POST /projects/{id}/modules/from-template (WS `module.create_from_template`). */
+export interface CreateModuleFromTemplateResult {
+  module: Module;
+  /** Attributes the project did not have: added optional, scoped to the new module. */
+  added_attributes: string[];
+  /** Existing scoped attributes that now also apply to the new module. */
+  extended_attributes: string[];
+  /** The view added, or null (none in the template, or its name was taken). */
+  view_id: string | null;
+  /** Number of skeleton requirements (headings and informative texts) created. */
+  headings: number;
+}
+
 /**
  * A project's history (git) state (GET /projects/{id}/git, WS `project.git_status`):
  * - `off`: git history turned off for this server (REQMAN_GIT=off)

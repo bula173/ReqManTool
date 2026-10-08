@@ -7,6 +7,7 @@ import {
   IconFolderX,
   IconPencil,
   IconPlus,
+  IconTemplate,
 } from '@tabler/icons-react';
 import { ApiError } from '../api/client';
 import { isProjectStub } from '../api/types';
@@ -82,6 +83,25 @@ export const folderActions: Action<'folder'>[] = [
     run: (ctx) => {
       const target = ctx.target;
       if (target) ctx.commands.openDialog({ kind: 'newModule', projectId: target.projectId, folderId: target.folder.folder });
+    },
+  },
+  {
+    id: 'folder.newModuleFromTemplate',
+    element: 'folder',
+    label: 'New module from template here',
+    icon: IconTemplate,
+    opensDialog: true,
+    isAvailable: (ctx) => ctx.target !== null,
+    run: (ctx) => {
+      const target = ctx.target;
+      if (target) {
+        ctx.commands.openDialog({
+          kind: 'newModule',
+          projectId: target.projectId,
+          folderId: target.folder.folder,
+          fromTemplate: true,
+        });
+      }
     },
   },
   {

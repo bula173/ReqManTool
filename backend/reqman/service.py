@@ -56,8 +56,13 @@ from .templates import (
     BUILTIN_SOURCE,
     BUILTIN_TEMPLATES_DIR,
     LINK_REF_PREFIX,
+    MAX_SKELETON_NODES,
     MAX_TEMPLATE_IMPORT_BYTES,
     USER_SOURCE,
+    ModuleTemplate,
+    ModuleTemplateAttribute,
+    ModuleTemplateModule,
+    SkeletonNode,
     Template,
     TemplateAttribute,
     TemplateFolder,
@@ -65,11 +70,15 @@ from .templates import (
     TemplateModule,
     TemplateRowStyle,
     TemplateView,
+    list_builtin_module_template_ids,
     list_builtin_template_ids,
     make_template_id,
+    parse_module_template_text,
     parse_template,
     parse_template_text,
+    read_builtin_module_template_text,
     read_builtin_template_text,
+    skeleton_size,
     split_template_id,
 )
 
@@ -790,7 +799,7 @@ class ProjectService:
             name, self.store.project_path_exists, fallback="project", max_length=self.store.max_name_length()
         )
         try:
-            project, modules = self._build_from_template(
+            project, modules, requirements = self._build_from_template(
                 template, project_id, name, description, parent_project_id
             )
         except ValueError as exc:
@@ -799,6 +808,8 @@ class ProjectService:
         with self.store.staging_store() as staging:
             for module in modules:
                 staging.save_module(project.id, module)
+                for requirement in requirements.get(module.id, []):
+                    staging.save_requirement(project.id, module.id, requirement)
             for config in project.link_configurations:
                 staging.save_link_pairs(project.id, config.id, [])
             staging.save_project(project)
@@ -2811,14 +2822,20 @@ class ProjectService:
         name: str,
         description: str,
         parent_project_id: str | None,
-    ) -> tuple[Project, list[Module]]:
-        """Build a project and its modules from ``template`` in memory, validating everything.
+    ) -> tuple[Project, list[Module], dict[str, list[Requirement]]]:
+        """Build a project, its modules and their skeleton headings from ``template`` in memory.
 
         Uses the same helpers as ``add_attribute_definition``,
-        ``create_module``, ``create_link_configuration`` and ``create_view``,
-        so a template can never produce a project those operations would
-        reject. Raises ``ValueError`` naming the offending template entry.
-        Nothing is written.
+        ``create_module``, ``create_link_configuration``, ``create_view`` and
+        "Add module from template" (``_apply_module_template``), so a
+        template can never produce a project those operations would reject.
+        Module templates a module references are loaded and applied in
+        module order, after the template's own attributes and scopes and
+        before its link configurations; their views follow the template's
+        views (skipped when the name is taken). Returns the project, the
+        modules (template order) and the skeleton requirements per module id.
+        Raises ``ValueError`` naming the offending template entry. Nothing is
+        written.
         """
         project = Project(
             id=project_id,
@@ -2846,24 +2863,50 @@ class ProjectService:
 
         modules: list[Module] = []
         module_ids: dict[str, str] = {}
+        module_templates: dict[str, ModuleTemplate] = {}
+        module_names: set[str] = set()
         for index, tmodule in enumerate(template.modules):
+            where = f"modules[{index}] ('{tmodule.name or tmodule.key}')"
+            mtemplate: ModuleTemplate | None = None
+            if tmodule.module_template is not None:
+                try:
+                    mtemplate = self._load_module_template(tmodule.module_template)
+                except (OSError, ValueError) as exc:
+                    raise ValueError(f"{where}: {exc}") from exc
+                module_templates[tmodule.key] = mtemplate
+            module_name = tmodule.name if tmodule.name is not None else mtemplate.module.name  # type: ignore[union-attr]
+            prefix = tmodule.prefix if tmodule.prefix is not None else mtemplate.module.prefix  # type: ignore[union-attr]
+            module_description = (
+                tmodule.description if tmodule.description is not None else mtemplate.module.description  # type: ignore[union-attr]
+            )
+            where = f"modules[{index}] ('{module_name}')"
+            if module_name.casefold() in module_names:
+                raise ValueError(f"{where}: duplicate module name '{module_name}'")
+            module_names.add(module_name.casefold())
             try:
-                validate_prefix(tmodule.prefix)
+                validate_prefix(prefix)
             except ValueError as exc:
-                raise ValueError(f"modules[{index}] ('{tmodule.name}'): {exc}") from exc
+                raise ValueError(f"{where}: {exc}") from exc
             taken = set(module_ids.values())
-            module_id = _unique_slug(tmodule.name, lambda c: c in taken, fallback="module")
+            module_id = _unique_slug(module_name, lambda c: c in taken, fallback="module")
             module_ids[tmodule.key] = module_id
             try:
-                module_type = self._checked_module_type(tmodule.type)
+                module_type = self._checked_module_type(tmodule.type if tmodule.type is not None else (
+                    mtemplate.module.type if mtemplate is not None else None
+                ))
+                if mtemplate is not None and module_type != self._checked_module_type(mtemplate.module.type):
+                    raise ValueError(
+                        f"type '{module_type}' differs from module template '{mtemplate.id}' "
+                        f"('{self._checked_module_type(mtemplate.module.type)}')"
+                    )
             except ValueError as exc:
-                raise ValueError(f"modules[{index}] ('{tmodule.name}'): {exc}") from exc
+                raise ValueError(f"{where}: {exc}") from exc
             modules.append(
                 Module(
                     id=module_id,
-                    name=tmodule.name,
-                    prefix=tmodule.prefix,
-                    description=tmodule.description,
+                    name=module_name,
+                    prefix=prefix,
+                    description=module_description,
                     type=module_type,
                 )
             )
@@ -2883,6 +2926,35 @@ class ProjectService:
                     raise ValueError(f"attributes[{index}] ('{tattr.id}'): {exc}") from exc
                 wanted = {module_ids[key] for key in tattr.modules}
                 definition.modules = [m.id for m in modules if m.id in wanted]
+
+        # Module templates and heading skeletons, in module order. Ids are
+        # allocated from the new project's counters (nothing is on disk yet).
+        def allocate(module: Module) -> Callable[[], str]:
+            def next_id() -> str:
+                counter = project.id_counters.get(module.prefix, 0) + 1
+                project.id_counters[module.prefix] = counter
+                return f"{module.prefix}-{counter:04d}"
+
+            return next_id
+
+        requirements: dict[str, list[Requirement]] = {}
+        pending_views: list[tuple[int, ModuleTemplate, dict[str, str]]] = []
+        for index, (tmodule, module) in enumerate(zip(template.modules, modules)):
+            mtemplate = module_templates.get(tmodule.key)
+            skeleton = tmodule.skeleton if tmodule.skeleton is not None else (mtemplate.skeleton if mtemplate else [])
+            if mtemplate is None and not skeleton:
+                continue
+            try:
+                id_map: dict[str, str] = {}
+                if mtemplate is not None:
+                    id_map = self._merge_template_attributes(project, module, mtemplate.attributes)["id_map"]
+                    if mtemplate.view is not None:
+                        pending_views.append((index, mtemplate, id_map))
+                requirements[module.id] = self._skeleton_requirements(project, module, skeleton, allocate(module))
+            except ValueError as exc:
+                raise ValueError(f"modules[{index}] ('{module.name}'): {exc}") from exc
+        # Scopes of merged attributes in module order.
+        self._sort_attribute_scopes(project, module_tree.module_ids(project.module_order))
 
         link_ids: dict[str, str] = {}
         modules_by_id = {m.id: m for m in modules}
@@ -2919,10 +2991,16 @@ class ProjectService:
                     )
             self._add_view(project, tview.name, mapped)
 
+        for index, mtemplate, id_map in pending_views:
+            try:
+                self._merge_template_view(project, mtemplate.view, id_map)
+            except ValueError as exc:
+                raise ValueError(f"modules[{index}] ('{modules[index].name}'): {exc}") from exc
+
         # Rule messages name the entry (``row_styles[<index>]``).
         project.row_styles = self._checked_row_styles(project, [s.to_dict() for s in template.row_styles])
 
-        return project, modules
+        return project, modules, requirements
 
     @classmethod
     def _tree_from_template(cls, entries: list, module_ids: dict[str, str], order: list[str]) -> list:
@@ -2960,19 +3038,21 @@ class ProjectService:
         tree.extend(module_id for module_id in order if module_id not in placed)
         return tree
 
-    def _validate_template(self, template: Template) -> None:
-        self._build_from_template(template, _TEMPLATE_CHECK_PROJECT_ID, template.name, "", None)
+    def _validate_template(self, template: Template) -> list[Module]:
+        """Dry-run a template build; the modules it would create (template order)."""
+        return self._build_from_template(template, _TEMPLATE_CHECK_PROJECT_ID, template.name, "", None)[1]
 
     @staticmethod
-    def _template_summary(template: Template) -> dict[str, Any]:
+    def _template_summary(template: Template, modules: list[Module]) -> dict[str, Any]:
+        """A listing entry; ``modules`` are the built modules (names resolved from module templates)."""
         return {
             "id": template.id,
             "source": template.source,
             "name": template.name,
             "description": template.description,
             "modules": [
-                {"key": m.key, "name": m.name, "prefix": m.prefix, "type": m.type or DEFAULT_MODULE_TYPE}
-                for m in template.modules
+                {"key": t.key, "name": m.name, "prefix": m.prefix, "type": m.type}
+                for t, m in zip(template.modules, modules)
             ],
             "error": None,
         }
@@ -3003,8 +3083,7 @@ class ProjectService:
                 try:
                     text = self._read_template_text(source, local_id)
                     template = parse_template_text(text, template_id)
-                    self._validate_template(template)
-                    entries.append(self._template_summary(template))
+                    entries.append(self._template_summary(template, self._validate_template(template)))
                 except (OSError, ValueError) as exc:
                     logger.debug("Template %s is invalid: %s", template_id, exc)
                     entries.append(
@@ -3023,9 +3102,16 @@ class ProjectService:
 
     @staticmethod
     def _template_from_project(
-        project: Project, modules: list[Module], template_id: str, name: str, description: str, tree: list | None = None
+        project: Project,
+        modules: list[Module],
+        template_id: str,
+        name: str,
+        description: str,
+        tree: list | None = None,
+        skeletons: dict[str, list[SkeletonNode]] | None = None,
     ) -> Template:
-        """A project's structure as a template; no requirements, no id counters, no parent."""
+        """A project's structure as a template; no requirements (only heading skeletons), no id counters, no parent."""
+        skeletons = skeletons or {}
         builtin_ids = {a.id for a in BUILTIN_ATTRIBUTES}
         # Cross-project configurations are not saved (their target module is
         # not part of the template); views drop their mirror columns.
@@ -3066,7 +3152,14 @@ class ProjectService:
             description=description,
             attributes=attributes,
             modules=[
-                TemplateModule(key=m.id, name=m.name, prefix=m.prefix, description=m.description, type=m.type)
+                TemplateModule(
+                    key=m.id,
+                    name=m.name,
+                    prefix=m.prefix,
+                    description=m.description,
+                    type=m.type,
+                    skeleton=skeletons.get(m.id) or None,
+                )
                 for m in modules
             ],
             # Folders keep their ids as keys; written only when there is one.
@@ -3098,7 +3191,8 @@ class ProjectService:
         """Write a project's structure as a new user template (``user:<slug>``).
 
         Saves non-system attributes (except the built-in ``object_text``),
-        modules (key = module id), link configurations (between module keys),
+        modules (key = module id) with their heading skeletons (see
+        ``_skeleton_from_module``), link configurations (between module keys),
         views (mirror attributes written as ``link:<key>``; references to
         attributes the project no longer has are dropped) and row styles
         (rules that no longer resolve are dropped). Requirements, id
@@ -3122,18 +3216,25 @@ class ProjectService:
 
         local_id = _unique_slug(name, self.store.user_template_path_exists, fallback="template")
         template_id = make_template_id(USER_SOURCE, local_id)
+        modules = self.list_modules(project_id)
         template = self._template_from_project(
-            project, self.list_modules(project_id), template_id, name, description, self._module_tree(project)
+            project,
+            modules,
+            template_id,
+            name,
+            description,
+            self._module_tree(project),
+            {m.id: self._skeleton_from_module(project, m) for m in modules},
         )
         data = template.to_dict()
         try:
             # Round-trip through the loader so the saved file is exactly what
             # a later "create from template" will accept.
-            self._validate_template(parse_template(data, template_id))
+            built = self._validate_template(parse_template(data, template_id))
         except ValueError as exc:
             raise ValueError(f"Project '{project_id}' cannot be saved as a template: {exc}") from exc
         self.store.save_user_template(local_id, data)
-        return self._template_summary(template)
+        return self._template_summary(template, built)
 
     def import_template(self, text: Any) -> dict[str, Any]:
         """Save an uploaded template JSON document as a new user template.
@@ -3166,7 +3267,7 @@ class ProjectService:
         provisional_id = make_template_id(USER_SOURCE, "import")
         try:
             template = parse_template_text(text, provisional_id)
-            self._validate_template(template)
+            built = self._validate_template(template)
         except ValueError as exc:
             raise ValueError(f"The template file is invalid: {exc}") from exc
 
@@ -3177,7 +3278,485 @@ class ProjectService:
         local_id = _unique_slug(template.name, self.store.user_template_path_exists, fallback="template")
         template.id = make_template_id(USER_SOURCE, local_id)
         self.store.save_user_template(local_id, template.to_dict())
-        return self._template_summary(template)
+        return self._template_summary(template, built)
+
+    # --- module templates and heading skeletons ---------------------------------
+    #
+    # A module template (``templates.ModuleTemplate``) describes one module:
+    # its default name/prefix/description/type, the attributes that apply to
+    # it, an optional view and a heading skeleton. "Add module from template"
+    # (``create_module_from_template``) and project templates referencing a
+    # module template (``_build_from_template``) apply it through the same
+    # in-memory helpers below.
+
+    def _read_module_template_text(self, source: str, local_id: str) -> str:
+        if source == BUILTIN_SOURCE:
+            return read_builtin_module_template_text(local_id, self.builtin_templates_dir)
+        return self.store.read_user_module_template_text(local_id)
+
+    def _load_module_template(self, template_id: Any) -> ModuleTemplate:
+        """Read and shape-check a module template (404 if missing, 400 if malformed)."""
+        source, local_id = split_template_id(template_id)
+        text = self._read_module_template_text(source, local_id)
+        try:
+            return parse_module_template_text(text, template_id)
+        except ValueError as exc:
+            raise ValueError(f"Module template '{template_id}' is invalid: {exc}") from exc
+
+    @staticmethod
+    def _extend_scope(attr: AttributeDefinition, module: Module) -> bool:
+        """Make ``attr`` apply to ``module`` (a new, empty module) by listing it; whether it changed."""
+        if ProjectService._attribute_applies(attr, module.id, module.type):
+            return False
+        attr.modules.append(module.id)
+        return True
+
+    def _merge_template_attributes(
+        self, project: Project, module: Module, attributes: list[ModuleTemplateAttribute]
+    ) -> dict[str, Any]:
+        """Make a module template's attributes apply to the new ``module`` of ``project`` (in memory).
+
+        Matched by name (case-insensitive, like attribute names are unique):
+
+        - an existing attribute of the same name must have the same type (a
+          link mirror attribute never matches); it is otherwise kept exactly
+          as it is (choices, default, required), except that a scoped
+          attribute that does not apply to the new module gets the module
+          added to its ``modules`` list. The module is new and empty, so no
+          existing value can become invalid;
+        - a missing attribute is added, optional and scoped to the new module
+          only, so no other module and no existing requirement is affected.
+          Its id is the template's id, or a free slug of it when taken.
+
+        Returns ``{"id_map": template id -> project id, "added": [ids],
+        "extended": [ids]}``. Raises ``ValueError`` naming the attribute.
+        """
+        id_map: dict[str, str] = {}
+        added: list[str] = []
+        extended: list[str] = []
+        for index, tattr in enumerate(attributes):
+            where = f"attributes[{index}] ('{tattr.name}')"
+            folded = tattr.name.strip().casefold()
+            existing = next(
+                (a for a in project.attributes if isinstance(a.name, str) and a.name.strip().casefold() == folded),
+                None,
+            )
+            if existing is not None:
+                if existing.system:
+                    raise ValueError(f"{where}: '{existing.name}' is a link attribute of the project")
+                if existing.type != tattr.type:
+                    raise ValueError(
+                        f"{where}: the project's attribute '{existing.name}' has type '{existing.type}', "
+                        f"the template's has type '{tattr.type}'"
+                    )
+                if self._extend_scope(existing, module):
+                    extended.append(existing.id)
+                id_map[tattr.id] = existing.id
+                continue
+            taken = {a.id for a in project.attributes}
+            attr_id = tattr.id if tattr.id not in taken else _unique_slug(
+                tattr.id, lambda c: c in taken, fallback="attribute"
+            )
+            try:
+                definition = self._new_attribute_definition(
+                    project, attr_id, tattr.name, tattr.type, False, tattr.default, tattr.choices
+                )
+            except ValueError as exc:
+                raise ValueError(f"{where}: {exc}") from exc
+            definition.modules = [module.id]
+            project.attributes.append(definition)
+            added.append(attr_id)
+            id_map[tattr.id] = attr_id
+        return {"id_map": id_map, "added": added, "extended": extended}
+
+    @staticmethod
+    def _sort_attribute_scopes(project: Project, order: list[str]) -> None:
+        """Put every attribute's ``modules`` list in display order (ids naming no module keep their place at the end)."""
+        position = {module_id: i for i, module_id in enumerate(order)}
+        for attr in project.attributes:
+            if len(attr.modules) > 1:
+                attr.modules = sorted(attr.modules, key=lambda m: position.get(m, len(position)))
+
+    def _merge_template_view(self, project: Project, view: TemplateView | None, id_map: dict[str, str]) -> str | None:
+        """Add a module template's view unless one of that name exists; the new view's id, or None."""
+        if view is None:
+            return None
+        folded = view.name.strip().casefold()
+        if any(isinstance(v.name, str) and v.name.strip().casefold() == folded for v in project.views):
+            return None
+        refs = [ref if ref == "object_text" else id_map[ref] for ref in view.attribute_ids]
+        return self._add_view(project, view.name, refs).id
+
+    @classmethod
+    def _skeleton_object_type(cls, project: Project, module: Module) -> AttributeDefinition:
+        """The Object Type attribute skeleton headings are typed with (made to apply to ``module``).
+
+        The first non-system ``enum``/``string`` attribute whose name or id
+        reads "Object Type" (compared like report attributes).
+        """
+        for attr in project.attributes:
+            if attr.system or attr.type not in ("enum", "string"):
+                continue
+            if "object type" in (cls._report_key(attr.name), cls._report_key(attr.id)):
+                cls._extend_scope(attr, module)
+                return attr
+        raise ValueError(
+            "a heading skeleton needs an 'Object Type' attribute (an enum with a 'Heading' choice, "
+            "or a string); add one to the template or to the project"
+        )
+
+    @classmethod
+    def _object_type_value(cls, attr: AttributeDefinition, wanted: str) -> str:
+        """The value of Object Type attribute ``attr`` meaning ``wanted`` ("Heading", "Information")."""
+        if attr.type != "enum":
+            return wanted
+        for choice in attr.choices or []:
+            if cls._report_key(choice) == cls._report_key(wanted):
+                return choice
+        raise ValueError(f"attribute '{attr.name}' has no '{wanted}' choice, needed by the heading skeleton")
+
+    def _skeleton_requirements(
+        self, project: Project, module: Module, skeleton: list[SkeletonNode], allocate: Callable[[], str]
+    ) -> list[Requirement]:
+        """The requirements of a heading skeleton for new ``module``, in tree order (in memory).
+
+        Each node is a requirement with ObjectText = the heading and Object
+        Type = Heading; its ``text`` a first child with Object Type =
+        Information. Other attributes get their defaults; every requirement
+        is validated like ``add_requirement`` (so a required attribute
+        without a default fails here). Ids come from ``allocate``.
+        """
+        if not skeleton:
+            return []
+        object_type = self._skeleton_object_type(project, module)
+        heading_value = self._object_type_value(object_type, "Heading")
+        info_value: str | None = None
+        result: list[Requirement] = []
+
+        def make(text: str, type_value: str, parent_id: str | None, order: int) -> Requirement:
+            values = self._sanitized_text_values(
+                project, {"object_text": richtext.from_plain(text), object_type.id: type_value}
+            )
+            self._validate_attributes(project, values, is_create=True, module_id=module.id, module_type=module.type)
+            merged = self._merged_attributes(project, values, module.id, module.type)
+            requirement = Requirement(id=allocate(), attributes=merged, parent_id=parent_id, order=order)
+            result.append(requirement)
+            return requirement
+
+        def build(nodes: list[SkeletonNode], parent_id: str | None, start: int) -> None:
+            nonlocal info_value
+            for index, node in enumerate(nodes):
+                try:
+                    heading = make(node.heading, heading_value, parent_id, start + index)
+                    if node.text is not None:
+                        if info_value is None:
+                            info_value = self._object_type_value(object_type, "Information")
+                        make(node.text, info_value, heading.id, 0)
+                except ValueError as exc:
+                    raise ValueError(f"skeleton heading '{node.heading}': {exc}") from exc
+                # Child headings follow the informative text.
+                build(node.children, heading.id, 1 if node.text is not None else 0)
+
+        build(skeleton, None, 0)
+        return result
+
+    def _skeleton_from_module(self, project: Project, module: Module) -> list[SkeletonNode]:
+        """A module's headings as a heading skeleton (``[]`` without an Object Type attribute).
+
+        Requirements whose Object Type reads "Heading" are taken in tree
+        order, nested as they are; a heading under a non-heading is left out
+        (with its subtree). A heading's first child of Object Type
+        Information becomes its ``text``. Rich text is reduced to plain text.
+        """
+        object_type = self._report_attribute(project, module, "object_type")
+        if object_type is None:
+            return []
+        children: dict[str | None, list[Requirement]] = {}
+        for requirement in self.store.load_all_requirements(project.id, module.id):
+            children.setdefault(requirement.parent_id, []).append(requirement)
+        for siblings in children.values():
+            siblings.sort(key=lambda r: (r.order, r.id))
+
+        def is_type(requirement: Requirement, word: str) -> bool:
+            value = requirement.attributes.get(object_type.id)
+            return isinstance(value, str) and self._report_key(value) == word
+
+        def text_of(requirement: Requirement) -> str:
+            value = requirement.attributes.get("object_text")
+            plain = richtext.to_plain(value) if isinstance(value, str) else ("" if value is None else str(value))
+            return str(plain).strip()
+
+        count = 0
+        root: list[SkeletonNode] = []
+        # Iterative depth-first walk: requirement trees can nest deeply.
+        stack: list[tuple[Requirement, list[SkeletonNode]]] = [
+            (r, root) for r in reversed(children.get(None, [])) if is_type(r, "heading")
+        ]
+        while stack:
+            requirement, siblings = stack.pop()
+            count += 1
+            if count > MAX_SKELETON_NODES:
+                raise ValueError(
+                    f"Module '{module.id}' has more than {MAX_SKELETON_NODES} headings; too many for a template"
+                )
+            kids = children.get(requirement.id, [])
+            text = text_of(kids[0]) if kids and is_type(kids[0], "information") else None
+            node = SkeletonNode(heading=text_of(requirement) or "Untitled", text=text or None)
+            siblings.append(node)
+            stack.extend((k, node.children) for k in reversed(kids) if is_type(k, "heading"))
+        return root
+
+    def _module_template_check(self, template: ModuleTemplate) -> dict[str, Any]:
+        """Dry-run a module template on an empty project; what it would add (``ValueError`` if invalid)."""
+        project = Project(id=_TEMPLATE_CHECK_PROJECT_ID, name=template.name, attributes=list(BUILTIN_ATTRIBUTES))
+        project.attributes = [replace(a) for a in project.attributes]
+        return self._apply_module_template(project, template, None, None, None, check_only=True)
+
+    def _apply_module_template(
+        self,
+        project: Project,
+        template: ModuleTemplate,
+        name: Any,
+        prefix: Any,
+        description: Any,
+        check_only: bool = False,
+    ) -> dict[str, Any]:
+        """Build the module, merged attributes, view and skeleton of ``template`` for ``project`` (in memory).
+
+        ``name``/``prefix``/``description`` override the template's (None:
+        the template's). Returns ``{"module", "requirements", "added",
+        "extended", "view_id"}``; ``project`` is changed in place (attributes,
+        views, id counters). Nothing is written.
+        """
+        if name is None:
+            name = template.module.name
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Module name must not be empty")
+        name = name.strip()
+        if prefix is None:
+            prefix = template.module.prefix
+        if not isinstance(prefix, str):
+            raise ValueError("Module prefix must be a string")
+        validate_prefix(prefix)
+        if description is None:
+            description = template.module.description
+        if not isinstance(description, str):
+            raise ValueError("Module description must be a string")
+        module_type = self._checked_module_type(template.module.type)
+        if check_only:
+            module_id = _unique_slug(name, lambda c: False, fallback="module")
+        else:
+            module_id = _unique_slug(
+                name,
+                lambda c: self.store.module_exists(project.id, c),
+                fallback="module",
+                max_length=self.store.max_name_length(),
+            )
+        module = Module(id=module_id, name=name, prefix=prefix, description=description, type=module_type)
+        merged = self._merge_template_attributes(project, module, template.attributes)
+        view_id = self._merge_template_view(project, template.view, merged["id_map"])
+        if check_only:
+            def allocate() -> str:
+                counter = project.id_counters.get(prefix, 0) + 1
+                project.id_counters[prefix] = counter
+                return f"{prefix}-{counter:04d}"
+        else:
+            def allocate() -> str:
+                return self._allocate_requirement_id(project, module)
+        requirements = self._skeleton_requirements(project, module, template.skeleton, allocate)
+        return {
+            "module": module,
+            "requirements": requirements,
+            "added": merged["added"],
+            "extended": merged["extended"],
+            "view_id": view_id,
+        }
+
+    @staticmethod
+    def _module_template_summary(template: ModuleTemplate) -> dict[str, Any]:
+        return {
+            "id": template.id,
+            "source": template.source,
+            "name": template.name,
+            "description": template.description,
+            "module": {
+                "name": template.module.name,
+                "prefix": template.module.prefix,
+                "description": template.module.description,
+                "type": template.module.type or DEFAULT_MODULE_TYPE,
+            },
+            "attributes": [a.name for a in template.attributes],
+            "view": template.view.name if template.view is not None else None,
+            "headings": skeleton_size(template.skeleton),
+            "error": None,
+        }
+
+    def list_module_templates(self) -> list[dict[str, Any]]:
+        """Built-in module templates, then user ones, each sorted by name.
+
+        Like ``list_templates``: every module template is fully validated
+        (a dry run on an empty project) and an invalid one is still listed,
+        with the reason in ``error``.
+        """
+        sources = (
+            (BUILTIN_SOURCE, list_builtin_module_template_ids(self.builtin_templates_dir)),
+            (USER_SOURCE, self.store.list_user_module_template_ids()),
+        )
+        result: list[dict[str, Any]] = []
+        for source, local_ids in sources:
+            entries: list[dict[str, Any]] = []
+            for local_id in local_ids:
+                template_id = make_template_id(source, local_id)
+                text: str | None = None
+                try:
+                    text = self._read_module_template_text(source, local_id)
+                    template = parse_module_template_text(text, template_id)
+                    self._module_template_check(template)
+                    entries.append(self._module_template_summary(template))
+                except (OSError, ValueError) as exc:
+                    logger.debug("Module template %s is invalid: %s", template_id, exc)
+                    entries.append(
+                        {
+                            "id": template_id,
+                            "source": source,
+                            "name": self._fallback_template_name(text, local_id),
+                            "description": "",
+                            "module": None,
+                            "attributes": [],
+                            "view": None,
+                            "headings": 0,
+                            "error": str(exc),
+                        }
+                    )
+            entries.sort(key=lambda e: (e["name"].casefold(), e["id"]))
+            result.extend(entries)
+        return result
+
+    @_records_history
+    def create_module_from_template(
+        self,
+        project_id: str,
+        template_id: Any,
+        name: Any = None,
+        prefix: Any = None,
+        description: Any = None,
+        folder_id: Any = None,
+    ) -> dict[str, Any]:
+        """Add a module from a module template to an existing project, with its heading skeleton.
+
+        ``name``/``prefix``/``description`` override the template's (None:
+        the template's); ``folder_id`` places the module like
+        ``create_module``. The template's attributes are merged by name
+        (``_merge_template_attributes``: existing attributes are never
+        changed except to apply to the new module; missing ones are added
+        optional and scoped to it), its view is added unless the name is
+        taken, and its skeleton becomes heading requirements with
+        server-allocated ids. Everything is validated before anything is
+        written; the writes (module file, requirement files, project.json)
+        form one history commit.
+
+        Returns ``{"module", "added_attributes", "extended_attributes",
+        "view_id", "headings"}``.
+        """
+        project = self.store.load_project(project_id)
+        template = self._load_module_template(template_id)
+        tree = self._module_tree(project)
+        container = self._folder_container(project, tree, folder_id)
+        try:
+            applied = self._apply_module_template(project, template, name, prefix, description)
+        except ValueError as exc:
+            raise ValueError(f"Module template '{template_id}' cannot be added: {exc}") from exc
+        module: Module = applied["module"]
+        container.append(module.id)
+        project.module_order = tree
+        self._sort_attribute_scopes(project, module_tree.module_ids(tree))
+        self.store.save_module(project_id, module)
+        # Requirement files, then project.json (attributes, tree, counters, view).
+        self._write_new_requirements(project, module.id, applied["requirements"])
+        return {
+            "module": module,
+            "added_attributes": applied["added"],
+            "extended_attributes": applied["extended"],
+            "view_id": applied["view_id"],
+            "headings": len(applied["requirements"]),
+        }
+
+    def save_module_as_template(
+        self, project_id: str, module_id: str, name: Any, description: Any = "", view_id: Any = None
+    ) -> dict[str, Any]:
+        """Write a module's structure as a new user module template (``user:<slug>``).
+
+        Saves the module's name, prefix, description and type, the
+        non-system attributes that apply to it (except the built-in
+        ``object_text``; required is not kept: merged attributes are always
+        optional), the view ``view_id`` if given (references to attributes
+        not saved are dropped) and its headings as a skeleton
+        (``_skeleton_from_module``). No requirements, link configurations or
+        cross-project configuration. The result is validated like a loaded
+        module template before it is written; a name used by any module
+        template (case-insensitive) raises ``ConflictError``.
+        """
+        project = self.store.load_project(project_id)
+        module = self.store.load_module(project_id, module_id)
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Template name must not be empty")
+        name = name.strip()
+        if description is None:
+            description = ""
+        if not isinstance(description, str):
+            raise ValueError("Template description must be a string")
+        view: View | None = None
+        if view_id is not None:
+            view = next((v for v in project.views if v.id == view_id), None)
+            if view is None:
+                raise FileNotFoundError(f"View '{view_id}' not found in project '{project_id}'")
+
+        for entry in self.list_module_templates():
+            if entry["name"].casefold() == name.casefold():
+                raise ConflictError(f"A module template named '{entry['name']}' already exists ({entry['id']})")
+
+        builtin_ids = {a.id for a in BUILTIN_ATTRIBUTES}
+        attributes = [
+            ModuleTemplateAttribute(
+                id=a.id,
+                name=a.name,
+                type=a.type,
+                default=a.default,
+                choices=list(a.choices) if isinstance(a.choices, list) else a.choices,
+            )
+            for a in project.attributes
+            if not a.system and a.id not in builtin_ids and self._attribute_applies(a, module.id, module.type)
+        ]
+        kept = builtin_ids | {a.id for a in attributes}
+        template_view = (
+            TemplateView(name=view.name, attribute_ids=[a for a in view.attribute_ids if a in kept])
+            if view is not None
+            else None
+        )
+        local_id = _unique_slug(name, self.store.user_module_template_path_exists, fallback="template")
+        template_id = make_template_id(USER_SOURCE, local_id)
+        template = ModuleTemplate(
+            id=template_id,
+            source=USER_SOURCE,
+            name=name,
+            description=description,
+            module=ModuleTemplateModule(
+                name=module.name, prefix=module.prefix, description=module.description, type=module.type
+            ),
+            attributes=attributes,
+            view=template_view,
+            skeleton=self._skeleton_from_module(project, module),
+        )
+        data = template.to_dict()
+        try:
+            # Round-trip through the loader (as JSON text, so the depth
+            # limit applies) and dry-run it, so the file is always usable.
+            checked = parse_module_template_text(json.dumps(data), template_id)
+            self._module_template_check(checked)
+        except ValueError as exc:
+            raise ValueError(f"Module '{module_id}' cannot be saved as a template: {exc}") from exc
+        self.store.save_user_module_template(local_id, data)
+        return self._module_template_summary(template)
 
     # --- reports ---------------------------------------------------------------
     #

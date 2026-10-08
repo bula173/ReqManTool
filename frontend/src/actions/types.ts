@@ -150,7 +150,10 @@ export type DialogRequest =
   /** JUnit XML / Robot output.xml results into a test_execution module. */
   | { kind: 'importTestResults'; projectId: string; moduleId: string; moduleName: string }
   /** `folderId`: the module folder to create it in (null/omitted: the top level). */
-  | { kind: 'newModule'; projectId: string; folderId?: string | null }
+  /** `fromTemplate`: open with the module template picker (the list is then fetched right away). */
+  | { kind: 'newModule'; projectId: string; folderId?: string | null; fromTemplate?: boolean }
+  /** Save a module's attributes, optional view and headings as a user module template. */
+  | { kind: 'saveModuleAsTemplate'; projectId: string; moduleId: string; moduleName: string }
   /** A new module folder in `parentId` (null: the top level). */
   | { kind: 'newModuleFolder'; projectId: string; parentId: string | null }
   | { kind: 'renameModuleFolder'; projectId: string; folderId: string; name: string }

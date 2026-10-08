@@ -27,7 +27,7 @@ type LiveSyncEvent = ChangedEvent | RootChangedEvent | TemplatesChangedEvent;
  * clears the cache, since the whole project/module/requirement set is now a
  * different dataset; only the backend version query is kept (see
  * clearDatasetCache). A {"event":"templates_changed"} broadcast (a template
- * was saved) refetches the template list.
+ * or module template was saved) refetches both template lists.
  *
  * On a reconnect (usually a backend restart, possibly as a different
  * version) the footer's version query is refetched; on the first connect it
@@ -76,6 +76,7 @@ export function useLiveSync(): void {
             clearDatasetCache(qc);
           } else if (data.event === 'templates_changed') {
             qc.invalidateQueries({ queryKey: queryKeys.templates });
+            qc.invalidateQueries({ queryKey: queryKeys.moduleTemplates });
           }
         } catch {
           // ignore malformed messages

@@ -82,6 +82,19 @@ export const projectActions: Action<'project'>[] = [
     },
   },
   {
+    // The module template list is fetched by the dialog when it opens (never before).
+    id: 'project.newModuleFromTemplate',
+    element: 'project',
+    label: 'New module from template',
+    icon: IconTemplate,
+    opensDialog: true,
+    isAvailable: (ctx) => loadedProject(ctx) !== null,
+    run: (ctx) => {
+      const project = loadedProject(ctx);
+      if (project) ctx.commands.openDialog({ kind: 'newModule', projectId: project.id, fromTemplate: true });
+    },
+  },
+  {
     // The projects this one references (cross-project link targets): sidebar menu and project page.
     id: 'project.references',
     element: 'project',
@@ -195,6 +208,25 @@ export const moduleActions: Action<'module'>[] = [
       if (!target) return;
       ctx.commands.openDialog({
         kind: 'importTestResults',
+        projectId: target.projectId,
+        moduleId: target.module.id,
+        moduleName: target.module.name,
+      });
+    },
+  },
+  {
+    // Attributes that apply to the module, an optional view and its headings, as a user module template.
+    id: 'module.saveAsTemplate',
+    element: 'module',
+    label: 'Save module as template',
+    icon: IconTemplate,
+    opensDialog: true,
+    isAvailable: (ctx) => ctx.target !== null,
+    run: (ctx) => {
+      const target = ctx.target;
+      if (!target) return;
+      ctx.commands.openDialog({
+        kind: 'saveModuleAsTemplate',
         projectId: target.projectId,
         moduleId: target.module.id,
         moduleName: target.module.name,

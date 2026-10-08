@@ -6,6 +6,7 @@ import type {
   BaselineCompare,
   BaselineList,
   BaselineSnapshot,
+  CreateModuleFromTemplateResult,
   CsvImportResult,
   ExecutionReport,
   GitLog,
@@ -17,6 +18,7 @@ import type {
   LinkOption,
   Module,
   ModuleFolder,
+  ModuleTemplateSummary,
   ModuleTreeEntry,
   ModuleType,
   Project,
@@ -89,6 +91,8 @@ export const queryKeys = {
   config: ['config'] as const,
   version: ['version'] as const,
   templates: ['templates'] as const,
+  /** Module templates (GET /module-templates); fetched lazily, refetched on `templates_changed`. */
+  moduleTemplates: ['module-templates'] as const,
 };
 
 // --- version -----------------------------------------------------------
@@ -291,6 +295,56 @@ export function useSaveProjectAsTemplate(projectId: string) {
       api.post<TemplateSummary>(`/projects/${projectId}/save-as-template`, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.templates });
+    },
+  });
+}
+
+export function useModuleTemplates(enabled = true): UseQueryResult<ModuleTemplateSummary[]> {
+  return useQuery({
+    queryKey: queryKeys.moduleTemplates,
+    queryFn: () => api.get<ModuleTemplateSummary[]>('/module-templates'),
+    enabled,
+  });
+}
+
+/**
+ * Adds a module from a module template (`POST /projects/{id}/modules/from-template`,
+ * WS `module.create_from_template`): the module, its heading skeleton, merged
+ * attributes and possibly a view, in one change. Everything under the
+ * project is refetched (attributes, views, modules, tree).
+ */
+export function useCreateModuleFromTemplate(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      template_id: string;
+      name?: string;
+      prefix?: string;
+      description?: string;
+      /** The module folder to create it in; null/omitted: the top level. */
+      folder_id?: string | null;
+    }) =>
+      api.post<CreateModuleFromTemplateResult>(
+        `/projects/${encodeURIComponent(projectId)}/modules/from-template`,
+        body,
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+    },
+  });
+}
+
+/** Saves a module's structure (attributes, optional view, headings) as a user module template. */
+export function useSaveModuleAsTemplate(projectId: string, moduleId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; description?: string; view_id?: string | null }) =>
+      api.post<ModuleTemplateSummary>(
+        `/projects/${encodeURIComponent(projectId)}/modules/${encodeURIComponent(moduleId)}/save-as-template`,
+        body,
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.moduleTemplates });
     },
   });
 }

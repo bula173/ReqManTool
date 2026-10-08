@@ -1,0 +1,106 @@
+{
+  "format_version": 1,
+  "kind": "module",
+  "id": "requirements",
+  "name": "Requirements specification",
+  "description": "A requirements module with the usual specification chapters (introduction, functional, interface, performance, RAM, safety, security, constraints, configuration).",
+  "module": {
+    "name": "Requirements",
+    "prefix": "REQ",
+    "description": "Requirements specification."
+  },
+  "attributes": [
+    {
+      "id": "object_type",
+      "name": "Object Type",
+      "type": "enum",
+      "default": null,
+      "choices": [
+        "Heading",
+        "Requirement",
+        "Information",
+        "Definition",
+        "Assumption",
+        "Test Case"
+      ]
+    },
+    {
+      "id": "status",
+      "name": "Status",
+      "type": "enum",
+      "default": "Draft",
+      "choices": [
+        "Draft",
+        "Proposed",
+        "Reviewed",
+        "Approved",
+        "Rejected",
+        "Deleted"
+      ]
+    }
+  ],
+  "view": {
+    "name": "Requirements",
+    "attribute_ids": [
+      "object_text",
+      "object_type",
+      "status"
+    ]
+  },
+  "skeleton": [
+    {
+      "heading": "Introduction",
+      "children": [
+        {
+          "heading": "Purpose"
+        },
+        {
+          "heading": "Scope"
+        },
+        {
+          "heading": "Definitions and Abbreviations"
+        },
+        {
+          "heading": "References"
+        }
+      ]
+    },
+    {
+      "heading": "Overview / Context",
+      "text": "Describe the system, its boundaries and its environment."
+    },
+    {
+      "heading": "Functional Requirements"
+    },
+    {
+      "heading": "Interface Requirements"
+    },
+    {
+      "heading": "Performance Requirements"
+    },
+    {
+      "heading": "RAM Requirements",
+      "text": "Reliability, availability and maintainability."
+    },
+    {
+      "heading": "Safety Requirements",
+      "children": [
+        {
+          "heading": "SIL Allocation"
+        },
+        {
+          "heading": "Tolerable Hazard Rates (THR)"
+        }
+      ]
+    },
+    {
+      "heading": "Security Requirements"
+    },
+    {
+      "heading": "Constraints"
+    },
+    {
+      "heading": "Configuration and Data"
+    }
+  ]
+}

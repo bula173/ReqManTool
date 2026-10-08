@@ -22,6 +22,7 @@ import { ProjectReferencesModal } from '../components/ProjectReferencesModal';
 import { RequirementFormModal } from '../components/RequirementFormModal';
 import { RowStylesModal } from '../components/RowStylesModal';
 import { SaveAsTemplateModal } from '../components/SaveAsTemplateModal';
+import { SaveModuleAsTemplateModal } from '../components/SaveModuleAsTemplateModal';
 
 type AddRequirementRequest = Extract<DialogRequest, { kind: 'addRequirement' }>;
 
@@ -129,7 +130,23 @@ export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; 
         />
       );
     case 'newModule':
-      return <NewModuleModal projectId={dialog.projectId} folderId={dialog.folderId ?? null} onClose={onClose} />;
+      return (
+        <NewModuleModal
+          projectId={dialog.projectId}
+          folderId={dialog.folderId ?? null}
+          fromTemplate={dialog.fromTemplate ?? false}
+          onClose={onClose}
+        />
+      );
+    case 'saveModuleAsTemplate':
+      return (
+        <SaveModuleAsTemplateModal
+          projectId={dialog.projectId}
+          moduleId={dialog.moduleId}
+          moduleName={dialog.moduleName}
+          onClose={onClose}
+        />
+      );
     case 'newModuleFolder':
       return <ModuleFolderNameModal projectId={dialog.projectId} parentId={dialog.parentId} onClose={onClose} />;
     case 'renameModuleFolder':

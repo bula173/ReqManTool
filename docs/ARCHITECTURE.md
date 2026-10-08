@@ -87,6 +87,8 @@ persistence" below.
 <data-directory>/
   _templates/                     # user project templates (never a project)
     <template-id>.json            #   see "Project templates" below
+    modules/                      # user module templates
+      <template-id>.json          #   see "Module templates and heading skeletons"
   .reqman-staging/                # transient: a project created from a
                                   #   template is assembled here, then
                                   #   renamed into place (removed afterwards)
@@ -298,8 +300,9 @@ in the Project tab of the sidebar, the module tab bar and the project page.
   linking. The New link configuration dialog disables targets that do not
   fit the chosen source.
 - **Templates**: a template module may carry `type` and a template attribute
-  `module_types` (both optional, template `format_version` stays 1: an
-  older ReqManTool ignores them). Save as template writes them when not
+  `module_types` (both optional and added without a `format_version` bump:
+  an older ReqManTool ignores them; version 2 came later with module
+  template references). Save as template writes them when not
   default; `GET /templates` lists each module's `type`. The built-in
   `RBC_Template` makes StRS/SyRS/SwRS `requirements`, SysTest/SwTest
   `test_cases` and adds SysTestExec/SwTestExec (`test_execution`, links
@@ -629,8 +632,9 @@ shared library project (e.g. a SUBSET-026 project).
 
 A template is a JSON file holding a project's *structure* — attribute
 definitions, modules, link configurations between those modules, and views
-— and no requirements. `backend/reqman/templates.py` documents the format
-(`format_version` 1) and checks its shape; `ProjectService` applies the
+— and no requirements except heading skeletons (see below).
+`backend/reqman/templates.py` documents the format (`format_version` 2;
+version 1 is still read) and checks its shape; `ProjectService` applies the
 domain rules.
 
 - **Ids are namespaced by location**, so templates can never collide or
@@ -658,7 +662,13 @@ domain rules.
 - **Compatibility**: unknown keys are ignored at every level, so a later
   optional key (such as a module's `type` or an attribute's
   `module_types`) needs no `format_version` bump. `format_version` is bumped only for incompatible changes; a
-  template with any other `format_version` than 1 is invalid.
+  template with a missing, non-integer or newer `format_version` is invalid.
+  Version 2 lets a module entry reference a module template
+  (`module_template`) and omit `name`/`prefix`, which a version 1 reader
+  would reject. A version 1 file is migrated in memory (`migrate_v1`: its
+  module `module_template`/`skeleton` keys, which version 1 ignored, are
+  dropped); files on disk are never rewritten, and templates saved or
+  imported now are written as version 2.
 - **Listing** (`GET /templates`): built-in templates, then user templates,
   each sorted by name, each fully validated. An invalid file (unreadable,
   bad or too deeply nested JSON (over 100 levels, `MAX_TEMPLATE_JSON_DEPTH`), a string that is not valid UTF-8 such as a
@@ -680,7 +690,8 @@ domain rules.
   module keys), views (mirror attributes as `link:<key>`; references to
   attributes the project no longer has are dropped) and row styles (rules
   that no longer resolve are dropped; `row_styles` written only when
-  non-empty). Requirements, id
+  non-empty) and each module's headings as its `skeleton` (written only when
+  non-empty; see below). Other requirements, id
   counters and the parent are not saved. The result is round-tripped
   through the loader before it is written. A name already used by any
   template (built-in or user, case-insensitive) is rejected with 409; a
@@ -696,6 +707,77 @@ domain rules.
   that stem, canonical key order (unknown keys are not kept). Invalid input
   → 400, a name used by any template → 409, nothing is written in either
   case; success broadcasts `templates_changed`.
+
+### Module templates and heading skeletons
+
+A **module template** (`templates.ModuleTemplate`, `"kind": "module"`, its
+own `format_version` 1) describes one module: default name, prefix,
+description and type, the attributes that apply to it (no `required`, no
+link configurations, nothing cross-project), an optional view and a heading
+skeleton. Built-in ones live in `backend/reqman/templates/modules/`
+(`requirements`, `test_cases`, `test_execution`), user ones in
+`<data-directory>/_templates/modules/`; ids are namespaced like project
+templates (`builtin:<stem>` / `user:<stem>`) in a namespace of their own.
+A module template file is rejected as a project template and vice versa.
+
+A **heading skeleton** is a nested list of `{"heading", "text"?,
+"children"?}` nodes (at most 2000). When the module is created, every node
+becomes a requirement in tree order with ObjectText = the heading and
+Object Type = Heading; a node's `text` becomes its first child with Object
+Type = Information. Ids are allocated by the server as usual, defaults
+apply, and every object is validated like `add_requirement` (a required
+attribute without a default makes the skeleton fail). Object Type is the
+first non-system enum/string attribute named (or with id) "Object Type"; an
+enum needs `Heading` (and, for texts, `Information`) choices — the
+template is refused otherwise. The chapter lists are data in the template
+files.
+
+- **Attribute merge** (`_merge_template_attributes`, shared by "Add module
+  from template" and project templates referencing a module template):
+  matched by name, case-insensitively. An existing attribute must have the
+  same type (a link mirror attribute never matches) and is never changed,
+  except that a scoped attribute not applying to the new module gets the
+  module added to its `modules` list — harmless, as the module is new and
+  empty. A missing attribute is added *optional* and scoped to the new
+  module only (id = the template's, or a free slug of it), so no other
+  module and no existing requirement is affected. Enum choices are never
+  edited. The template's view is added unless a view of that name exists.
+- **Add module from template** (`POST /projects/{id}/modules/from-template`,
+  WS `module.create_from_template`; sidebar project/folder menu "New module
+  from template", File ▸ Load template, or the Template picker of the New
+  module dialog): body `template_id`, optional `name`/`prefix`/
+  `description` overrides and `folder_id`. Everything (module, merge,
+  view, skeleton) is built and validated in memory first; then the module
+  file, the requirement files and `project.json` are written — one history
+  commit, one `changed` broadcast. Returns the module, `added_attributes`,
+  `extended_attributes`, `view_id` and `headings` (objects created).
+- **Save module as template** (`POST
+  /projects/{id}/modules/{module}/save-as-template`, WS
+  `module.save_as_template`; module menu): name, description, optional
+  `view_id`. Saves the module's name/prefix/description/type, the non-system
+  attributes that apply to it (except ObjectText), the view (references to
+  unsaved attributes dropped) and its headings: requirements whose Object
+  Type reads Heading, nested as in the module (a heading below a
+  non-heading is left out), a heading's first Information child as its
+  `text`, rich text reduced to plain text. Round-tripped and dry-run before
+  writing; a name used by any module template → 409; broadcasts
+  `templates_changed`.
+- **Listing** (`GET /module-templates`, WS `module_template.list`): like
+  project templates, every entry is dry-run on an empty project and an
+  invalid one is listed with `error`. The frontend fetches it lazily (when
+  the New module dialog's template picker opens, or right away for "New
+  module from template") and refetches it on `templates_changed`.
+- **Project templates** (version 2) may reference a module template per
+  module (`module_template`): name/prefix/description/type default to the
+  module template's (a different `type` is refused), its attributes are
+  merged after the template's own attributes and scopes, its skeleton is
+  created (a module's own `skeleton` replaces it; `[]` for none) and its
+  view is added after the template's views. Skeleton requirements are
+  written into the staging directory with the rest of the project; ids come
+  from the new project's counters. `RBC_Template` references the three
+  built-in module templates and carries RBC-specific skeletons for SyRS
+  (functional chapters, interfaces) and SwRS (EN 50128 software
+  requirements specification structure).
 
 ### Format versions
 

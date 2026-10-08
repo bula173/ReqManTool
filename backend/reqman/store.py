@@ -57,6 +57,8 @@ PREFIX_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 # to these names; ``list_project_ids``/``project_exists`` also skip them
 # explicitly, so a hand-made ``project.json`` inside them is ignored.
 TEMPLATES_DIR_NAME = "_templates"
+# User module templates: ``<root>/_templates/modules/``.
+MODULE_TEMPLATES_DIR_NAME = "modules"
 STAGING_DIR_NAME = ".reqman-staging"
 RESERVED_ROOT_NAMES = frozenset({TEMPLATES_DIR_NAME, STAGING_DIR_NAME})
 
@@ -550,6 +552,36 @@ class ProjectStore:
         """Write a new user template file; the caller has already chosen a free id."""
         self._templates_dir().mkdir(parents=True, exist_ok=True)
         _write_json(self._user_template_file(template_id), data)
+
+    # --- user module templates ----------------------------------------------
+    # ``<root>/_templates/modules/<stem>.json``: a subfolder, so the project
+    # template listing (``_templates/*.json``) never sees them.
+
+    def _module_templates_dir(self) -> Path:
+        return self._templates_dir() / MODULE_TEMPLATES_DIR_NAME
+
+    def list_user_module_template_ids(self) -> list[str]:
+        """File stems of ``<root>/_templates/modules/*.json`` (hidden/temporary files excluded)."""
+        modules_dir = self._module_templates_dir()
+        if not modules_dir.is_dir():
+            return []
+        return sorted(p.stem for p in modules_dir.glob("*.json") if p.is_file() and not p.name.startswith("."))
+
+    def user_module_template_path_exists(self, template_id: str) -> bool:
+        """True if ``_templates/modules/<template_id>.json`` is taken. ``template_id`` must be a slug."""
+        path = self._module_templates_dir() / f"{template_id}.json"
+        return path.exists() or path.is_symlink()
+
+    def read_user_module_template_text(self, template_id: str) -> str:
+        # Looked up among the listed files, never by joining a raw id into a path.
+        if template_id not in self.list_user_module_template_ids():
+            raise FileNotFoundError(f"Module template 'user:{template_id}' not found")
+        return (self._module_templates_dir() / f"{template_id}.json").read_text(encoding="utf-8-sig")
+
+    def save_user_module_template(self, template_id: str, data: dict) -> None:
+        """Write a new user module template file; the caller has already chosen a free id."""
+        self._module_templates_dir().mkdir(parents=True, exist_ok=True)
+        _write_json(self._module_templates_dir() / f"{template_id}.json", data)
 
     # --- link pairs ("link module") ---------------------------------------
 

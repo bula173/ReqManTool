@@ -1166,6 +1166,54 @@
       project page shows "in <path>" and moves up/down within the folder.
       Not covered: tests; follow-ups in the backlog ("Module folders:
       follow-ups").
+- [x] **Module templates + heading skeletons** (2026-10-08; requested
+      2026-10-04). Module templates are JSON files with `"kind": "module"`
+      and their own format version 1: default name, prefix, description,
+      module type, applicable attributes (no `required`, no link
+      configurations, nothing cross-project), optional view and a heading
+      skeleton. Built-in templates in `backend/reqman/templates/modules/`
+      (requirements, test_cases, test_execution with the requested
+      chapter lists); user templates in `<data dir>/_templates/modules/`;
+      ids `builtin:<stem>` / `user:<stem>` in a namespace separate from
+      project templates; a module template file in the project template
+      folder (or the reverse) is rejected. Heading skeletons: nested
+      `{heading, text?, children?}`, at most 2000 entries, created as
+      Object Type = Heading requirements in tree order with server ids and
+      defaults; `text` becomes the heading's first child with Object Type
+      = Information. Project template format version 2: module entries
+      may reference `module_template` (then omit name/prefix) and carry
+      their own `skeleton` (`[]` = none); version 1 files are read via an
+      in-memory `migrate_v1` and never rewritten; saved/imported templates
+      are written as version 2 (older ReqManTool cannot read them). Save
+      project as template now also writes module headings as skeletons
+      (behaviour change). `RBC_Template` v2: all 7 modules reference
+      built-in module templates; SyRS with the RBC chapters (functional,
+      interfaces), SwRS with the EN 50128 structure; heading objects are
+      created in every module. Add module from template (overrides name/
+      prefix/description, `folder_id`; validated in memory, one history
+      commit, one broadcast; partial-write behaviour as `create_module`)
+      and Save module as template (attributes, optional view, headings;
+      the first Information child becomes `text`; rich text → plain;
+      duplicate name 409; broadcasts `templates_changed`). Decisions:
+      attributes merge by name (case-insensitive) — same type required,
+      link mirrors never match, otherwise refused; existing attributes are
+      never changed except that their scope is extended to the new module;
+      missing ones are added optional and scoped to the new module; enum
+      choices are never edited (a missing "Heading"/"Information" Object
+      Type choice is refused); Object Type is found by name or id; the
+      template view is added to the project unless a same-named view
+      exists (not made active). Endpoints: `GET /module-templates`,
+      `POST /projects/{project_id}/modules/from-template`,
+      `POST /projects/{project_id}/modules/{module_id}/save-as-template`;
+      WS `module_template.list`, `module.create_from_template`,
+      `module.save_as_template`. Backend: `backend/reqman/{service.py,
+      app.py, store.py, templates.py, templates/rbc_template.json,
+      templates/modules/ (new)}`; design in `docs/ARCHITECTURE.md`
+      ("Module templates and heading skeletons"). UI: lazy template picker
+      in `NewModuleModal`; project and folder actions "New module from
+      template…", module action "Save module as template…", File menu
+      entries; `SaveModuleAsTemplateModal` (new). Not covered: tests;
+      follow-ups in the backlog ("Module templates: follow-ups").
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -1589,34 +1637,17 @@ to the categories above.
       fixture file checked by both sides once a frontend test runner
       exists. (7) A whitespace-only value becomes "" after a real edit;
       `\r\n` becomes `\n` on edit.
-- [ ] Module templates + heading skeletons in project and module templates.
-      Requested 2026-10-04 (extends the delivered project templates).
-      (1) Module templates: JSON files (built-in + user, like project
-      templates) describing one module — name, prefix, module type (once
-      that item lands), attribute applicability, default view, and a
-      heading skeleton; "Add module from template" into an existing
-      project, "Save module as template"; project templates may reference
-      module templates instead of repeating them (template format
-      version 2, with a migration from version 1). (2) Heading skeletons:
-      a nested list of headings (plus optional informative text) created
-      as requirements with Object Type = Heading in tree order when the
-      module is created, ids allocated by the server as usual. Built-in
-      skeletons — requirements modules: Introduction (Purpose, Scope,
-      Definitions and Abbreviations, References), Overview/Context,
-      Functional Requirements, Interface Requirements, Performance, RAM,
-      Safety Requirements (SIL allocation, THR), Security, Constraints,
-      Configuration/Data; test-case modules: Introduction, Test
-      Environment, Test Strategy, Functional Tests, Interface Tests,
-      Performance Tests, Safety/Fault-Injection Tests, Regression;
-      test-execution modules: Campaign (build/version under test,
-      environment, date), Results, Deviations. (3) `RBC_Template` uses
-      them with RBC-specific chapters: SyRS Functional — Movement
-      Authority, Train Registration/Start of Mission, Level and Mode
-      Transitions, Temporary Speed Restrictions, Emergency Messages,
-      RBC-RBC Handover; Interfaces — Onboard (Euroradio, SUBSET-037),
-      Interlocking, Neighbouring RBC (SUBSET-098), Operator/TMS; SwRS per
-      EN 50128 software requirements specification structure. Exact
-      chapter lists are data in the template files and can be edited.
+- [ ] Module templates: follow-ups (2026-10-08). (1) No import or delete
+      of module template files (pairs with "User-template management
+      dialog"). (2) No "make active view" option after adding a module
+      from a template. (3) `GET /templates` does not show which module
+      templates and skeletons a project template uses. (4) No buttons on
+      ProjectPage/ProjectTab (menus only). (5) Module templates cannot
+      carry `module_types` scopes or required attributes. (6) A skeleton
+      cannot be applied to an existing module. (7) The result summary
+      shows only a count of extended attributes. (8) 9 existing template
+      tests expect format version 1 and need updating; new tests are
+      pending (phase B).
 - [ ] Module types and reports: follow-ups (2026-10-08). (1) Tests for
       all three slices (phase B); existing tests that assert project
       format 4, the old module type list or the old RBC module/attribute

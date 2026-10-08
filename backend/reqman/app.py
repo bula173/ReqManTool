@@ -276,6 +276,23 @@ class CreateModuleBody(BaseModel):
     folder_id: Any = None
 
 
+class CreateModuleFromTemplateBody(BaseModel):
+    template_id: str
+    # Overrides of the module template's defaults (null/omitted: the template's).
+    name: Any = None
+    prefix: Any = None
+    description: Any = None
+    # The module folder to create it in; null/omitted = the top level.
+    folder_id: Any = None
+
+
+class SaveModuleAsTemplateBody(BaseModel):
+    name: str
+    description: str = ""
+    # A view of the project to save as the template's view; null = none.
+    view_id: Any = None
+
+
 class AddRequirementBody(BaseModel):
     attributes: dict[str, Any] = {}
     parent_id: str | None = None
@@ -430,6 +447,11 @@ async def save_project_as_template(project_id: str, body: SaveAsTemplateBody):
 @app.get("/templates")
 def list_templates():
     return service.list_templates()
+
+
+@app.get("/module-templates")
+def list_module_templates():
+    return service.list_module_templates()
 
 
 @app.post("/templates/import")
@@ -778,6 +800,30 @@ async def create_module(project_id: str, body: CreateModuleBody):
     return module.to_dict()
 
 
+@app.post("/projects/{project_id}/modules/from-template")
+async def create_module_from_template(project_id: str, body: CreateModuleFromTemplateBody):
+    result = _wrap(
+        service.create_module_from_template,
+        project_id,
+        body.template_id,
+        body.name,
+        body.prefix,
+        body.description,
+        body.folder_id,
+    )
+    await manager.broadcast(project_id)
+    return {**result, "module": result["module"].to_dict()}
+
+
+@app.post("/projects/{project_id}/modules/{module_id}/save-as-template")
+async def save_module_as_template(project_id: str, module_id: str, body: SaveModuleAsTemplateBody):
+    template = _wrap(
+        service.save_module_as_template, project_id, module_id, body.name, body.description, body.view_id
+    )
+    await manager.broadcast_templates_changed()
+    return template
+
+
 @app.get("/projects/{project_id}/modules")
 def list_modules(project_id: str):
     return [m.to_dict() for m in _wrap(service.list_modules, project_id)]
@@ -1056,6 +1102,7 @@ RPC_METHODS = {
     ),
     "template.list": lambda p: service.list_templates(),
     "template.import": lambda p: service.import_template(p["text"]),
+    "module_template.list": lambda p: service.list_module_templates(),
     "project.get": lambda p: service.get_project(p["id"]),
     "project.list": lambda p: service.list_projects(),
     "project.purge": lambda p: {"purged": service.purge_project(p["id"])},
@@ -1086,6 +1133,12 @@ RPC_METHODS = {
     ),
     "module.create": lambda p: service.create_module(
         p["project_id"], p["name"], p["prefix"], p.get("description", ""), p.get("type"), p.get("folder_id")
+    ),
+    "module.create_from_template": lambda p: service.create_module_from_template(
+        p["project_id"], p["template_id"], p.get("name"), p.get("prefix"), p.get("description"), p.get("folder_id")
+    ),
+    "module.save_as_template": lambda p: service.save_module_as_template(
+        p["project_id"], p["id"], p["name"], p.get("description", ""), p.get("view_id")
     ),
     "module.get": lambda p: service.get_module(p["project_id"], p["id"]),
     "module.list": lambda p: service.list_modules(p["project_id"]),
@@ -1190,7 +1243,7 @@ MUTATING_METHODS = {
     "project.git_set_remote", "project.git_set_auto_push", "project.git_push", "project.git_pull",
     "project.create_from_remote",
     "attribute.add", "attribute.set_modules",
-    "module.create", "module.purge", "module.reorder", "module.move",
+    "module.create", "module.create_from_template", "module.purge", "module.reorder", "module.move",
     "module_folder.create", "module_folder.rename", "module_folder.delete", "module_folder.move",
     "module_folder.reorder",
     "link_configuration.create", "link_configuration.remove",
@@ -1202,7 +1255,7 @@ MUTATING_METHODS = {
 
 # Methods that change the data directory's template set rather than a
 # project: they broadcast {"event": "templates_changed"} instead of "changed".
-TEMPLATE_MUTATING_METHODS = {"project.save_as_template", "template.import"}
+TEMPLATE_MUTATING_METHODS = {"project.save_as_template", "template.import", "module.save_as_template"}
 
 
 def _project_id_of(method_name: str, params: dict, result: Any) -> str | None:

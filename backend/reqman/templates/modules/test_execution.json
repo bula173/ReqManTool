@@ -1,0 +1,104 @@
+{
+  "format_version": 1,
+  "kind": "module",
+  "id": "test_execution",
+  "name": "Test execution",
+  "description": "A test execution module: campaign data, results and deviations.",
+  "module": {
+    "name": "Test Execution",
+    "prefix": "TX",
+    "description": "Test execution: one entry per executed test case.",
+    "type": "test_execution"
+  },
+  "attributes": [
+    {
+      "id": "object_type",
+      "name": "Object Type",
+      "type": "enum",
+      "default": null,
+      "choices": [
+        "Heading",
+        "Requirement",
+        "Information",
+        "Definition",
+        "Assumption",
+        "Test Case"
+      ]
+    },
+    {
+      "id": "result",
+      "name": "Result",
+      "type": "enum",
+      "default": "Not Run",
+      "choices": [
+        "Passed",
+        "Failed",
+        "Blocked",
+        "Not Run"
+      ]
+    },
+    {
+      "id": "executed_by",
+      "name": "Executed By",
+      "type": "string",
+      "default": null,
+      "choices": null
+    },
+    {
+      "id": "execution_date",
+      "name": "Execution Date",
+      "type": "date",
+      "default": null,
+      "choices": null
+    },
+    {
+      "id": "version_under_test",
+      "name": "Build/SW Version Under Test",
+      "type": "string",
+      "default": null,
+      "choices": null
+    },
+    {
+      "id": "evidence_ref",
+      "name": "Evidence/Log Ref",
+      "type": "string",
+      "default": null,
+      "choices": null
+    }
+  ],
+  "view": {
+    "name": "Test Execution",
+    "attribute_ids": [
+      "object_text",
+      "object_type",
+      "result",
+      "executed_by",
+      "execution_date",
+      "version_under_test",
+      "evidence_ref"
+    ]
+  },
+  "skeleton": [
+    {
+      "heading": "Campaign",
+      "children": [
+        {
+          "heading": "Build/Version Under Test"
+        },
+        {
+          "heading": "Test Environment"
+        },
+        {
+          "heading": "Date"
+        }
+      ]
+    },
+    {
+      "heading": "Results"
+    },
+    {
+      "heading": "Deviations",
+      "text": "Deviations from the test specification and their justification."
+    }
+  ]
+}

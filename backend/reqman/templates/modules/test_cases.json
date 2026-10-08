@@ -1,0 +1,102 @@
+{
+  "format_version": 1,
+  "kind": "module",
+  "id": "test_cases",
+  "name": "Test specification",
+  "description": "A test case module with the usual test specification chapters.",
+  "module": {
+    "name": "Test Specification",
+    "prefix": "TC",
+    "description": "Test specification: test cases verifying requirements.",
+    "type": "test_cases"
+  },
+  "attributes": [
+    {
+      "id": "object_type",
+      "name": "Object Type",
+      "type": "enum",
+      "default": null,
+      "choices": [
+        "Heading",
+        "Requirement",
+        "Information",
+        "Definition",
+        "Assumption",
+        "Test Case"
+      ]
+    },
+    {
+      "id": "status",
+      "name": "Status",
+      "type": "enum",
+      "default": "Draft",
+      "choices": [
+        "Draft",
+        "Proposed",
+        "Reviewed",
+        "Approved",
+        "Rejected",
+        "Deleted"
+      ]
+    },
+    {
+      "id": "preconditions",
+      "name": "Preconditions",
+      "type": "text",
+      "default": null,
+      "choices": null
+    },
+    {
+      "id": "test_steps",
+      "name": "Test Steps",
+      "type": "text",
+      "default": null,
+      "choices": null
+    },
+    {
+      "id": "expected_result",
+      "name": "Expected Result",
+      "type": "text",
+      "default": null,
+      "choices": null
+    }
+  ],
+  "view": {
+    "name": "Test Cases",
+    "attribute_ids": [
+      "object_text",
+      "object_type",
+      "preconditions",
+      "test_steps",
+      "expected_result",
+      "status"
+    ]
+  },
+  "skeleton": [
+    {
+      "heading": "Introduction"
+    },
+    {
+      "heading": "Test Environment",
+      "text": "Test benches, simulators, tools and their configuration."
+    },
+    {
+      "heading": "Test Strategy"
+    },
+    {
+      "heading": "Functional Tests"
+    },
+    {
+      "heading": "Interface Tests"
+    },
+    {
+      "heading": "Performance Tests"
+    },
+    {
+      "heading": "Safety / Fault-Injection Tests"
+    },
+    {
+      "heading": "Regression Tests"
+    }
+  ]
+}

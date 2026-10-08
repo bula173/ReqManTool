@@ -154,9 +154,15 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
         kind: 'submenu',
         label: 'Load template',
         icon: IconTemplate,
-        entries: [action('file.newProjectFromTemplate'), action('file.importTemplate')],
+        entries: [
+          action('file.newProjectFromTemplate'),
+          action('file.importTemplate'),
+          divider,
+          action('project.newModuleFromTemplate'),
+        ],
       },
       action('file.saveAsTemplate'),
+      action('module.saveAsTemplate'),
       action('project.enableHistory'),
       action('project.gitPush'),
       action('project.gitPull'),
@@ -331,6 +337,7 @@ export const PROJECT_NODE_MENU: MenuEntry[] = [
   divider,
   action('project.newSubproject'),
   action('project.newModule'),
+  action('project.newModuleFromTemplate'),
   action('project.newFolder'),
   divider,
   action('project.references'),
@@ -359,7 +366,10 @@ export const MODULE_NODE_MENU: MenuEntry[] = [
   action('module.executionReport'),
   action('module.importTestResults'),
   divider,
+  action('module.saveAsTemplate'),
+  divider,
   action('project.newModule'),
+  action('project.newModuleFromTemplate'),
 ];
 
 /**
@@ -369,6 +379,7 @@ export const MODULE_NODE_MENU: MenuEntry[] = [
  */
 export const FOLDER_NODE_MENU: MenuEntry[] = [
   action('folder.newModule'),
+  action('folder.newModuleFromTemplate'),
   action('folder.newSubfolder'),
   divider,
   action('folder.rename'),

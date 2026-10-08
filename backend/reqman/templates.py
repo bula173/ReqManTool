@@ -14,7 +14,7 @@ templates can never collide or shadow each other:
 The file name stem is the template's identity; the ``id`` key inside the
 file is informational only.
 
-Format (``format_version`` 1)::
+Format (``format_version`` 2; version 1 is read and migrated, see below)::
 
     {
       "format_version": 1,
@@ -22,7 +22,7 @@ Format (``format_version`` 1)::
       "name": "...",
       "description": "...",
       "attributes": [{"id", "name", "type", "required", "default", "choices", "modules"?, "module_types"?}],
-      "modules": [{"key", "name", "prefix", "description", "type"?}],
+      "modules": [{"key", "name", "prefix", "description", "type"?, "module_template"?, "skeleton"?}],
       "module_tree"?: [{"module": "<key>"} | {"folder": "<key>", "name", "children": [...]}],
       "link_configurations": [{"key", "name", "source_module", "target_module"}],
       "views": [{"name", "attribute_ids"}],
@@ -69,14 +69,62 @@ without folders, in ``modules`` order, which "Save as template" writes in
 tree order) and is written only when there is a folder. Folder names,
 depth and sibling uniqueness are checked by ``ProjectService``.
 
+A module's optional ``module_template`` (version 2) names a module template
+(``builtin:<stem>`` or ``user:<stem>``, see "Module templates" below)
+instead of repeating it: the module's ``name``, ``prefix``, ``description``
+and ``type`` default to the module template's (each may still be given,
+except a ``type`` other than the module template's), the module template's
+attributes are merged into the project like "Add module from template" does
+(``ProjectService._merge_template_attributes``), its view is added unless a
+view of that name exists, and its heading skeleton is created. Because
+``name`` and ``prefix`` may then be omitted, which a version 1 reader would
+reject, this needed ``format_version`` 2. A module's optional ``skeleton``
+(version 2) is a heading skeleton (see below) that replaces the module
+template's (``[]``: none).
+
+Version 1 files are still read: ``migrate_v1`` turns one into version 2
+in memory (a version 1 reader ignored unknown keys, so ``module_template``
+and ``skeleton`` keys in a version 1 file are dropped). Files on disk are
+never rewritten; templates saved or imported now are written as version 2.
+
+Heading skeletons: a list of ``{"heading": "...", "text"?: "...",
+"children"?: [...]}`` nodes. When the module is created, every node becomes a
+requirement with Object Type = Heading (in tree order, ids allocated by the
+server), its optional ``text`` a first child with Object Type = Information.
+
+Module templates (``kind`` ``"module"``) describe one module and live in a
+``modules`` subfolder: ``backend/reqman/templates/modules/<stem>.json`` and
+``<data-directory>/_templates/modules/<stem>.json``; ids are namespaced the
+same way (their own namespace: a module template and a project template may
+share a stem). Format (``format_version`` 1)::
+
+    {
+      "format_version": 1,
+      "kind": "module",
+      "id": "<stem>",
+      "name": "...",
+      "description": "...",
+      "module": {"name", "prefix", "description", "type"?},
+      "attributes": [{"id", "name", "type", "default", "choices"}],
+      "view"?: {"name", "attribute_ids"},
+      "skeleton": [<heading node>, ...]
+    }
+
+A module template's attributes are the attributes that apply to the module;
+there is no ``required`` (merged attributes are always optional, see
+``ProjectService._merge_template_attributes``) and no link configuration
+(cross-project or otherwise). ``view.attribute_ids`` name ``object_text`` or
+the template's attribute ids.
+
 Compatibility rules:
 
 - Unknown keys are ignored at every level, so a later *optional* key (for
   example a module ``type``) can be added without bumping
   ``format_version``; an older ReqManTool simply ignores it.
 - ``format_version`` is bumped only for a change an older reader would
-  misinterpret. A template whose ``format_version`` is not 1 (missing, not
-  an integer, or a newer version) is reported as invalid, never guessed at.
+  misinterpret. A template whose ``format_version`` is missing, not an
+  integer, or newer than this ReqManTool supports is reported as invalid,
+  never guessed at.
 
 This module only checks a template's *shape* (types, required keys, unique
 keys/names, module-key references). The domain rules a project enforces
@@ -92,7 +140,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+# Project template versions this ReqManTool reads (older ones are migrated).
+SUPPORTED_FORMAT_VERSIONS = (1, 2)
+MODULE_FORMAT_VERSION = 1
+MODULE_TEMPLATE_KIND = "module"
+
+# Most heading nodes one skeleton may have, and the longest heading/text.
+MAX_SKELETON_NODES = 2000
+MAX_SKELETON_TEXT_LENGTH = 10_000
 
 # Upper bound for an imported template file ("Load template ▸ Import"). Real
 # templates are a few KiB; the limit only guards against a wrong file.
@@ -106,6 +162,8 @@ MAX_TEMPLATE_IMPORT_BYTES = 1024 * 1024
 MAX_TEMPLATE_JSON_DEPTH = 100
 
 BUILTIN_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+# Module templates: a subfolder of the (built-in or user) templates folder.
+MODULE_TEMPLATES_SUBDIR = "modules"
 
 BUILTIN_SOURCE = "builtin"
 USER_SOURCE = "user"
@@ -145,18 +203,61 @@ class TemplateAttribute:
 
 
 @dataclass
-class TemplateModule:
-    key: str
-    name: str
-    prefix: Any
-    description: str = ""
-    # A module type; None (absent) means ``requirements``.
-    type: Any = None
+class SkeletonNode:
+    """One heading of a heading skeleton, with optional informative text."""
+
+    heading: str
+    text: str | None = None
+    children: list[SkeletonNode] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        data = {"key": self.key, "name": self.name, "prefix": self.prefix, "description": self.description}
-        if self.type not in (None, "requirements"):
+        data: dict[str, Any] = {"heading": self.heading}
+        if self.text is not None:
+            data["text"] = self.text
+        if self.children:
+            data["children"] = [c.to_dict() for c in self.children]
+        return data
+
+
+def skeleton_size(nodes: list[SkeletonNode]) -> int:
+    """The number of heading nodes in ``nodes`` (all levels)."""
+    count = 0
+    stack = list(nodes)
+    while stack:
+        node = stack.pop()
+        count += 1
+        stack.extend(node.children)
+    return count
+
+
+@dataclass
+class TemplateModule:
+    key: str
+    # None only with ``module_template`` (then taken from the module template).
+    name: str | None
+    prefix: Any
+    description: str | None = ""
+    # A module type; None (absent) means ``requirements`` (or the module template's).
+    type: Any = None
+    # A module template id (format version 2), or None.
+    module_template: str | None = None
+    # A heading skeleton (format version 2); None: the module template's (or none).
+    skeleton: list[SkeletonNode] | None = None
+
+    def to_dict(self) -> dict:
+        data: dict[str, Any] = {"key": self.key}
+        if self.name is not None:
+            data["name"] = self.name
+        if self.prefix is not None:
+            data["prefix"] = self.prefix
+        if self.description is not None:
+            data["description"] = self.description
+        if self.type not in (None, "requirements") or (self.module_template and self.type is not None):
             data["type"] = self.type
+        if self.module_template is not None:
+            data["module_template"] = self.module_template
+        if self.skeleton is not None and (self.skeleton or self.module_template is not None):
+            data["skeleton"] = [n.to_dict() for n in self.skeleton]
         return data
 
 
@@ -260,6 +361,69 @@ class Template:
         return data
 
 
+@dataclass
+class ModuleTemplateModule:
+    """The module a module template creates (defaults; "Add module from template" may override)."""
+
+    name: str
+    prefix: str
+    description: str = ""
+    type: Any = None
+
+    def to_dict(self) -> dict:
+        data = {"name": self.name, "prefix": self.prefix, "description": self.description}
+        if self.type not in (None, "requirements"):
+            data["type"] = self.type
+        return data
+
+
+@dataclass
+class ModuleTemplateAttribute:
+    """An attribute that applies to a module template's module (always optional)."""
+
+    id: str
+    name: Any
+    type: Any = "string"
+    default: Any = None
+    choices: Any = None
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "name": self.name, "type": self.type, "default": self.default, "choices": self.choices}
+
+
+@dataclass
+class ModuleTemplate:
+    id: str  # namespaced: "builtin:<stem>" or "user:<stem>"
+    source: str
+    name: str
+    module: ModuleTemplateModule
+    description: str = ""
+    format_version: int = MODULE_FORMAT_VERSION
+    attributes: list[ModuleTemplateAttribute] = field(default_factory=list)
+    view: TemplateView | None = None
+    skeleton: list[SkeletonNode] = field(default_factory=list)
+
+    @property
+    def local_id(self) -> str:
+        return split_template_id(self.id)[1]
+
+    def to_dict(self) -> dict:
+        """The on-disk JSON shape (key order is the file's key order)."""
+        data: dict[str, Any] = {
+            "format_version": self.format_version,
+            "kind": MODULE_TEMPLATE_KIND,
+            "id": self.local_id,
+            "name": self.name,
+            "description": self.description,
+            "module": self.module.to_dict(),
+            "attributes": [a.to_dict() for a in self.attributes],
+        }
+        if self.view is not None:
+            data["view"] = self.view.to_dict()
+        data["skeleton"] = [n.to_dict() for n in self.skeleton]
+        return data
+
+
 def make_template_id(source: str, local_id: str) -> str:
     return f"{source}:{local_id}"
 
@@ -310,18 +474,36 @@ def _list_of_dicts(data: dict, key: str) -> list[dict]:
     return value
 
 
-def _check_format_version(data: dict) -> int:
+def _check_format_version(data: dict, current: int = FORMAT_VERSION, supported: tuple[int, ...] = SUPPORTED_FORMAT_VERSIONS) -> int:
     version = data.get("format_version")
     if isinstance(version, bool) or not isinstance(version, int):
-        raise ValueError(f"'format_version' must be the integer {FORMAT_VERSION}, got {version!r}")
-    if version > FORMAT_VERSION:
+        raise ValueError(f"'format_version' must be the integer {current}, got {version!r}")
+    if version > current:
         raise ValueError(
-            f"format_version {version} is newer than this ReqManTool supports ({FORMAT_VERSION}); "
+            f"format_version {version} is newer than this ReqManTool supports ({current}); "
             "update ReqManTool to use this template"
         )
-    if version != FORMAT_VERSION:
-        raise ValueError(f"Unsupported format_version {version}; expected {FORMAT_VERSION}")
+    if version not in supported:
+        raise ValueError(f"Unsupported format_version {version}; expected {current}")
     return version
+
+
+def migrate_v1(data: dict) -> dict:
+    """A version 1 project template as version 2 (a shallow copy; ``data`` is not changed).
+
+    Version 2 only added optional module keys, so the migration keeps
+    everything except module ``module_template`` and ``skeleton`` keys: a
+    version 1 reader ignored unknown keys, so they never meant anything there.
+    """
+    migrated = dict(data)
+    migrated["format_version"] = FORMAT_VERSION
+    modules = data.get("modules")
+    if isinstance(modules, list):
+        migrated["modules"] = [
+            {k: v for k, v in m.items() if k not in ("module_template", "skeleton")} if isinstance(m, dict) else m
+            for m in modules
+        ]
+    return migrated
 
 
 def parse_template_text(text: str, template_id: str) -> Template:
@@ -386,7 +568,12 @@ def parse_template(data: Any, template_id: str) -> Template:
     source, _ = split_template_id(template_id)
     if not isinstance(data, dict):
         raise ValueError("a template must be a JSON object")
+    if data.get("kind") == MODULE_TEMPLATE_KIND:
+        raise ValueError("this is a module template, not a project template")
     version = _check_format_version(data)
+    if version == 1:
+        data = migrate_v1(data)
+        version = FORMAT_VERSION
 
     name = data.get("name")
     if not _is_nonblank_str(name):
@@ -457,28 +644,45 @@ def parse_template(data: Any, template_id: str) -> Template:
             raise ValueError(f"{where}: 'key' must be a non-empty string")
         if key in module_keys:
             raise ValueError(f"{where}: duplicate module key '{key}'")
+        reference = raw.get("module_template")
+        if reference is not None:
+            try:
+                split_template_id(reference)
+            except ValueError as exc:
+                raise ValueError(f"{where}: 'module_template': {exc}") from exc
+        # With a module template, name/prefix/description default to its own.
         module_name = raw.get("name")
-        if not _is_nonblank_str(module_name):
+        if module_name is None and reference is not None:
+            pass
+        elif not _is_nonblank_str(module_name):
             raise ValueError(f"{where}: 'name' must be a non-empty string")
-        module_name = module_name.strip()
-        if module_name.casefold() in module_names:
-            raise ValueError(f"{where}: duplicate module name '{module_name}'")
-        module_description = raw.get("description", "")
-        if module_description is None:
+        else:
+            module_name = module_name.strip()
+            if module_name.casefold() in module_names:
+                raise ValueError(f"{where}: duplicate module name '{module_name}'")
+            module_names.add(module_name.casefold())
+        module_description = raw.get("description", None if reference is not None else "")
+        if module_description is None and reference is None:
             module_description = ""
-        if not isinstance(module_description, str):
+        if module_description is not None and not isinstance(module_description, str):
             raise ValueError(f"{where}: 'description' must be a string")
         prefix = raw.get("prefix")
-        if not isinstance(prefix, str):
+        if not isinstance(prefix, str) and not (prefix is None and reference is not None):
             raise ValueError(f"{where}: 'prefix' must be a string")
         module_type = raw.get("type")
         if module_type is not None and not isinstance(module_type, str):
             raise ValueError(f"{where}: 'type' must be a module type string")
+        skeleton = parse_skeleton(raw["skeleton"], f"{where}.skeleton") if "skeleton" in raw else None
         module_keys.add(key)
-        module_names.add(module_name.casefold())
         modules.append(
             TemplateModule(
-                key=key, name=module_name, prefix=prefix, description=module_description, type=module_type
+                key=key,
+                name=module_name,
+                prefix=prefix,
+                description=module_description,
+                type=module_type,
+                module_template=reference,
+                skeleton=skeleton,
             )
         )
 
@@ -615,3 +819,168 @@ def _parse_module_tree(value: Any, module_keys: set[str]) -> list[str | Template
 
     # Nesting is bounded by MAX_TEMPLATE_JSON_DEPTH (checked before parsing), so this recursion is too.
     return parse(value, "module_tree")
+
+
+# --- heading skeletons and module templates ------------------------------------
+
+
+def parse_skeleton(value: Any, where: str = "skeleton") -> list[SkeletonNode]:
+    """Check a heading skeleton's shape (``None``: empty) and return its nodes.
+
+    Nesting is bounded by ``MAX_TEMPLATE_JSON_DEPTH`` (checked when a file is
+    parsed) and the node count by ``MAX_SKELETON_NODES``.
+    """
+    if value is None:
+        return []
+    count = [0]
+
+    def parse(items: Any, at: str) -> list[SkeletonNode]:
+        if not isinstance(items, list):
+            raise ValueError(f"'{at}' must be a list")
+        nodes: list[SkeletonNode] = []
+        for index, item in enumerate(items):
+            here = f"{at}[{index}]"
+            if not isinstance(item, dict):
+                raise ValueError(f"{here} must be an object")
+            count[0] += 1
+            if count[0] > MAX_SKELETON_NODES:
+                raise ValueError(f"'{where}' has more than {MAX_SKELETON_NODES} headings")
+            heading = item.get("heading")
+            if not _is_nonblank_str(heading):
+                raise ValueError(f"{here}: 'heading' must be a non-empty string")
+            text = item.get("text")
+            if text is not None and not isinstance(text, str):
+                raise ValueError(f"{here}: 'text' must be a string")
+            if text is not None and not text.strip():
+                text = None
+            for label, string in (("heading", heading), ("text", text)):
+                if string is not None and len(string) > MAX_SKELETON_TEXT_LENGTH:
+                    raise ValueError(f"{here}: '{label}' is longer than {MAX_SKELETON_TEXT_LENGTH} characters")
+            children = parse(item["children"], f"{here}.children") if item.get("children") is not None else []
+            nodes.append(SkeletonNode(heading=heading.strip(), text=text, children=children))
+        return nodes
+
+    return parse(value, where)
+
+
+def list_builtin_module_template_ids(directory: Path = BUILTIN_TEMPLATES_DIR) -> list[str]:
+    return list_builtin_template_ids(directory / MODULE_TEMPLATES_SUBDIR)
+
+
+def read_builtin_module_template_text(local_id: str, directory: Path = BUILTIN_TEMPLATES_DIR) -> str:
+    modules_dir = directory / MODULE_TEMPLATES_SUBDIR
+    if local_id not in list_builtin_template_ids(modules_dir):
+        raise FileNotFoundError(f"Module template '{make_template_id(BUILTIN_SOURCE, local_id)}' not found")
+    return (modules_dir / f"{local_id}.json").read_text(encoding="utf-8-sig")
+
+
+def parse_module_template_text(text: str, template_id: str) -> ModuleTemplate:
+    """Parse JSON text into a ``ModuleTemplate`` (same JSON checks as ``parse_template_text``)."""
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"not valid JSON: {exc}") from exc
+    except RecursionError as exc:
+        raise ValueError(_TOO_DEEP) from exc
+    _check_json_values(data)
+    return parse_module_template(data, template_id)
+
+
+def parse_module_template(data: Any, template_id: str) -> ModuleTemplate:
+    """Check a module template's shape and return it; unknown keys are ignored."""
+    source, _ = split_template_id(template_id)
+    if not isinstance(data, dict):
+        raise ValueError("a module template must be a JSON object")
+    if data.get("kind") != MODULE_TEMPLATE_KIND:
+        raise ValueError(f"'kind' must be '{MODULE_TEMPLATE_KIND}' (this is not a module template)")
+    version = _check_format_version(data, MODULE_FORMAT_VERSION, (MODULE_FORMAT_VERSION,))
+
+    name = data.get("name")
+    if not _is_nonblank_str(name):
+        raise ValueError("'name' must be a non-empty string")
+    description = data.get("description", "")
+    if description is None:
+        description = ""
+    if not isinstance(description, str):
+        raise ValueError("'description' must be a string")
+
+    raw_module = data.get("module")
+    if not isinstance(raw_module, dict):
+        raise ValueError("'module' must be an object")
+    module_name = raw_module.get("name")
+    if not _is_nonblank_str(module_name):
+        raise ValueError("module: 'name' must be a non-empty string")
+    prefix = raw_module.get("prefix")
+    if not isinstance(prefix, str):
+        raise ValueError("module: 'prefix' must be a string")
+    module_description = raw_module.get("description", "")
+    if module_description is None:
+        module_description = ""
+    if not isinstance(module_description, str):
+        raise ValueError("module: 'description' must be a string")
+    module_type = raw_module.get("type")
+    if module_type is not None and not isinstance(module_type, str):
+        raise ValueError("module: 'type' must be a module type string")
+
+    attributes: list[ModuleTemplateAttribute] = []
+    attribute_ids: set[str] = set()
+    attribute_names: set[str] = set()
+    for index, raw in enumerate(_list_of_dicts(data, "attributes")):
+        where = f"attributes[{index}]"
+        attr_id = raw.get("id")
+        if not _is_nonblank_str(attr_id):
+            raise ValueError(f"{where}: 'id' must be a non-empty string")
+        if attr_id in attribute_ids:
+            raise ValueError(f"{where}: duplicate attribute id '{attr_id}'")
+        attr_name = raw.get("name")
+        if not _is_nonblank_str(attr_name):
+            raise ValueError(f"{where}: 'name' must be a non-empty string")
+        if attr_name.strip().casefold() in attribute_names:
+            raise ValueError(f"{where}: duplicate attribute name '{attr_name.strip()}'")
+        if raw.get("system", False):
+            raise ValueError(f"{where}: template attributes cannot be system attributes")
+        attribute_ids.add(attr_id)
+        attribute_names.add(attr_name.strip().casefold())
+        attributes.append(
+            ModuleTemplateAttribute(
+                id=attr_id,
+                name=attr_name.strip(),
+                type=raw.get("type", "string"),
+                default=raw.get("default"),
+                choices=raw.get("choices"),
+            )
+        )
+
+    view: TemplateView | None = None
+    raw_view = data.get("view")
+    if raw_view is not None:
+        if not isinstance(raw_view, dict):
+            raise ValueError("'view' must be an object or null")
+        view_name = raw_view.get("name")
+        if not _is_nonblank_str(view_name):
+            raise ValueError("view: 'name' must be a non-empty string")
+        refs = raw_view.get("attribute_ids", [])
+        if not isinstance(refs, list) or not all(isinstance(a, str) for a in refs):
+            raise ValueError("view: 'attribute_ids' must be a list of strings")
+        for ref in refs:
+            if ref != "object_text" and ref not in attribute_ids:
+                raise ValueError(
+                    f"view: unknown attribute '{ref}' (expected 'object_text' or a template attribute id)"
+                )
+        view = TemplateView(name=view_name.strip(), attribute_ids=list(refs))
+
+    return ModuleTemplate(
+        id=template_id,
+        source=source,
+        name=name.strip(),
+        description=description,
+        format_version=version,
+        module=ModuleTemplateModule(
+            name=module_name.strip(), prefix=prefix, description=module_description, type=module_type
+        ),
+        attributes=attributes,
+        view=view,
+        skeleton=parse_skeleton(data.get("skeleton"), "skeleton"),
+    )
