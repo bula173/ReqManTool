@@ -33,6 +33,7 @@ from .git_repo import GitHistory, GitSettings
 from .service import RESULT_IMPORT_OPTIONS, ConflictError, ProjectLockedError, ProjectService
 from .store import ProjectStore
 from .templates import MAX_TEMPLATE_IMPORT_BYTES
+from .prompts import MAX_PROMPT_IMPORT_BYTES
 from .version import build_id, version_info
 
 logger = logging.getLogger("reqman.app")
@@ -109,6 +110,9 @@ class ConnectionManager:
 
     async def broadcast_templates_changed(self, exclude: WebSocket | None = None) -> None:
         await self._send_all({"event": "templates_changed"}, exclude)
+
+    async def broadcast_prompts_changed(self, exclude: WebSocket | None = None) -> None:
+        await self._send_all({"event": "prompts_changed"}, exclude)
 
     async def _send_all(self, message: dict, exclude: WebSocket | None = None) -> None:
         for connection in list(self.connections):
@@ -386,6 +390,27 @@ class ViewColumnWidthsBody(BaseModel):
     column_widths: Any
 
 
+class PromptBody(BaseModel):
+    # Shape and values are checked by ``prompts.parse_prompt`` (same errors as WebSocket).
+    name: Any = None
+    description: Any = None
+    selection: Any = None
+    free_text: Any = None
+    free_text_label: Any = None
+    import_mode: Any = None
+    body: Any = None
+
+
+class RenderPromptBody(BaseModel):
+    prompt_id: str
+    module_id: str
+    requirement_ids: Any = None
+    selection_module_id: Any = None
+    selection_project_id: Any = None
+    include_children: Any = False
+    free_text: Any = None
+
+
 # --- error handling -----------------------------------------------------------
 
 
@@ -523,6 +548,82 @@ async def import_template(request: Request):
     template = _wrap(service.import_template, text)
     await manager.broadcast_templates_changed()
     return template
+
+
+# --- AI prompt library (user data outside projects; broadcasts prompts_changed) ---
+
+
+@app.get("/prompts")
+def list_prompts():
+    return service.list_prompts()
+
+
+@app.post("/prompts")
+async def create_prompt(body: PromptBody):
+    prompt = _wrap(service.create_prompt, body.model_dump(exclude_none=True))
+    await manager.broadcast_prompts_changed()
+    return prompt
+
+
+@app.post("/prompts/import")
+async def import_prompt(request: Request):
+    # Raw body (Content-Type: application/json), like a template import.
+    if _media_type(request) != "application/json":
+        raise HTTPException(status_code=415, detail="The prompt file must be sent with Content-Type: application/json")
+    raw = await _read_limited_body(request, MAX_PROMPT_IMPORT_BYTES, "prompt")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="The prompt file must be UTF-8 encoded") from exc
+    prompt = _wrap(service.import_prompt, text)
+    await manager.broadcast_prompts_changed()
+    return prompt
+
+
+@app.get("/prompts/{prompt_id}")
+def get_prompt(prompt_id: str):
+    return _wrap(service.get_prompt, prompt_id)
+
+
+@app.get("/prompts/{prompt_id}/export")
+def export_prompt(prompt_id: str):
+    text = _wrap(service.export_prompt, prompt_id)
+    stem = prompt_id.split(":", 1)[-1]
+    return Response(
+        content=text,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{stem}.prompt.json"'},
+    )
+
+
+@app.put("/prompts/{prompt_id}")
+async def update_prompt(prompt_id: str, body: PromptBody):
+    prompt = _wrap(service.update_prompt, prompt_id, body.model_dump(exclude_none=True))
+    await manager.broadcast_prompts_changed()
+    return prompt
+
+
+@app.delete("/prompts/{prompt_id}", status_code=204)
+async def delete_prompt(prompt_id: str):
+    _wrap(service.delete_prompt, prompt_id)
+    await manager.broadcast_prompts_changed()
+    return Response(status_code=204)
+
+
+@app.post("/projects/{project_id}/prompts/render")
+def render_prompt(project_id: str, body: RenderPromptBody):
+    """Read-only: the prompt text filled from the project (never broadcast)."""
+    return _wrap(
+        service.render_prompt,
+        project_id,
+        body.prompt_id,
+        body.module_id,
+        body.requirement_ids,
+        body.selection_module_id,
+        body.selection_project_id,
+        body.include_children,
+        body.free_text,
+    )
 
 
 @app.get("/projects")
@@ -978,8 +1079,7 @@ async def reorder_module_folder(project_id: str, folder_id: str, body: ReorderMo
     return folder
 
 
-@app.post("/projects/{project_id}/modules/{module_id}/import/csv")
-async def import_csv(project_id: str, module_id: str, request: Request):
+async def _read_csv_body(request: Request) -> str:
     # The file is sent as the raw request body (Content-Type: text/csv), so
     # no multipart parser dependency is needed. Requiring text/csv also keeps
     # cross-origin "simple" requests (text/plain, form posts) from importing.
@@ -988,10 +1088,22 @@ async def import_csv(project_id: str, module_id: str, request: Request):
 
     raw = await _read_limited_body(request, MAX_CSV_IMPORT_BYTES, "CSV")
     try:
-        csv_text = raw.decode("utf-8-sig")
+        return raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise HTTPException(status_code=400, detail="The CSV file must be UTF-8 encoded") from exc
-    result = _wrap(service.import_csv, project_id, module_id, csv_text)
+
+
+@app.post("/projects/{project_id}/modules/{module_id}/import/csv/preview")
+async def preview_csv_import(project_id: str, module_id: str, request: Request, mode: str | None = None):
+    """Read-only: what the import would create, update and link (no write, no broadcast)."""
+    csv_text = await _read_csv_body(request)
+    return _wrap(service.preview_csv_import, project_id, module_id, csv_text, mode)
+
+
+@app.post("/projects/{project_id}/modules/{module_id}/import/csv")
+async def import_csv(project_id: str, module_id: str, request: Request, mode: str | None = None):
+    csv_text = await _read_csv_body(request)
+    result = _wrap(service.import_csv, project_id, module_id, csv_text, mode)
     await manager.broadcast(project_id)
     return result
 
@@ -1194,6 +1306,24 @@ RPC_METHODS = {
     "template.list": lambda p: service.list_templates(),
     "template.import": lambda p: service.import_template(p["text"]),
     "module_template.list": lambda p: service.list_module_templates(),
+    # AI prompt library: mutations broadcast prompts_changed (PROMPT_MUTATING_METHODS).
+    "prompt.list": lambda p: service.list_prompts(),
+    "prompt.get": lambda p: service.get_prompt(p["prompt_id"]),
+    "prompt.create": lambda p: service.create_prompt(p.get("prompt")),
+    "prompt.update": lambda p: service.update_prompt(p["prompt_id"], p.get("prompt")),
+    "prompt.delete": lambda p: service.delete_prompt(p["prompt_id"]),
+    "prompt.import": lambda p: service.import_prompt(p["text"]),
+    "prompt.export": lambda p: service.export_prompt(p["prompt_id"]),
+    "prompt.render": lambda p: service.render_prompt(
+        p["project_id"],
+        p["prompt_id"],
+        p["module_id"],
+        p.get("requirement_ids"),
+        p.get("selection_module_id"),
+        p.get("selection_project_id"),
+        p.get("include_children", False),
+        p.get("free_text"),
+    ),
     "project.get": lambda p: service.get_project(p["id"]),
     "project.list": lambda p: service.list_projects(),
     "project.purge": lambda p: {"purged": service.purge_project(p["id"])},
@@ -1296,7 +1426,11 @@ RPC_METHODS = {
         p["project_id"], p["module_id"], p["id"], p.get("target_parent_id")
     ),
     "requirement.import_csv": lambda p: service.import_csv(
-        p["project_id"], p["module_id"], p["csv"]
+        p["project_id"], p["module_id"], p["csv"], p.get("mode")
+    ),
+    # Read-only, never broadcast (not in MUTATING_METHODS).
+    "requirement.preview_csv_import": lambda p: service.preview_csv_import(
+        p["project_id"], p["module_id"], p["csv"], p.get("mode")
     ),
     "requirement.link": lambda p: service.link_requirements(
         p["project_id"], p["config_id"], p["source_id"], p["target_id"]
@@ -1359,6 +1493,9 @@ MUTATING_METHODS = {
 # project: they broadcast {"event": "templates_changed"} instead of "changed".
 TEMPLATE_MUTATING_METHODS = {"project.save_as_template", "template.import", "module.save_as_template"}
 
+# Methods that change the user prompt library: they broadcast {"event": "prompts_changed"}.
+PROMPT_MUTATING_METHODS = {"prompt.create", "prompt.update", "prompt.delete", "prompt.import"}
+
 
 def _project_id_of(method_name: str, params: dict, result: Any) -> str | None:
     if method_name in ("project.create", "project.create_from_remote"):
@@ -1385,6 +1522,8 @@ async def _dispatch(request: dict, sender: WebSocket | None = None) -> dict:
                 await manager.broadcast(project_id, exclude=sender)
         elif method_name in TEMPLATE_MUTATING_METHODS:
             await manager.broadcast_templates_changed(exclude=sender)
+        elif method_name in PROMPT_MUTATING_METHODS:
+            await manager.broadcast_prompts_changed(exclude=sender)
         return {"jsonrpc": "2.0", "id": request_id, "result": _serialize(result)}
     except FileNotFoundError as exc:
         return _error_response(request_id, -32001, str(exc))

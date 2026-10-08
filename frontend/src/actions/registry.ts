@@ -4,6 +4,7 @@ import { columnActions } from './columnActions';
 import { treePosition } from '../components/moduleTree';
 import { folderActions, moduleFolderActions, projectFolderActions } from './moduleFolderActions';
 import { linkActions } from './linkActions';
+import { appPromptActions, modulePromptActions, requirementPromptActions } from './promptActions';
 import { tabKey } from '../layout/moduleTabs';
 import { moduleActions, projectActions } from './projectActions';
 import { purgeActions } from './purgeActions';
@@ -32,6 +33,9 @@ import type {
  */
 export const ACTIONS: Action[] = [
   ...appActions,
+  ...appPromptActions,
+  ...requirementPromptActions,
+  ...modulePromptActions,
   ...purgeActions,
   ...requirementActions,
   ...projectActions,
@@ -274,6 +278,11 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
     ],
   },
   {
+    // The AI prompt library (no AI service is called: copy, paste into a chat, paste the answer back).
+    label: 'Tools',
+    entries: [action('tools.aiPrompts'), action('tools.pasteAiResult')],
+  },
+  {
     // Read-only reports; the module ones apply to the open module.
     label: 'Reports',
     entries: [
@@ -336,6 +345,7 @@ export const REQUIREMENT_CONTEXT_MENU: MenuEntry[] = [
   divider,
   action('requirement.link'),
   divider,
+  action('requirement.aiPrompts'),
   action('requirement.commits'),
   divider,
   action('requirement.delete'),
@@ -416,6 +426,8 @@ export const MODULE_NODE_MENU: MenuEntry[] = [
   action('module.executionReport'),
   action('module.importTestResults'),
   action('module.commits'),
+  divider,
+  action('module.aiPrompts'),
   divider,
   action('module.saveAsTemplate'),
   divider,

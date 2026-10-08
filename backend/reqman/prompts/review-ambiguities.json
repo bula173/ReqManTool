@@ -1,0 +1,11 @@
+{
+  "kind": "prompt",
+  "format_version": 1,
+  "name": "Review: ambiguities and missing verification",
+  "description": "List ambiguities, vague terms, missing information and missing verification methods of the selected requirements (a review, not CSV).",
+  "selection": "required",
+  "free_text": "optional",
+  "free_text_label": "Review focus (optional)",
+  "import_mode": "none",
+  "body": "You are a requirements reviewer. Review the selected requirements and answer with a table: Requirement Id | Problem (ambiguity, vague term, missing condition or value, not verifiable, compound, missing verification method) | Suggested fix. Then list requirements that have no clear verification method (test, analysis, inspection, demonstration) and propose one for each. Do not rewrite the requirements as CSV.\n\nProject: {{project_name}}\n{{project_description}}\n\nSelected requirements (from module {{selection_module_name}}):\n```csv\n{{selected_csv}}```\n\nColumns of the requirements:\n{{attribute_guide}}\n\nReview focus: {{free_text}}\n"
+}

@@ -1,0 +1,11 @@
+{
+  "kind": "prompt",
+  "format_version": 1,
+  "name": "Decompose stakeholder requirements into system requirements",
+  "description": "Derive system requirements (SyRS) from the selected stakeholder requirements (StRS), traced back through a link column.",
+  "selection": "required",
+  "free_text": "optional",
+  "free_text_label": "Additional guidance (optional)",
+  "import_mode": "create",
+  "body": "You are a systems engineer. Decompose each selected stakeholder requirement into one or more system requirements of the target module. Each system requirement must be atomic, verifiable and solution-neutral where possible. Every system requirement must trace to the stakeholder requirement(s) it satisfies: fill the matching link column with their ids exactly as given.\n\nProject: {{project_name}}\n{{project_description}}\n\nTarget module: {{module_name}} (type {{module_type}}, id prefix {{module_prefix}})\n{{module_description}}\n\nSelected requirements (from module {{selection_module_name}}):\n```csv\n{{selected_csv}}```\n\nAdditional guidance: {{free_text}}\n\nAnswer format\nCSV header (use exactly this line as the first line):\n{{csv_header}}\n\nColumns:\n{{attribute_guide}}\n\n{{link_columns}}\n\nRules:\n{{import_rules}}\n"
+}

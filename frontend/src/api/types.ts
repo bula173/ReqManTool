@@ -289,12 +289,78 @@ export interface Requirement {
   order: number;
 }
 
+/** `create`: every row is a new requirement; `update`: a row whose Id is an existing requirement changes it. */
+export type CsvImportMode = 'create' | 'update';
+
 export interface CsvImportResult {
   imported: number;
   /** New server-allocated ids, in the file's row order. */
   requirement_ids: string[];
+  /** Update mode only: changed requirements, their ids, and matched-but-unchanged ones. */
+  updated?: number;
+  updated_ids?: string[];
+  unchanged?: number;
+  /** Only when the file has `Link: <configuration>` columns: links created. */
+  linked?: number;
   /** System/link-mirror columns that were present in the file but not imported. */
   ignored_columns: string[];
+}
+
+/** Read-only preview of a CSV import (`POST .../import/csv/preview`). */
+export interface CsvImportPreview {
+  mode: CsvImportMode;
+  /** New requirements; `id` is provisional (allocated again on import). Text values are plain. */
+  created: { row: number; id: string; parent_id: string | null; attributes: Record<string, unknown> }[];
+  updated: {
+    row: number;
+    id: string;
+    changes: { attribute_id: string; name: string; old: unknown; new: unknown }[];
+  }[];
+  /** Ids of matched requirements the file does not change. */
+  unchanged: string[];
+  /** Links to create; `exists`: already there (skipped). `target_id` is project-qualified across projects. */
+  links: {
+    row: number;
+    config_id: string;
+    config_name: string;
+    source_id: string;
+    target_id: string;
+    exists: boolean;
+  }[];
+  ignored_columns: string[];
+}
+
+export type PromptSelection = 'none' | 'optional' | 'required';
+export type PromptImportMode = 'create' | 'update' | 'none';
+
+/** The editable fields of an AI prompt (the prompt file's content). */
+export interface PromptFields {
+  name: string;
+  description: string;
+  selection: PromptSelection;
+  free_text: PromptSelection;
+  free_text_label: string;
+  import_mode: PromptImportMode;
+  body: string;
+}
+
+/** An AI prompt of the library (`GET /prompts`); `error` is set for an invalid file. */
+export interface Prompt extends PromptFields {
+  id: string;
+  source: 'builtin' | 'user';
+  /** Placeholders the body uses. */
+  placeholders: string[];
+  error: string | null;
+}
+
+/** `POST /projects/{id}/prompts/render`: the filled prompt text, to copy into an external AI chat. */
+export interface RenderedPrompt {
+  prompt: Prompt;
+  text: string;
+  module_id: string;
+  module_name: string;
+  import_mode: PromptImportMode;
+  selected_ids: string[];
 }
 
 export interface ApiErrorBody {

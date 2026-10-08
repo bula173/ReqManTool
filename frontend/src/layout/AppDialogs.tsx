@@ -9,6 +9,7 @@ import { AttributeModulesModal } from '../components/AttributeModulesModal';
 import { DataDirModal } from '../components/DataDirSettings';
 import { DropLinkModal } from '../components/DropLinkModal';
 import { ImportCsvModal } from '../components/ImportCsvModal';
+import { PromptsModal } from '../components/PromptsModal';
 import { ImportTemplateModal } from '../components/ImportTemplateModal';
 import { ImportTestResultsModal } from '../components/ImportTestResultsModal';
 import { KeyboardShortcutsModal } from '../components/KeyboardShortcutsModal';
@@ -120,6 +121,17 @@ export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; 
           projectId={dialog.projectId}
           moduleId={dialog.moduleId}
           moduleName={dialog.moduleName}
+          initialInput={dialog.input}
+          initialMode={dialog.mode}
+        />
+      );
+    case 'aiPrompts':
+      return (
+        <PromptsModal
+          projectId={dialog.projectId}
+          moduleId={dialog.moduleId}
+          requirementId={dialog.requirementId}
+          onClose={onClose}
         />
       );
     case 'importTestResults':

@@ -89,6 +89,8 @@ persistence" below.
     <template-id>.json            #   see "Project templates" below
     modules/                      # user module templates
       <template-id>.json          #   see "Module templates and heading skeletons"
+    prompts/                      # user AI prompts
+      <prompt-id>.json            #   see "AI prompt library and CSV import extensions"
   .reqman-staging/                # transient: a project created from a
                                   #   template is assembled here, then
                                   #   renamed into place (removed afterwards)
@@ -865,6 +867,84 @@ files.
   built-in module templates and carries RBC-specific skeletons for SyRS
   (functional chapters, interfaces) and SwRS (EN 50128 software
   requirements specification structure).
+
+### AI prompt library and CSV import extensions
+
+ReqManTool never calls an AI service. The user copies a generated prompt
+into any AI chat and pastes the CSV answer back into the CSV import.
+
+- **Prompts** (`reqman/prompts.py`) are JSON files: built-in ones in
+  `backend/reqman/prompts/<stem>.json` (`builtin:<stem>`, read-only) and
+  user ones in `<data-directory>/_templates/prompts/<stem>.json`
+  (`user:<stem>`). They sit under `_templates/`, so they are never listed as
+  a project, and in a subfolder, so the project template listing never sees
+  them. Their own namespace: a prompt and a template may share a stem. Keys,
+  in written order: `kind` (`"prompt"`), `format_version` (1), `name`
+  (unique among all prompts, case-insensitive), `description`, `selection`
+  and `free_text` (`none`/`optional`/`required`), `free_text_label`,
+  `import_mode` (`create`/`update`/`none` = a review answer, not CSV) and
+  `body`. An unknown `{{placeholder}}` makes a prompt invalid; an invalid
+  file is still listed with `error` (like templates).
+- **Prompt CRUD is user data outside projects**: create/update/delete/import
+  (`ProjectService.create_prompt` etc.) are not `_records_history` methods,
+  so no project lock, sync check or commit applies; they broadcast
+  `{"event":"prompts_changed"}` (REST and WebSocket alike). Built-in prompts
+  cannot be changed or deleted (400); names are unique (409). Update keeps
+  the file stem; export returns the canonical file; import never overwrites.
+- **Rendering** (`render_prompt`, read-only, never broadcast) fills the
+  placeholders server-side: project and target-module name/description/
+  type/prefix; `csv_header` (the exact import header of the target module:
+  `Id`, `Parent`, every non-system attribute that applies to the module by
+  module or module type, headed by its name or its id where the name is
+  reserved or ambiguous, then one `Link: <name>` column per link
+  configuration starting in the module); `attribute_guide` (type, required,
+  enum choices, `YYYY-MM-DD` dates, defaults); `link_columns` (target
+  module, and for a cross-project configuration the `<project>:<id>` form);
+  `import_rules` (server-allocated ids, file Id only a Parent key, one CSV
+  code block and no prose; update-mode rules for `import_mode` `update`);
+  the selection (`selected_csv`, `selected_ids`, `selection_module_name`:
+  requirement ids of one module, optionally with descendants, in tree
+  order; ids of another project are written `<project>:<id>`) and
+  `free_text`. A prompt with `selection`/`free_text` `required` refuses to
+  render without them.
+- **CSV import extensions** (`_csv_import_plan`, shared by
+  `preview_csv_import` and `import_csv`; still all-or-nothing):
+  - A Markdown code fence around the CSV (first non-blank line ```` ``` ````
+    or ```` ```csv ````) is stripped.
+  - `Link: <configuration name or id>` columns create links of a link
+    configuration whose source module is the import module, including
+    cross-project ones (targets plain or `<project>:<id>`, which must name
+    the configuration's target project; the target project must still be
+    referenced). Each target must exist in the configuration's target module;
+    for a configuration within the module a target may be an Id key of the
+    file. Links that already exist are skipped. Mirror columns (headed with
+    the configuration name, as in an export) stay ignored. Only the
+    importing project is written (pairs and mirrors).
+  - `mode=update`: a row whose Id is an existing requirement of the module
+    updates it with its non-empty cells (empty cells leave values unchanged;
+    rich text whose plain projection equals the cell is unchanged), checked
+    like update requirement. Its Parent must be empty or its current parent:
+    the import never moves requirements. Other rows are created; their
+    Parent may also name an existing requirement of the module (create mode
+    keeps the old rule: Parent is a row of the file).
+  - The preview (`POST .../import/csv/preview`,
+    `requirement.preview_csv_import`) returns `created` (provisional ids),
+    `updated` (per attribute old/new, plain text), `unchanged` and `links`
+    (`exists`). The UI imports only after a preview of the same input.
+  - The import result keeps its keys (`imported`, `requirement_ids`,
+    `ignored_columns`); update mode adds `updated`, `updated_ids`,
+    `unchanged`, link columns add `linked`. The import is a
+    `_records_history` mutation, so a locked project refuses it (423).
+- **UI**: Tools ▸ AI prompts, and "AI prompts" in the requirement and module
+  context menus (shared action registry), open the Prompts dialog: pick a
+  prompt, the target module, the requirements (none / the selected one, with
+  or without children / all of the module), optional free text, Generate
+  preview, Copy. A notice that copied requirements leave the machine once
+  pasted into an AI chat must be acknowledged once per browser
+  (localStorage) before Copy. "Paste AI result" (also Tools ▸ Paste AI
+  result) opens the CSV import with a paste-text box and the prompt's import
+  mode. The Manage tab adds, edits, duplicates, deletes, exports and imports
+  user prompts.
 
 ### Format versions
 

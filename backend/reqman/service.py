@@ -28,12 +28,12 @@ import logging
 import os
 import re
 import threading
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from .csv_import import RESERVED_COLUMNS
+from .csv_import import ID_COLUMN, LINK_COLUMN_PREFIX, PARENT_COLUMN, RESERVED_COLUMNS
 from .formats import PROJECT_FORMAT, NewerFormatError, upgrade
 from .git_repo import (
     DEFAULT_LOG_LIMIT,
@@ -60,6 +60,23 @@ from .models import (
     RowStyle,
     View,
 )
+from .ordering import tree_order
+from .prompts import (
+    BUILTIN_PROMPTS_DIR,
+    MAX_PROMPT_FREE_TEXT_LENGTH,
+    MAX_PROMPT_IMPORT_BYTES,
+    PROMPT_KEYS,
+    Prompt,
+    fill_placeholders,
+    list_builtin_prompt_ids,
+    make_prompt_id,
+    parse_prompt,
+    parse_prompt_text,
+    read_builtin_prompt_text,
+    split_prompt_id,
+)
+from .prompts import BUILTIN_SOURCE as PROMPT_BUILTIN_SOURCE
+from .prompts import USER_SOURCE as PROMPT_USER_SOURCE
 from .store import PROJECT_SLUG_PATTERN, ProjectStore, validate_prefix
 from .templates import (
     BUILTIN_SOURCE,
@@ -296,6 +313,26 @@ def _records_history(method: Callable) -> Callable:
     return wrapper
 
 
+CSV_IMPORT_MODES = ("create", "update")
+
+
+@dataclass
+class _CsvImportPlan:
+    """What a validated CSV import writes (``ProjectService._csv_import_plan``); never persisted."""
+
+    project: Project
+    module: Module
+    mode: str
+    ignored_columns: list[str]
+    # (file row number, new requirement with its provisional id)
+    created: list[tuple[int, Requirement]] = field(default_factory=list)
+    # (file row number, requirement with the new values, {attribute id: (old, new)})
+    updates: list[tuple[int, Requirement, dict[str, tuple[Any, Any]]]] = field(default_factory=list)
+    unchanged: list[str] = field(default_factory=list)
+    # (file row number, configuration, source id, plain target id, already linked)
+    links: list[tuple[int, LinkConfiguration, str, str, bool]] = field(default_factory=list)
+
+
 @dataclass
 class ProjectStub:
     """A project listed by ``list_projects`` whose project.json cannot be loaded.
@@ -375,6 +412,7 @@ class ProjectService:
         self.builtin_templates_dir = (
             builtin_templates_dir if builtin_templates_dir is not None else BUILTIN_TEMPLATES_DIR
         )
+        self.builtin_prompts_dir = BUILTIN_PROMPTS_DIR
         # Without one, git history is off (plain files): the default for direct use and tests.
         self.history = history if history is not None else GitHistory()
         # The projects the last successful mutation of this thread wrote
@@ -5374,21 +5412,24 @@ class ProjectService:
 
     # --- import ----------------------------------------------------------------
 
-    @_records_history
-    def import_csv(self, project_id: str, module_id: str, csv_text: str) -> dict[str, Any]:
-        """Create requirements in one module from CSV text (see ``csv_import.py``).
+    # The CSV import's modes: "create" makes every row a new requirement;
+    # "update" lets a row whose Id is an existing requirement of the module
+    # change it (only its non-empty cells), every other row is created.
+    def _csv_import_plan(
+        self, project_id: str, module_id: str, csv_text: Any, mode: Any = None
+    ) -> "_CsvImportPlan":
+        """Validate a CSV import completely and work out what it would write (nothing is written).
 
-        All-or-nothing: the whole file is validated before anything is
-        written, so an invalid file leaves the project unchanged. Rows are
-        checked with the same ``_attribute_problems`` as add-requirement. If
-        writing fails part-way, ``_write_new_requirements`` removes the files
-        already written and the id counters stay unchanged. New
-        requirements get server-allocated ids. Root rows are appended after
-        the module's existing root requirements. Nested rows keep their file
-        order under their parent.
+        Shared by ``preview_csv_import`` (read-only diff) and ``import_csv``.
+        Every problem is collected and raised together as one
+        ``CsvImportError`` (all-or-nothing). See ``import_csv`` for the rules.
         """
-        from .csv_import import MAX_CSV_IMPORT_BYTES, parse_requirements_csv
+        from .csv_import import MAX_CSV_IMPORT_BYTES, CsvImportError, parse_requirements_csv
 
+        if mode is None:
+            mode = "create"
+        if mode not in CSV_IMPORT_MODES:
+            raise ValueError(f"Unknown CSV import mode {mode!r}; expected one of {', '.join(CSV_IMPORT_MODES)}")
         if not isinstance(csv_text, str):
             raise ValueError("CSV content must be a string")
         if len(csv_text) > MAX_CSV_IMPORT_BYTES:
@@ -5397,6 +5438,24 @@ class ProjectService:
             )
         project = self.store.load_project(project_id)
         module = self.store.load_module(project_id, module_id)
+        existing = self.store.load_all_requirements(project_id, module_id)
+        by_id = {r.id: r for r in existing}
+        outgoing = [c for c in project.link_configurations if c.source_module_id == module_id]
+
+        def link_column(name: str) -> LinkConfiguration:
+            for matches in (
+                [c for c in outgoing if c.name == name],
+                [c for c in outgoing if c.id == name],
+                [c for c in outgoing if c.name.casefold() == name.casefold()],
+            ):
+                if matches:
+                    return matches[0]
+            available = [c.name for c in outgoing]
+            raise ValueError(
+                f"no link configuration '{name}' starts in module '{module.name}'"
+                + (f"; available: {available}" if available else " (it has no outgoing link configurations)")
+            )
+
         parsed = parse_requirements_csv(
             project.attributes,
             csv_text,
@@ -5404,36 +5463,603 @@ class ProjectService:
                 project, values, is_create=True, module_id=module_id, module_type=module.type
             ),
             applies=lambda attr: self._attribute_applies(attr, module_id, module.type),
+            link_column=link_column,
+            # Parent may name an existing requirement only in update mode (a
+            # create import keeps its rule: Parent is a row of the file).
+            existing_ids=set(by_id) if mode == "update" else None,
+            update_ids=set(by_id) if mode == "update" else None,
+            validate_update=lambda values: self._attribute_problems(
+                project, values, is_create=False, module_id=module_id, module_type=module.type
+            ),
         )
 
-        existing = self.store.load_all_requirements(project_id, module_id)
-        next_order: dict[str | None, int] = {None: self._next_sibling_order(existing, None)}
-
+        errors: list[str] = []
         text_ids = {a.id for a in project.attributes if a.type == "text"}
-        new_ids: dict[int, str] = {}
-        key_to_id: dict[str, str] = {}
-        created: list[Requirement] = []
-        for row in parsed.rows:
-            requirement_id = self._allocate_requirement_id(project, module)
-            new_ids[row.row_number] = requirement_id
-            if row.key is not None:
-                key_to_id[row.key] = requirement_id
-            parent_id = key_to_id[row.parent_key] if row.parent_key is not None else None
-            order = next_order.get(parent_id, 0)
-            next_order[parent_id] = order + 1
+
+        def stored(values: dict[str, Any]) -> dict[str, Any]:
             # CSV cells are plain text: one that looks like rich text is kept
             # as the literal text (``richtext.from_plain``), never as markup.
-            values = {
-                k: richtext.from_plain(v) if k in text_ids and isinstance(v, str) else v
-                for k, v in row.attributes.items()
+            return {
+                k: richtext.from_plain(v) if k in text_ids and isinstance(v, str) else v for k, v in values.items()
             }
-            attributes = self._merged_attributes(project, values, module_id, module.type)
-            created.append(Requirement(id=requirement_id, attributes=attributes, parent_id=parent_id, order=order))
 
-        self._write_new_requirements(project, module_id, created)
+        file_rows = {row.key: row for row in parsed.rows if row.key is not None}
+        row_ids: dict[int, str] = {}
+        next_order: dict[str | None, int] = {}
+        plan = _CsvImportPlan(project=project, module=module, mode=mode, ignored_columns=parsed.ignored_columns)
+
+        for row in parsed.rows:  # parents before children
+            if row.existing:
+                requirement = by_id[row.key]
+                if row.parent_key is not None:
+                    holder = file_rows.get(row.parent_key)
+                    parent = row.parent_key if holder is None or holder.existing else None
+                    if parent != requirement.parent_id:
+                        errors.append(
+                            f"Row {row.row_number}: Parent '{row.parent_key}' differs from the current parent of "
+                            f"'{requirement.id}' ({requirement.parent_id or 'module root'}); the import does not "
+                            "move requirements (leave Parent empty or unchanged)"
+                        )
+                        continue
+                row_ids[row.row_number] = requirement.id
+                values = stored(row.attributes)
+                changes: dict[str, tuple[Any, Any]] = {}
+                for attr_id, new in values.items():
+                    old = requirement.attributes.get(attr_id)
+                    if old == new:
+                        continue
+                    # Rich text whose plain projection is the cell text is unchanged
+                    # (an AI echoing a formatted requirement keeps its formatting).
+                    if attr_id in text_ids and richtext.is_rich(old) and richtext.to_plain(old) == row.attributes[attr_id]:
+                        continue
+                    changes[attr_id] = (old, new)
+                if changes:
+                    updated = replace(
+                        requirement,
+                        attributes={**requirement.attributes, **{k: v for k, (_, v) in changes.items()}},
+                    )
+                    plan.updates.append((row.row_number, updated, changes))
+                else:
+                    plan.unchanged.append(requirement.id)
+                continue
+
+            requirement_id = self._allocate_requirement_id(project, module)
+            row_ids[row.row_number] = requirement_id
+            parent_id: str | None = None
+            if row.parent_key is not None:
+                holder = file_rows.get(row.parent_key)
+                if holder is not None:
+                    if holder.row_number not in row_ids:  # its own row failed above
+                        continue
+                    parent_id = row_ids[holder.row_number]
+                else:
+                    parent_id = row.parent_key
+            if parent_id not in next_order:
+                next_order[parent_id] = self._next_sibling_order(existing, parent_id)
+            order = next_order[parent_id]
+            next_order[parent_id] = order + 1
+            attributes = self._merged_attributes(project, stored(row.attributes), module_id, module.type)
+            plan.created.append(
+                (row.row_number, Requirement(id=requirement_id, attributes=attributes, parent_id=parent_id, order=order))
+            )
+
+        target_projects: dict[str, str | None] = {}
+        pairs_cache: dict[str, list[LinkPair]] = {}
+        seen: set[tuple[str, str, str]] = set()
+        for row in sorted(parsed.rows, key=lambda r: r.row_number):
+            source_id = row_ids.get(row.row_number)
+            if source_id is None:
+                continue
+            for config, header, targets in row.links:
+                if config.id not in target_projects:
+                    try:
+                        target_projects[config.id] = self._load_link_target_project(project, config)
+                    except (OSError, ValueError) as exc:
+                        target_projects[config.id] = None
+                        errors.append(f"Column '{header}': {exc}")
+                target_project = target_projects[config.id]
+                if target_project is None:
+                    continue
+                for target in targets:
+                    local_row = (
+                        file_rows.get(target)
+                        if config.target_project_id is None and config.target_module_id == module_id
+                        else None
+                    )
+                    if local_row is not None:
+                        target_id = row_ids.get(local_row.row_number)
+                        if target_id is None:
+                            continue
+                    else:
+                        try:
+                            target_id = self._plain_target_id(config, target)
+                        except ValueError as exc:
+                            errors.append(f"Row {row.row_number}: {header}: {exc}")
+                            continue
+                        if not self.store.requirement_exists(target_project, config.target_module_id, target_id):
+                            where = (
+                                f"module '{config.target_module_id}'"
+                                if config.target_project_id is None
+                                else f"module '{config.target_module_id}' of project '{config.target_project_id}'"
+                            )
+                            errors.append(f"Row {row.row_number}: {header}: '{target}' is not a requirement of {where}")
+                            continue
+                    if source_id == target_id and config.target_project_id is None:
+                        errors.append(f"Row {row.row_number}: {header}: a requirement cannot be linked to itself")
+                        continue
+                    if (config.id, source_id, target_id) in seen:
+                        continue
+                    seen.add((config.id, source_id, target_id))
+                    if config.id not in pairs_cache:
+                        pairs_cache[config.id] = self.store.load_link_pairs(project_id, config.id)
+                    exists = any(p.source_id == source_id and p.target_id == target_id for p in pairs_cache[config.id])
+                    plan.links.append((row.row_number, config, source_id, target_id, exists))
+
+        if errors:
+            raise CsvImportError(errors)
+        return plan
+
+    def preview_csv_import(self, project_id: str, module_id: str, csv_text: Any, mode: Any = None) -> dict[str, Any]:
+        """What ``import_csv`` would do, without writing anything (read-only; never broadcast).
+
+        Raises the same errors as the import. ``created`` lists the new
+        requirements with provisional ids (allocated again on import),
+        ``updated`` each changed requirement with its old and new values,
+        ``unchanged`` the matched requirements the file does not change and
+        ``links`` the links to create (``exists``: already there, skipped).
+        Text values are shown as plain text.
+        """
+        plan = self._csv_import_plan(project_id, module_id, csv_text, mode)
+        names = {a.id: a.name for a in plan.project.attributes}
+        text_ids = {a.id for a in plan.project.attributes if a.type == "text"}
+
+        def shown(attr_id: str, value: Any) -> Any:
+            return richtext.to_plain(value) if attr_id in text_ids else value
 
         return {
+            "mode": plan.mode,
+            "created": [
+                {
+                    "row": row,
+                    "id": r.id,
+                    "parent_id": r.parent_id,
+                    "attributes": {k: shown(k, v) for k, v in r.attributes.items()},
+                }
+                for row, r in plan.created
+            ],
+            "updated": [
+                {
+                    "row": row,
+                    "id": r.id,
+                    "changes": [
+                        {"attribute_id": k, "name": names.get(k, k), "old": shown(k, old), "new": shown(k, new)}
+                        for k, (old, new) in changes.items()
+                    ],
+                }
+                for row, r, changes in plan.updates
+            ],
+            "unchanged": plan.unchanged,
+            "links": [self._planned_link(row, config, s, t, exists) for row, config, s, t, exists in plan.links],
+            "ignored_columns": plan.ignored_columns,
+        }
+
+    @staticmethod
+    def _planned_link(row: int, config: LinkConfiguration, source_id: str, target_id: str, exists: bool) -> dict[str, Any]:
+        return {
+            "row": row,
+            "config_id": config.id,
+            "config_name": config.name,
+            "source_id": source_id,
+            "target_id": target_id if config.target_project_id is None else f"{config.target_project_id}:{target_id}",
+            "exists": exists,
+        }
+
+    @_records_history
+    def import_csv(self, project_id: str, module_id: str, csv_text: str, mode: Any = None) -> dict[str, Any]:
+        """Import requirements into one module from CSV text (see ``csv_import.py``).
+
+        All-or-nothing: the whole file is validated (``_csv_import_plan``)
+        before anything is written, so an invalid file leaves the project
+        unchanged. Rows are checked with the same ``_attribute_problems`` as
+        add/update requirement. If writing new requirements fails part-way,
+        ``_write_new_requirements`` removes the files already written and the
+        id counters stay unchanged.
+
+        - New requirements get server-allocated ids. Root rows are appended
+          after the module's existing root requirements; nested rows keep
+          their file order under their parent. Parent names a row of the
+          file (by its Id key); in update mode it may also name an existing
+          requirement of the module.
+        - ``mode="update"``: a row whose Id is an existing requirement of the
+          module updates it: each non-empty cell replaces the value (empty
+          cells leave values unchanged); its Parent must be empty or its
+          current parent (the import never moves requirements).
+        - ``Link: <configuration>`` columns create links of a configuration
+          starting in this module (cross-project ones too, with targets
+          ``<project>:<id>`` or plain), validated like ``link_requirements``;
+          links that already exist are skipped. Only this project is written.
+        """
+        plan = self._csv_import_plan(project_id, module_id, csv_text, mode)
+        project = plan.project
+        created = [r for _, r in plan.created]
+        if created:
+            self._write_new_requirements(project, module_id, created)
+        if plan.updates:
+            self._mark_rich_text_format(
+                project, {k: v for _, _, changes in plan.updates for k, (_, v) in changes.items()}
+            )
+        for _, requirement, _ in plan.updates:
+            self.store.save_requirement(project_id, module_id, requirement)
+
+        new_links = [(config, s, t) for _, config, s, t, exists in plan.links if not exists]
+        refresh: dict[tuple[str, str, str], LinkConfiguration] = {}
+        for config in {c.id: c for c, _, _ in new_links}.values():
+            pairs = self.store.load_link_pairs(project_id, config.id)
+            for c, source_id, target_id in new_links:
+                if c.id != config.id:
+                    continue
+                if not any(p.source_id == source_id and p.target_id == target_id for p in pairs):
+                    pairs.append(LinkPair(source_id=source_id, target_id=target_id))
+                refresh[(config.id, module_id, source_id)] = config
+                if config.target_project_id is None:
+                    refresh[(config.id, config.target_module_id, target_id)] = config
+            self.store.save_link_pairs(project_id, config.id, pairs)
+        for (config_id, owner_module, requirement_id), config in refresh.items():
+            self._refresh_link_attribute(project_id, config_id, owner_module, requirement_id, config)
+
+        # The result keeps its original keys; update mode adds the update
+        # counts and link columns the link count, so older clients are unaffected.
+        result: dict[str, Any] = {
             "imported": len(created),
-            "requirement_ids": [new_ids[row.row_number] for row in sorted(parsed.rows, key=lambda r: r.row_number)],
-            "ignored_columns": parsed.ignored_columns,
+            "requirement_ids": [r.id for _, r in sorted(plan.created, key=lambda item: item[0])],
+        }
+        if plan.mode == "update":
+            result["updated"] = len(plan.updates)
+            result["updated_ids"] = [r.id for _, r, _ in sorted(plan.updates, key=lambda item: item[0])]
+            result["unchanged"] = len(plan.unchanged)
+        if plan.links:
+            result["linked"] = len(new_links)
+        result["ignored_columns"] = plan.ignored_columns
+        return result
+
+    # --- AI prompt library -------------------------------------------------------
+    #
+    # Prompts (``prompts.py``) are user data outside every project: creating,
+    # editing, deleting or importing one never touches a project (no lock, no
+    # history) and broadcasts ``prompts_changed``. Rendering is read-only.
+    # ReqManTool never sends a prompt anywhere: the user copies it.
+
+    def _read_prompt_text(self, source: str, local_id: str) -> str:
+        if source == PROMPT_BUILTIN_SOURCE:
+            return read_builtin_prompt_text(local_id, self.builtin_prompts_dir)
+        return self.store.read_user_prompt_text(local_id)
+
+    def _load_prompt(self, prompt_id: Any) -> Prompt:
+        """Read and check a prompt (404 if missing, 400 if malformed)."""
+        source, local_id = split_prompt_id(prompt_id)
+        text = self._read_prompt_text(source, local_id)
+        try:
+            return parse_prompt_text(text, prompt_id)
+        except ValueError as exc:
+            raise ValueError(f"Prompt '{prompt_id}' is invalid: {exc}") from exc
+
+    def list_prompts(self) -> list[dict[str, Any]]:
+        """Built-in prompts, then user prompts, each sorted by name.
+
+        An invalid prompt file is still listed, with the reason in ``error``
+        and an empty body, so one bad file never hides the others.
+        """
+        sources = (
+            (PROMPT_BUILTIN_SOURCE, list_builtin_prompt_ids(self.builtin_prompts_dir)),
+            (PROMPT_USER_SOURCE, self.store.list_user_prompt_ids()),
+        )
+        result: list[dict[str, Any]] = []
+        for source, local_ids in sources:
+            entries: list[dict[str, Any]] = []
+            for local_id in local_ids:
+                prompt_id = make_prompt_id(source, local_id)
+                text: str | None = None
+                try:
+                    text = self._read_prompt_text(source, local_id)
+                    entry = parse_prompt_text(text, prompt_id).to_api()
+                    entry["error"] = None
+                except (OSError, ValueError) as exc:
+                    entry = {
+                        **Prompt(id=prompt_id, name=_display_name(text, local_id)).to_api(),
+                        "error": str(exc),
+                    }
+                entries.append(entry)
+            entries.sort(key=lambda e: (e["name"].casefold(), e["id"]))
+            result.extend(entries)
+        return result
+
+    def get_prompt(self, prompt_id: Any) -> dict[str, Any]:
+        return {**self._load_prompt(prompt_id).to_api(), "error": None}
+
+    def _check_prompt_name_free(self, name: str, own_id: str | None = None) -> None:
+        for entry in self.list_prompts():
+            if entry["id"] != own_id and entry["name"].casefold() == name.casefold():
+                raise ConflictError(f"A prompt named '{entry['name']}' already exists ({entry['id']})")
+
+    @staticmethod
+    def _prompt_fields(data: Any) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValueError("A prompt must be an object")
+        return {k: v for k, v in data.items() if k in PROMPT_KEYS}
+
+    def create_prompt(self, data: Any) -> dict[str, Any]:
+        """Save a new user prompt (``user:<slug of its name>``); the name must be unused (409)."""
+        prompt = parse_prompt(self._prompt_fields(data), make_prompt_id(PROMPT_USER_SOURCE, "new"))
+        self._check_prompt_name_free(prompt.name)
+        local_id = _unique_slug(prompt.name, self.store.user_prompt_path_exists, fallback="prompt")
+        prompt.id = make_prompt_id(PROMPT_USER_SOURCE, local_id)
+        self.store.save_user_prompt(local_id, prompt.to_dict())
+        return {**prompt.to_api(), "error": None}
+
+    def update_prompt(self, prompt_id: Any, data: Any) -> dict[str, Any]:
+        """Replace a user prompt's content (its id stays). Built-in prompts are read-only."""
+        source, local_id = split_prompt_id(prompt_id)
+        if source != PROMPT_USER_SOURCE:
+            raise ValueError("Built-in prompts are read-only; duplicate the prompt to change it")
+        self.store.read_user_prompt_text(local_id)  # 404 if missing (an invalid file may be repaired)
+        prompt = parse_prompt(self._prompt_fields(data), prompt_id)
+        self._check_prompt_name_free(prompt.name, own_id=prompt_id)
+        self.store.save_user_prompt(local_id, prompt.to_dict())
+        return {**prompt.to_api(), "error": None}
+
+    def delete_prompt(self, prompt_id: Any) -> None:
+        source, local_id = split_prompt_id(prompt_id)
+        if source != PROMPT_USER_SOURCE:
+            raise ValueError("Built-in prompts cannot be deleted")
+        self.store.delete_user_prompt(local_id)
+
+    def export_prompt(self, prompt_id: Any) -> str:
+        """The prompt as a file to share (the canonical prompt JSON; import it with ``import_prompt``)."""
+        return json.dumps(self._load_prompt(prompt_id).to_dict(), indent=2) + "\n"
+
+    def import_prompt(self, text: Any) -> dict[str, Any]:
+        """Save an uploaded prompt file as a new user prompt (never overwrites; a used name is 409)."""
+        if not isinstance(text, str):
+            raise ValueError("The prompt file content must be a string")
+        if len(text.encode("utf-8", "surrogatepass")) > MAX_PROMPT_IMPORT_BYTES:
+            raise ValueError(f"The prompt file is too large: the limit is {MAX_PROMPT_IMPORT_BYTES // 1024} KiB")
+        try:
+            prompt = parse_prompt_text(text, make_prompt_id(PROMPT_USER_SOURCE, "import"))
+        except ValueError as exc:
+            raise ValueError(f"The prompt file is invalid: {exc}") from exc
+        self._check_prompt_name_free(prompt.name)
+        local_id = _unique_slug(prompt.name, self.store.user_prompt_path_exists, fallback="prompt")
+        prompt.id = make_prompt_id(PROMPT_USER_SOURCE, local_id)
+        self.store.save_user_prompt(local_id, prompt.to_dict())
+        return {**prompt.to_api(), "error": None}
+
+    @staticmethod
+    def _csv_column_name(project: Project, attr: AttributeDefinition) -> str:
+        """The header the CSV import matches ``attr`` by: its name, or its id where the name is ambiguous."""
+        if attr.name in RESERVED_COLUMNS or sum(1 for a in project.attributes if a.name == attr.name) > 1:
+            return attr.id
+        return attr.name
+
+    @staticmethod
+    def _csv_line(cells: list[str]) -> str:
+        import csv as _csv
+        import io as _io
+
+        buffer = _io.StringIO()
+        _csv.writer(buffer, lineterminator="\n").writerow(cells)
+        return buffer.getvalue().rstrip("\n")
+
+    @staticmethod
+    def _csv_cell(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, str):
+            return richtext.to_plain(value)
+        return str(value)
+
+    _ATTRIBUTE_TYPE_HELP = {
+        "string": "single-line text",
+        "text": "text (several lines allowed; quote the cell)",
+        "integer": "integer",
+        "boolean": "true or false",
+        "enum": "exactly one of the listed values",
+        "date": "date written YYYY-MM-DD",
+    }
+
+    def _prompt_link_lines(self, project: Project, module: Module) -> tuple[list[str], list[str]]:
+        """Link column headers and guide lines for configurations starting in ``module``."""
+        headers: list[str] = []
+        lines: list[str] = []
+        for config in project.link_configurations:
+            if config.source_module_id != module.id:
+                continue
+            owner = config.target_project_id or project.id
+            try:
+                target_name = self.store.load_module(owner, config.target_module_id).name
+            except (OSError, ValueError):
+                target_name = config.target_module_id
+            header = f"{LINK_COLUMN_PREFIX} {config.name}"
+            headers.append(header)
+            where = f'module "{target_name}"'
+            if config.target_project_id is not None:
+                where += (
+                    f' of project "{config.target_project_id}" (write each id as '
+                    f"{config.target_project_id}:<id>, e.g. as shown in the selected requirements)"
+                )
+            lines.append(
+                f'- "{header}" (optional): ids of existing requirements in {where} that this row links to '
+                f'("{config.name}"); several ids separated by ";". Fill it so every new row stays traced.'
+            )
+        return headers, lines
+
+    def _import_rules(self, module: Module, mode: str, has_links: bool) -> str:
+        rules = [
+            "- Answer with exactly one CSV code block (```csv ... ```) and nothing else: no explanations before or after it.",
+            "- The first line is the header given above, unchanged. Use only those columns; columns may be left empty.",
+            "- Separate cells with commas. Quote a cell that contains a comma, a quote or a line break with double "
+            'quotes, and write a quote inside it as "".',
+            f'- Every row becomes a new requirement of module "{module.name}". ReqManTool allocates the real ids: '
+            "the Id cell is only a short key of the row (e.g. N1, N2) so that Parent cells can refer to it.",
+            "- Parent: empty for a top-level requirement, or the Id key of another row of your answer.",
+            "- Required columns must not be empty. Enum columns take exactly one of the listed values. Dates are "
+            "YYYY-MM-DD. Booleans are true or false.",
+        ]
+        if mode == "update":
+            rules[3] = (
+                f'- To change an existing requirement of module "{module.name}", keep its Id exactly as given: only the '
+                "non-empty cells of that row are written, an empty cell leaves the value unchanged. Leave out "
+                "requirements you do not change. A row with a new short Id key (e.g. N1) becomes a new requirement; "
+                "ReqManTool allocates its real id."
+            )
+            rules[4] = (
+                "- Parent: empty for a top-level requirement, the Id key of another row of your answer, or the id "
+                "of an existing requirement of this module. Do not change the Parent of an existing requirement "
+                "(leave it empty or as given)."
+            )
+        if has_links:
+            rules.append("- Link columns list ids of existing requirements exactly as given; invent no ids.")
+        rules.append("- The whole answer is rejected if any row is invalid, so check every row against these rules.")
+        return "\n".join(rules)
+
+    def render_prompt(
+        self,
+        project_id: str,
+        prompt_id: Any,
+        module_id: str,
+        requirement_ids: Any = None,
+        selection_module_id: Any = None,
+        selection_project_id: Any = None,
+        include_children: Any = False,
+        free_text: Any = None,
+    ) -> dict[str, Any]:
+        """Fill a prompt's placeholders for a target module and a selection (read-only).
+
+        ``module_id`` is the target module (where the AI's CSV answer is
+        imported): its exact import header, column guide and link columns
+        are described. The selection is ``requirement_ids`` of
+        ``selection_module_id`` (default: the target module) in
+        ``selection_project_id`` (default: this project; its ids are then
+        written ``<project>:<id>``), plus their descendants with
+        ``include_children``, in tree order.
+        """
+        project = self.store.load_project(project_id)
+        module = self.store.load_module(project_id, module_id)
+        prompt = self._load_prompt(prompt_id)
+        if free_text is None:
+            free_text = ""
+        if not isinstance(free_text, str):
+            raise ValueError("free_text must be a string")
+        if len(free_text) > MAX_PROMPT_FREE_TEXT_LENGTH:
+            raise ValueError(f"The free text is too long (at most {MAX_PROMPT_FREE_TEXT_LENGTH} characters)")
+        if prompt.free_text == "required" and not free_text.strip():
+            label = prompt.free_text_label or "free text"
+            raise ValueError(f"Prompt '{prompt.name}' needs the {label}")
+        if not isinstance(include_children, bool):
+            raise ValueError("include_children must be true or false")
+
+        sel_project_id = selection_project_id or project_id
+        if not isinstance(sel_project_id, str):
+            raise ValueError("selection_project_id must be a project id")
+        sel_project = project if sel_project_id == project_id else self.store.load_project(sel_project_id)
+        sel_module_id = selection_module_id or module_id
+        if not isinstance(sel_module_id, str):
+            raise ValueError("selection_module_id must be a module id")
+        sel_module = self.store.load_module(sel_project_id, sel_module_id)
+        if requirement_ids is None:
+            requirement_ids = []
+        if not isinstance(requirement_ids, list) or not all(isinstance(r, str) for r in requirement_ids):
+            raise ValueError("requirement_ids must be a list of requirement ids")
+        selected: list[Requirement] = []
+        if requirement_ids:
+            all_requirements = self.store.load_all_requirements(sel_project_id, sel_module_id)
+            known = {r.id for r in all_requirements}
+            missing = [r for r in requirement_ids if r not in known]
+            if missing:
+                raise FileNotFoundError(f"Requirement(s) {missing} not found in module '{sel_module_id}'")
+            wanted = set(requirement_ids)
+            if include_children:
+                for requirement_id in requirement_ids:
+                    wanted |= self._descendant_ids(all_requirements, requirement_id)
+            selected = [r for r in tree_order(all_requirements) if r.id in wanted]
+        if prompt.selection == "required" and not selected:
+            raise ValueError(f"Prompt '{prompt.name}' needs selected requirements")
+
+        qualify = (lambda rid: f"{sel_project_id}:{rid}") if sel_project_id != project_id else (lambda rid: rid)
+        sel_attributes = [
+            a for a in sel_project.attributes
+            if not a.system and self._attribute_applies(a, sel_module.id, sel_module.type)
+        ]
+        selected_lines = [
+            self._csv_line([ID_COLUMN, PARENT_COLUMN] + [self._csv_column_name(sel_project, a) for a in sel_attributes])
+        ]
+        for requirement in selected:
+            selected_lines.append(
+                self._csv_line(
+                    [qualify(requirement.id), qualify(requirement.parent_id) if requirement.parent_id else ""]
+                    + [self._csv_cell(requirement.attributes.get(a.id)) for a in sel_attributes]
+                )
+            )
+        selected_csv = "\n".join(selected_lines) + "\n" if selected else "(no requirements selected)\n"
+
+        attributes = [
+            a for a in project.attributes if not a.system and self._attribute_applies(a, module.id, module.type)
+        ]
+        link_headers, link_lines = self._prompt_link_lines(project, module)
+        mode = prompt.import_mode if prompt.import_mode in CSV_IMPORT_MODES else "create"
+        header = self._csv_line(
+            [ID_COLUMN, PARENT_COLUMN] + [self._csv_column_name(project, a) for a in attributes] + link_headers
+        )
+        guide = [
+            f"- {ID_COLUMN}: "
+            + (
+                "the id of an existing requirement to change it, or a short new key (e.g. N1) for a new requirement"
+                if mode == "update"
+                else "a short key of the row (e.g. N1) used only by Parent cells; may be empty"
+            ),
+            f"- {PARENT_COLUMN}: empty (top level) or the Id key of another row"
+            + (", or an existing requirement id of this module" if mode == "update" else ""),
+        ]
+        for a in attributes:
+            parts = [self._ATTRIBUTE_TYPE_HELP.get(a.type, a.type)]
+            if a.required:
+                parts.append("required")
+            if a.type == "enum" and a.choices:
+                parts.append("one of: " + " | ".join(str(c) for c in a.choices))
+            if a.default is not None and a.default != "":
+                parts.append(f"default when empty: {self._csv_cell(a.default)}")
+            guide.append(f"- {self._csv_column_name(project, a)}: " + "; ".join(parts))
+
+        values = {
+            "project_name": project.name,
+            "project_description": project.description or "",
+            "module_name": module.name,
+            "module_description": module.description or "",
+            "module_type": module.type,
+            "module_prefix": module.prefix,
+            "csv_header": header,
+            "attribute_guide": "\n".join(guide),
+            "link_columns": (
+                "Link columns (optional, include them in the header only as given):\n" + "\n".join(link_lines)
+                if link_lines
+                else "This module has no link columns."
+            ),
+            "import_rules": (
+                self._import_rules(module, mode, bool(link_lines))
+                if prompt.import_mode != "none"
+                else "Answer as a review; do not answer with CSV."
+            ),
+            "selection_module_name": sel_module.name if selected else "(none)",
+            "selected_ids": ", ".join(qualify(r.id) for r in selected) or "(none)",
+            "selected_csv": selected_csv,
+            "free_text": free_text.strip() or "(none)",
+        }
+        return {
+            "prompt": prompt.to_api(),
+            "text": fill_placeholders(prompt.body, values),
+            "module_id": module.id,
+            "module_name": module.name,
+            "import_mode": prompt.import_mode,
+            "selected_ids": [qualify(r.id) for r in selected],
         }

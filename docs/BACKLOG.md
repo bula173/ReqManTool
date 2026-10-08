@@ -1297,6 +1297,53 @@
       "Lock after baseline" in `CreateBaselineModal`. Not covered: tests,
       browser verification; follow-ups in the backlog ("Project
       lifecycle: follow-ups").
+- [x] **AI prompt library (copy → external AI chat → CSV → import)**
+      (2026-10-08; requested 2026-10-04). ReqManTool never calls an AI
+      service: the user copies a generated prompt into any AI chat and
+      imports the CSV answer. Prompts are JSON files: 7 built-in in
+      `backend/reqman/prompts/` (draft-requirements,
+      decompose-strs-to-syrs, derive-swrs-from-syrs, generate-test-cases,
+      split-compound-requirements, rewrite-ears-incose,
+      review-ambiguities), read-only (duplicate to change); user prompts
+      in `<data>/_templates/prompts/` (never listed as a project) can be
+      created, edited, deleted, exported and imported. Ids `builtin:…` /
+      `user:…`; an unknown `{{placeholder}}` makes a prompt invalid.
+      Placeholders are filled server-side: project/module name and
+      description, the module's exact CSV import header (types, required
+      flags, enum choices), the selected requirements as CSV ("selected"
+      = one requirement, optionally with children, or the whole module)
+      and the import rules; the prompt is generated on "Generate
+      preview", not live. CSV import extensions: a code fence is stripped
+      if it is the first non-blank line; `Link: <configuration name or
+      id>` columns create links validated against the module's link
+      configurations (incl. cross-project, qualified `proj:ID`; a bare
+      config-name column, the export's mirror column, stays ignored so
+      exports re-import unchanged); update mode ("Update existing (match
+      Id)"): empty cell = unchanged, Parent must be empty or the current
+      parent (never moves), rich text whose plain text equals the cell is
+      unchanged, unknown Ids are created; create mode keeps the old
+      Parent rule. A read-only preview shows new rows, per-attribute
+      old/new diffs and links; import is enabled only after previewing
+      the current input; all-or-nothing as before; respects the project
+      lock (preview allowed). Endpoints: `GET/POST /prompts`, `POST
+      /prompts/import`, `GET/PUT/DELETE /prompts/{id}`, `GET
+      /prompts/{id}/export`, `POST /projects/{pid}/prompts/render`,
+      `POST /projects/{pid}/modules/{mid}/import/csv/preview?mode=
+      create|update`, `POST .../import/csv?mode=`; WS `prompt.list`,
+      `prompt.get`, `prompt.create`, `prompt.update`, `prompt.delete`,
+      `prompt.import`, `prompt.export`, `prompt.render`,
+      `requirement.preview_csv_import`, `requirement.import_csv` `mode`;
+      prompt mutations broadcast `prompts_changed`. Backend:
+      `backend/reqman/{prompts.py, prompts/, csv_import.py, service.py,
+      store.py, app.py}`; design in `docs/ARCHITECTURE.md` ("AI prompt
+      library and CSV import extensions"). UI: `PromptsModal` (Use tab:
+      pick, free text, Generate preview, Copy; Manage tab) and
+      `promptActions.ts` (new); Tools menu and "AI prompts" in the
+      requirement and module context menus; a one-time per-browser
+      notice before Copy that requirements leave the machine; "Paste AI
+      result" opens `ImportCsvModal` with a paste-text box. Not covered:
+      tests, browser verification; follow-ups in the backlog ("AI prompt
+      library: follow-ups").
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -1537,34 +1584,16 @@ to the categories above.
       (6) Not browser-verified: tabs, `window.open`/`postMessage`,
       cross-window drag-and-drop; backend tests for `link_options` are
       pending (phase B).
-- [ ] AI prompt library (copy → external AI chat → CSV → import).
-      Requested 2026-10-04. No AI service is called by ReqManTool; the
-      user copies a generated prompt into any AI chat and imports the CSV
-      answer. (1) Prompts are JSON templates (built-in in
-      `backend/reqman/prompts/`, user ones in the data directory, never
-      listed as projects) with placeholders filled server-side from the
-      current context: project/module name and description, the module's
-      exact CSV import header (Id, Parent, applicable attributes with
-      types, required flags and enum choices), the selected requirements
-      as CSV, and import rules (server allocates ids, file Id is only a
-      Parent key, one CSV code block, no prose). (2) Built-in prompts:
-      draft requirements from a free-text description; decompose selected
-      StRS into SyRS; derive SwRS from selected SyRS; generate test cases
-      (Preconditions / Test Steps / Expected Result) for selected
-      requirements; split compound requirements; rewrite selected
-      requirements in EARS / INCOSE style; list ambiguities and missing
-      verification methods. (3) UI: Prompts dialog (menu bar + context
-      menus) — pick a prompt, optional free-text input, preview, Copy;
-      "Paste AI result" opens the CSV import with a paste-text box (today
-      file upload only), all-or-nothing validation and row errors as now;
-      a one-time notice that pasted requirements leave the machine.
-      (4) Import extensions this needs: an optional link column (e.g.
-      `Satisfies StRS` = existing target ids) creating links validated
-      against the module's link configurations, so decomposed SyRS stay
-      traced to their StRS; and an update mode matching existing
-      requirement ids, so rewrite prompts can modify instead of
-      duplicating (shows a diff preview before applying). Users can add,
-      edit, export and import their own prompts.
+- [ ] AI prompt library: follow-ups (2026-10-08). (1) Render from an
+      unsaved draft in the prompt editor. (2) Selection from another
+      project in the UI (the backend already takes
+      `selection_project_id`). (3) Link writing after the requirements
+      is not atomic on an I/O error. (4) The preview's new-requirement
+      table shows only ObjectText. (5) Prompt delete uses
+      `window.confirm`. (6) The editor's placeholder help duplicates the
+      backend's `prompts.PLACEHOLDERS`. (7) Update mode cannot clear
+      values (empty cell = unchanged). (8) Multi-select of requirements
+      (pairs with the bulk edit item). (9) Tests pending (phase B).
 - [ ] Project lifecycle: follow-ups (2026-10-08). (1) Baseline
       references from sign-off records and impact analysis (those
       features do not exist yet). (2) Reports are always computed from

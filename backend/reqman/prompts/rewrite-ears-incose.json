@@ -1,0 +1,11 @@
+{
+  "kind": "prompt",
+  "format_version": 1,
+  "name": "Rewrite in EARS / INCOSE style",
+  "description": "Rewrite the selected requirements using EARS patterns and the INCOSE rules for well-formed requirements.",
+  "selection": "required",
+  "free_text": "optional",
+  "free_text_label": "Style notes (optional)",
+  "import_mode": "update",
+  "body": "You are a requirements engineer. Rewrite each selected requirement using the EARS patterns (ubiquitous, event-driven 'When ...', state-driven 'While ...', unwanted behaviour 'If ... then ...', optional 'Where ...') and the INCOSE guide for writing requirements: singular, unambiguous, verifiable, no vague terms, active voice, 'shall'. Keep each requirement's Id exactly; change only the requirement text and leave other cells empty unless they are wrong.\n\nProject: {{project_name}}\n{{project_description}}\n\nTarget module: {{module_name}} (type {{module_type}}, id prefix {{module_prefix}})\n{{module_description}}\n\nSelected requirements (from module {{selection_module_name}}):\n```csv\n{{selected_csv}}```\n\nStyle notes: {{free_text}}\n\nAnswer format\nCSV header (use exactly this line as the first line):\n{{csv_header}}\n\nColumns:\n{{attribute_guide}}\n\n{{link_columns}}\n\nRules:\n{{import_rules}}\n"
+}

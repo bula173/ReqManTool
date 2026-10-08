@@ -60,6 +60,8 @@ PREFIX_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 TEMPLATES_DIR_NAME = "_templates"
 # User module templates: ``<root>/_templates/modules/``.
 MODULE_TEMPLATES_DIR_NAME = "modules"
+# User AI prompts: ``<root>/_templates/prompts/``.
+PROMPTS_DIR_NAME = "prompts"
 STAGING_DIR_NAME = ".reqman-staging"
 RESERVED_ROOT_NAMES = frozenset({TEMPLATES_DIR_NAME, STAGING_DIR_NAME})
 
@@ -631,6 +633,41 @@ class ProjectStore:
         """Write a new user module template file; the caller has already chosen a free id."""
         self._module_templates_dir().mkdir(parents=True, exist_ok=True)
         _write_json(self._module_templates_dir() / f"{template_id}.json", data)
+
+    # --- user AI prompts ---------------------------------------------------
+    # ``<root>/_templates/prompts/<stem>.json``: a subfolder of ``_templates``
+    # (never a project), so the project template listing never sees them.
+
+    def _prompts_dir(self) -> Path:
+        return self._templates_dir() / PROMPTS_DIR_NAME
+
+    def list_user_prompt_ids(self) -> list[str]:
+        """File stems of ``<root>/_templates/prompts/*.json`` (hidden/temporary files excluded)."""
+        prompts_dir = self._prompts_dir()
+        if not prompts_dir.is_dir():
+            return []
+        return sorted(p.stem for p in prompts_dir.glob("*.json") if p.is_file() and not p.name.startswith("."))
+
+    def user_prompt_path_exists(self, prompt_id: str) -> bool:
+        """True if ``_templates/prompts/<prompt_id>.json`` is taken. ``prompt_id`` must be a slug."""
+        path = self._prompts_dir() / f"{prompt_id}.json"
+        return path.exists() or path.is_symlink()
+
+    def read_user_prompt_text(self, prompt_id: str) -> str:
+        # Looked up among the listed files, never by joining a raw id into a path.
+        if prompt_id not in self.list_user_prompt_ids():
+            raise FileNotFoundError(f"Prompt 'user:{prompt_id}' not found")
+        return (self._prompts_dir() / f"{prompt_id}.json").read_text(encoding="utf-8-sig")
+
+    def save_user_prompt(self, prompt_id: str, data: dict) -> None:
+        """Write (create or replace) a user prompt file; the caller has checked the id."""
+        self._prompts_dir().mkdir(parents=True, exist_ok=True)
+        _write_json(self._prompts_dir() / f"{prompt_id}.json", data)
+
+    def delete_user_prompt(self, prompt_id: str) -> None:
+        if prompt_id not in self.list_user_prompt_ids():
+            raise FileNotFoundError(f"Prompt 'user:{prompt_id}' not found")
+        (self._prompts_dir() / f"{prompt_id}.json").unlink()
 
     # --- link pairs ("link module") ---------------------------------------
 

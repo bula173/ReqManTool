@@ -43,6 +43,22 @@ Rules:
 - **Row validation**: once every cell of a row has been converted, the row's
   values go to ``validate`` (enum choices, required attributes without a
   default, ...), and each problem it returns is reported for that row.
+- **Link columns** (optional, only with ``link_column``): a column headed
+  ``Link: <link configuration name or id>`` lists, per row, the targets the
+  row's requirement links to, separated by ``;``, ``,`` or blanks (a leading
+  ``>`` per target, as in the link mirror, is ignored). The caller resolves
+  the header (``link_column``) and checks every target; the parser only
+  splits the cells. A column whose header equals an attribute name is always
+  that attribute's column; a link configuration's mirror column (headed with
+  the configuration name, as in an export) stays ignored.
+- **Existing requirements** (``existing_ids``): a Parent cell that matches no
+  row of the file may name an existing requirement of the module. With
+  ``update_ids`` (update mode), a row whose Id is one of them updates that
+  requirement instead of creating one: it is validated with
+  ``validate_update`` and only its non-empty cells are values to write.
+- **Code fence**: when the first non-blank line is a Markdown code fence
+  (three backticks, optionally followed by a language such as ``csv``, as AI
+  chats answer), only the lines up to the closing fence are parsed.
 - Rows where every cell is empty are skipped. Columns with an empty header
   (for example, trailing separators written by a spreadsheet) are allowed
   only while all their cells are empty.
@@ -58,12 +74,16 @@ import csv
 import io
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Collection, Sequence
 
 ID_COLUMN = "Id"
 MODULE_COLUMN = "Module"
 PARENT_COLUMN = "Parent"
 RESERVED_COLUMNS = (ID_COLUMN, MODULE_COLUMN, PARENT_COLUMN)
+# Header prefix of a link column ("Link: Satisfies StRS").
+LINK_COLUMN_PREFIX = "Link:"
+_LINK_TARGET_SPLIT = re.compile(r"[;,\s]+")
+_FENCE = re.compile(r"^\s*```[A-Za-z0-9_-]*\s*$")
 
 MAX_REPORTED_ERRORS = 20
 
@@ -100,6 +120,10 @@ class ImportRow:
     key: str | None
     parent_key: str | None
     attributes: dict[str, Any] = field(default_factory=dict)
+    # True: the row updates the existing requirement ``key`` (update mode).
+    existing: bool = False
+    # (link column handle, column header, target strings) per non-empty link cell.
+    links: list[tuple[Any, str, list[str]]] = field(default_factory=list)
 
 
 @dataclass
@@ -133,11 +157,40 @@ def _coerce(attr: Any, raw: str) -> Any:
     return raw
 
 
+def strip_code_fence(text: str) -> str:
+    """The content of a Markdown code block when ``text`` starts with one, else ``text``."""
+    lines = text.splitlines(keepends=True)
+    first = next((i for i, line in enumerate(lines) if line.strip()), None)
+    if first is None or not _FENCE.match(lines[first]):
+        return text
+    body: list[str] = []
+    for line in lines[first + 1:]:
+        if line.strip() == "```":
+            break
+        body.append(line)
+    return "".join(body)
+
+
+def split_link_targets(cell: str) -> list[str]:
+    """The targets of a link cell (``;``/``,``/blank separated; a leading ``>`` is dropped)."""
+    targets: list[str] = []
+    for part in _LINK_TARGET_SPLIT.split(cell.strip()):
+        part = part.lstrip(">").strip()
+        if part and part not in targets:
+            targets.append(part)
+    return targets
+
+
 def parse_requirements_csv(
     attributes: Sequence[Any],
     csv_text: str,
     validate: Callable[[dict[str, Any]], list[str]] | None = None,
     applies: Callable[[Any], bool] | None = None,
+    *,
+    link_column: Callable[[str], Any] | None = None,
+    existing_ids: Collection[str] | None = None,
+    update_ids: Collection[str] | None = None,
+    validate_update: Callable[[dict[str, Any]], list[str]] | None = None,
 ) -> ParsedCsv:
     """Validate and convert CSV text into requirement rows.
 
@@ -151,6 +204,13 @@ def parse_requirements_csv(
             row number.
         applies: whether an attribute applies to the target module (default:
             every attribute does). See "Attributes that do not apply" above.
+        link_column: resolves the name after ``Link:`` of a link column
+            header to a handle (raises ``ValueError`` if it names no usable
+            link configuration). Without it, such a header is unknown.
+        existing_ids: ids of the module's existing requirements (Parent may
+            name them).
+        update_ids: ids of existing requirements that rows may update (update
+            mode); such rows are checked with ``validate_update``.
 
     Raises:
         CsvImportError: if anything in the file is invalid. Nothing is
@@ -158,6 +218,9 @@ def parse_requirements_csv(
     """
     if csv_text.startswith("﻿"):
         csv_text = csv_text[1:]
+    csv_text = strip_code_fence(csv_text)
+    existing_ids = existing_ids or ()
+    update_ids = update_ids or ()
 
     try:
         records = list(csv.reader(io.StringIO(csv_text, newline=""), strict=True))
@@ -203,6 +266,8 @@ def parse_requirements_csv(
     seen_attr_ids: set[str] = set()
     unknown: list[str] = []
     blank_columns: list[int] = []
+    link_columns: list[tuple[int, Any, str]] = []
+    seen_links: list[Any] = []
 
     for index, name in enumerate(header):
         if not name:
@@ -226,6 +291,18 @@ def parse_requirements_csv(
             )
             continue
         attr = named[0] if named else by_id.get(name)
+        if attr is None and link_column is not None and name[: len(LINK_COLUMN_PREFIX)].lower() == LINK_COLUMN_PREFIX.lower():
+            try:
+                handle = link_column(name[len(LINK_COLUMN_PREFIX):].strip())
+            except ValueError as exc:
+                errors.append(f"Column '{name}': {exc}")
+                continue
+            if any(handle is other for other in seen_links):
+                errors.append(f"Column '{name}': another column already lists this link")
+                continue
+            seen_links.append(handle)
+            link_columns.append((index, handle, name))
+            continue
         if attr is None:
             unknown.append(name)
             continue
@@ -243,9 +320,10 @@ def parse_requirements_csv(
 
     if unknown:
         known = [a.name for a in attributes if not a.system]
+        links_hint = f", or '{LINK_COLUMN_PREFIX} <link name>'" if link_column is not None else ""
         errors.append(
             f"Unknown column(s) {unknown}. Columns must be Id, Module, Parent or a "
-            f"project attribute: {known}"
+            f"project attribute: {known}{links_hint}"
         )
 
     if errors:
@@ -307,10 +385,26 @@ def parse_requirements_csv(
                 errors.append(f"Row {row_number}: {attr.name}: {exc}")
                 converted = False
 
-        if converted and validate is not None:
-            errors.extend(f"Row {row_number}: {problem}" for problem in validate(values))
+        existing = key is not None and key in update_ids
+        check = validate_update if existing else validate
+        if converted and check is not None:
+            errors.extend(f"Row {row_number}: {problem}" for problem in check(values))
 
-        rows.append(ImportRow(row_number=row_number, key=key, parent_key=parent_key, attributes=values))
+        links = [
+            (handle, header_name, split_link_targets(cell(record, index)))
+            for index, handle, header_name in link_columns
+            if cell(record, index).strip()
+        ]
+        rows.append(
+            ImportRow(
+                row_number=row_number,
+                key=key,
+                parent_key=parent_key,
+                attributes=values,
+                existing=existing,
+                links=links,
+            )
+        )
 
     if len(module_values) > 1:
         errors.append(
@@ -327,9 +421,10 @@ def parse_requirements_csv(
             continue
         if row.parent_key == row.key:
             errors.append(f"Row {row.row_number}: a requirement cannot be its own parent")
-        elif row.parent_key not in by_key:
+        elif row.parent_key not in by_key and row.parent_key not in existing_ids:
+            where = " or of an existing requirement of this module" if existing_ids else ""
             errors.append(
-                f"Row {row.row_number}: Parent '{row.parent_key}' does not match the Id of any row in this file"
+                f"Row {row.row_number}: Parent '{row.parent_key}' does not match the Id of any row in this file{where}"
             )
 
     if errors:
@@ -341,13 +436,17 @@ def parse_requirements_csv(
         current: ImportRow | None = row
         visited: set[int] = set()
         while current is not None and current.row_number not in depth:
+            if current.existing:
+                # An updated requirement stays where it is: a fixed root here.
+                depth[current.row_number] = 0
+                break
             if current.row_number in visited:
                 errors.append(f"Row {row.row_number}: the Parent references form a cycle")
                 break
             visited.add(current.row_number)
             chain.append(current)
             current = by_key.get(current.parent_key) if current.parent_key else None
-        else:
+        if current is None or current.row_number in depth:
             base = depth[current.row_number] + 1 if current is not None else 0
             for offset, item in enumerate(reversed(chain)):
                 depth[item.row_number] = base + offset

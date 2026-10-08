@@ -146,7 +146,17 @@ export type DialogRequest =
   | { kind: 'saveAsTemplate'; project: Project }
   | { kind: 'rowStyles'; project: Project }
   | { kind: 'importTemplate' }
-  | { kind: 'importCsv'; projectId: string; moduleId: string; moduleName: string }
+  /** `input: 'paste'` opens with the paste-text box (Paste AI result); `mode` preselects update mode. */
+  | {
+      kind: 'importCsv';
+      projectId: string;
+      moduleId: string;
+      moduleName: string;
+      input?: 'file' | 'paste';
+      mode?: 'create' | 'update';
+    }
+  /** The AI prompt library: target module and (optionally) a selected requirement to prefill. */
+  | { kind: 'aiPrompts'; projectId: string; moduleId: string; requirementId: string | null }
   /** JUnit XML / Robot output.xml results into a test_execution module. */
   | { kind: 'importTestResults'; projectId: string; moduleId: string; moduleName: string }
   /** `folderId`: the module folder to create it in (null/omitted: the top level). */

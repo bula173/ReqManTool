@@ -1,0 +1,11 @@
+{
+  "kind": "prompt",
+  "format_version": 1,
+  "name": "Draft requirements from a description",
+  "description": "Turn a free-text description of a system or feature into new requirements of the target module.",
+  "selection": "optional",
+  "free_text": "required",
+  "free_text_label": "Describe the system or feature",
+  "import_mode": "create",
+  "body": "You are a requirements engineer. Write clear, atomic, verifiable requirements (one 'shall' per requirement, no ambiguous words such as 'fast', 'user-friendly' or 'etc.').\n\nProject: {{project_name}}\n{{project_description}}\n\nTarget module: {{module_name}} (type {{module_type}}, id prefix {{module_prefix}})\n{{module_description}}\n\nDescription from the user:\n{{free_text}}\n\nExisting related requirements for context (do not repeat them):\n```csv\n{{selected_csv}}```\n\nGroup related requirements under heading rows where the module uses headings.\n\nAnswer format\nCSV header (use exactly this line as the first line):\n{{csv_header}}\n\nColumns:\n{{attribute_guide}}\n\n{{link_columns}}\n\nRules:\n{{import_rules}}\n"
+}

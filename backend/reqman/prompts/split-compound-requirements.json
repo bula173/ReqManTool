@@ -1,0 +1,11 @@
+{
+  "kind": "prompt",
+  "format_version": 1,
+  "name": "Split compound requirements",
+  "description": "Split selected requirements that state several things into atomic ones: the original is rewritten, the rest are added.",
+  "selection": "required",
+  "free_text": "none",
+  "free_text_label": "",
+  "import_mode": "update",
+  "body": "You are a requirements engineer. Some selected requirements are compound (they combine several conditions or 'and'/'or' clauses). For each compound requirement, keep its Id and rewrite it to state only the first part; add one new row (with a new short Id key such as N1, and the same Parent) for each further part. Leave atomic requirements out of the answer.\n\nProject: {{project_name}}\n{{project_description}}\n\nTarget module: {{module_name}} (type {{module_type}}, id prefix {{module_prefix}})\n{{module_description}}\n\nSelected requirements (from module {{selection_module_name}}):\n```csv\n{{selected_csv}}```\n\nAnswer format\nCSV header (use exactly this line as the first line):\n{{csv_header}}\n\nColumns:\n{{attribute_guide}}\n\n{{link_columns}}\n\nRules:\n{{import_rules}}\n"
+}

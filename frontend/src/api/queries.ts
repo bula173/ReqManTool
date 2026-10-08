@@ -11,7 +11,12 @@ import type {
   CommitQuery,
   CommitSnapshot,
   CreateModuleFromTemplateResult,
+  CsvImportMode,
+  CsvImportPreview,
   CsvImportResult,
+  Prompt,
+  PromptFields,
+  RenderedPrompt,
   ExecutionReport,
   GitLog,
   GitPullResult,
@@ -125,6 +130,8 @@ export const queryKeys = {
   templates: ['templates'] as const,
   /** Module templates (GET /module-templates); fetched lazily, refetched on `templates_changed`. */
   moduleTemplates: ['module-templates'] as const,
+  /** The AI prompt library (GET /prompts); refetched on `prompts_changed`. */
+  prompts: ['prompts'] as const,
 };
 
 // --- version -----------------------------------------------------------
@@ -1132,18 +1139,98 @@ export function usePurgeProject() {
   });
 }
 
+function csvImportPath(projectId: string, moduleId: string, mode: CsvImportMode, preview: boolean): string {
+  const base = `/projects/${encodeURIComponent(projectId)}/modules/${encodeURIComponent(moduleId)}/import/csv`;
+  return `${base}${preview ? '/preview' : ''}${mode === 'update' ? '?mode=update' : ''}`;
+}
+
+/**
+ * CSV content to import: a file's bytes are sent unchanged (the server
+ * decodes UTF-8 with or without BOM and rejects other encodings with a 400),
+ * pasted text is sent as UTF-8. Content-Type is always text/csv.
+ */
+export type CsvSource = Blob | string;
+
+function csvBody(source: CsvSource): Blob {
+  return typeof source === 'string' ? new Blob([source], { type: 'text/csv' }) : source;
+}
+
+/** Read-only preview of a CSV import (what it would create, update and link); changes nothing. */
+export function usePreviewCsvImport(projectId: string, moduleId: string) {
+  return useMutation({
+    mutationFn: ({ source, mode }: { source: CsvSource; mode: CsvImportMode }) =>
+      api.postBody<CsvImportPreview>(csvImportPath(projectId, moduleId, mode, true), csvBody(source), 'text/csv'),
+  });
+}
+
+/**
+ * Imports CSV into one module (all-or-nothing). Updates and link columns may
+ * change other requirements of the project (link mirrors), so every module's
+ * requirements and the project (id counters) are refreshed.
+ */
 export function useImportCsv(projectId: string, moduleId: string) {
   const qc = useQueryClient();
   return useMutation({
-    // Send the file's bytes unchanged: the server decodes UTF-8 (with or
-    // without BOM) and rejects other encodings with a 400 instead of importing
-    // replacement characters. It also requires Content-Type text/csv.
-    mutationFn: (file: Blob) =>
-      api.postBody<CsvImportResult>(`/projects/${projectId}/modules/${moduleId}/import/csv`, file, 'text/csv'),
+    mutationFn: ({ source, mode }: { source: CsvSource; mode: CsvImportMode }) =>
+      api.postBody<CsvImportResult>(csvImportPath(projectId, moduleId, mode, false), csvBody(source), 'text/csv'),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: queryKeys.requirements(projectId, moduleId) });
+      invalidateProjectRequirements(qc, projectId);
       qc.invalidateQueries({ queryKey: queryKeys.project(projectId), exact: true });
     },
+  });
+}
+
+// --- AI prompt library ------------------------------------------------------
+
+export function usePrompts(enabled = true): UseQueryResult<Prompt[]> {
+  return useQuery({ queryKey: queryKeys.prompts, queryFn: () => api.get<Prompt[]>('/prompts'), enabled });
+}
+
+/** Download URL of a prompt file (export). */
+export function promptExportUrl(promptId: string): string {
+  return `${API_BASE_URL}/prompts/${encodeURIComponent(promptId)}/export`;
+}
+
+/** Fills a prompt for a target module and a selection (read-only; a mutation so it runs on demand). */
+export function useRenderPrompt(projectId: string) {
+  return useMutation({
+    mutationFn: (body: {
+      prompt_id: string;
+      module_id: string;
+      requirement_ids?: string[];
+      selection_module_id?: string | null;
+      include_children?: boolean;
+      free_text?: string;
+    }) => api.post<RenderedPrompt>(`/projects/${encodeURIComponent(projectId)}/prompts/render`, body),
+  });
+}
+
+/** Create (no id) or replace (id) a user prompt. */
+export function useSavePrompt() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, fields }: { id: string | null; fields: PromptFields }) =>
+      id === null
+        ? api.post<Prompt>('/prompts', fields)
+        : api.put<Prompt>(`/prompts/${encodeURIComponent(id)}`, fields),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.prompts }),
+  });
+}
+
+export function useDeletePrompt() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/prompts/${encodeURIComponent(id)}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.prompts }),
+  });
+}
+
+/** Uploads a prompt file as a new user prompt (409 when its name is taken). */
+export function useImportPrompt() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (file: Blob) => api.postBody<Prompt>('/prompts/import', file, 'application/json'),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.prompts }),
   });
 }
 
