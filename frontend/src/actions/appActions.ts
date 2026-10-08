@@ -123,6 +123,7 @@ export const appActions: Action<'app'>[] = [
   // --- File ---------------------------------------------------------------
   {
     id: 'file.newProject',
+    requires: ['createProjects'],
     element: 'app',
     label: 'New project',
     icon: IconFolderPlus,
@@ -133,6 +134,7 @@ export const appActions: Action<'app'>[] = [
   {
     // Clones a remote git repository into the data directory as a project.
     id: 'file.addProjectFromRemote',
+    requires: ['createProjects', 'connections'],
     element: 'app',
     label: 'Add project from remote',
     icon: IconCloudPlus,
@@ -142,6 +144,7 @@ export const appActions: Action<'app'>[] = [
   },
   {
     id: 'file.openFolder',
+    requires: ['serverAdmin'],
     element: 'app',
     label: 'Open project folder',
     icon: IconFolderOpen,
@@ -151,6 +154,7 @@ export const appActions: Action<'app'>[] = [
   },
   {
     id: 'file.newProjectFromTemplate',
+    requires: ['createProjects'],
     element: 'app',
     label: 'New project from template',
     icon: IconTemplate,
@@ -173,6 +177,7 @@ export const appActions: Action<'app'>[] = [
     // Creates the open project's git repository (or its `current` branch);
     // offered only while the server reports that it can (see GitStatus).
     id: 'project.enableHistory',
+    requires: ['projectAdmin'],
     element: 'app',
     label: 'Enable history (git)',
     icon: IconHistory,
@@ -198,6 +203,7 @@ export const appActions: Action<'app'>[] = [
   {
     // Explicit push of the open project to its configured remote (Git panel parity).
     id: 'project.gitPush',
+    requires: ['projectEditor'],
     element: 'app',
     label: 'Push to remote',
     icon: IconCloudUpload,
@@ -220,6 +226,7 @@ export const appActions: Action<'app'>[] = [
   {
     // Explicit fetch + fast-forward of the open project from its remote.
     id: 'project.gitPull',
+    requires: ['projectEditor'],
     element: 'app',
     label: 'Pull from remote',
     icon: IconCloudDownload,

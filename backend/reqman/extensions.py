@@ -16,13 +16,24 @@ plugs in through exactly these interfaces:
   who locked a project). ``None`` (always, in local mode) keeps the local
   behavior.
 - **Permission guard** (``PermissionGuard``): asked before an action on a
-  project; raises ``PermissionError`` to refuse. Defined now, enforced by
-  a later slice of the server edition.
+  project (or a server-wide action); raises ``AccessDeniedError`` (a
+  ``PermissionError``) to refuse: REST 403, WebSocket error -32003.
+  ``ProjectService`` asks it at its choke points (every public method
+  taking a ``project_id``, project creation and listing, cross-project
+  reads and cascades, libraries and connections); the actions are the
+  ``ACTION_*`` constants below. The local edition's ``AllowAllGuard`` is
+  skipped without a call (``guard_active``).
+- **Project events** (``ProjectEvents``): told after a project was created
+  (by whom) or removed, e.g. to make the creator its project admin and to
+  forget the memberships of a removed project.
+- **WebSocket methods** (``Hooks.rpc_methods``): JSON-RPC methods an
+  edition adds to ``/ws`` (sync or async callables taking the params).
 - **Module lock service** (``ModuleLockService``): asked before a write to
   a module; raises ``ModuleLockedError`` when another user holds the lock.
   Defined now, implemented by a later slice.
 
-``HOOKS`` holds the active guard and lock service (no-ops by default).
+``HOOKS`` holds the active guard, lock service, project event listener and
+extra WebSocket methods (no-ops / empty by default).
 This module must stay dependency-free and must never import
 ``reqman_server``.
 """
@@ -33,7 +44,7 @@ import importlib
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Iterator, Protocol
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterator, Protocol
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from fastapi import FastAPI
@@ -95,10 +106,33 @@ class IdentityProvider(Protocol):
 
 # --- permission guard -----------------------------------------------------------------
 
+# Project actions (with a ``project_id``), in increasing order of privilege:
+# read anything of the project; change its data (requirements, modules,
+# links, views, attributes, imports, baselines, push/pull); administer it
+# (lock/unlock, remove, purge, parent, git history/remote/publish, members).
+ACTION_PROJECT_READ = "project.read"
+ACTION_PROJECT_WRITE = "project.write"
+ACTION_PROJECT_ADMIN = "project.admin"
+# Server-wide actions (``project_id`` is ``None``).
+ACTION_PROJECT_CREATE = "project.create"  # create a project (blank, template, clone)
+ACTION_LIBRARY_WRITE = "library.write"  # change the shared template / prompt libraries
+ACTION_CONNECTIONS_USE = "connections.use"  # use the GitLab/GitHub connections (list, browse, publish)
+ACTION_CONNECTIONS_MANAGE = "connections.manage"  # add, change, remove connections (tokens)
+ACTION_GIT_REMOTE_URL = "git.remote_url"  # clone from / set a remote to an arbitrary URL or path
+ACTION_SERVER_CONFIG = "server.config"  # see and switch the data folder
+
+
+class AccessDeniedError(PermissionError):
+    """An action the permission guard refused (REST 403; WebSocket error code -32003).
+
+    A subclass so an operating-system ``PermissionError`` (EACCES) is never
+    mistaken for a refusal of the guard.
+    """
+
 
 class PermissionGuard(Protocol):
-    """Decides whether ``identity`` may perform ``action`` (e.g. ``"project.read"``,
-    ``"project.write"``, ``"server.admin"``) on ``project_id``; raises ``PermissionError`` if not."""
+    """Decides whether ``identity`` may perform ``action`` (one of the ``ACTION_*`` constants)
+    on ``project_id``; raises ``AccessDeniedError`` if not."""
 
     def check(self, identity: RequestIdentity | None, action: str, project_id: str | None = None) -> None: ...
 
@@ -130,15 +164,61 @@ class NoLocks:
         return None
 
 
+# --- project events -------------------------------------------------------------------
+
+
+class ProjectEvents(Protocol):
+    """Told after a project was created (blank, from a template, cloned) or removed."""
+
+    def project_created(self, identity: RequestIdentity | None, project_id: str) -> None: ...
+
+    def project_removed(self, identity: RequestIdentity | None, project_id: str) -> None: ...
+
+
+class NoProjectEvents:
+    """The local edition's listener: nothing happens."""
+
+    def project_created(self, identity: RequestIdentity | None, project_id: str) -> None:
+        return None
+
+    def project_removed(self, identity: RequestIdentity | None, project_id: str) -> None:
+        return None
+
+
 @dataclass
 class Hooks:
-    """The active permission guard and module lock service (no-ops unless an edition replaces them)."""
+    """The active edition hooks (no-ops unless an edition replaces them)."""
 
     permission_guard: PermissionGuard = field(default_factory=AllowAllGuard)
     lock_service: ModuleLockService = field(default_factory=NoLocks)
+    project_events: ProjectEvents = field(default_factory=NoProjectEvents)
+    # Extra WebSocket JSON-RPC methods: name -> callable(params) returning the
+    # result or an awaitable of it. Core methods win on a name clash.
+    rpc_methods: dict[str, Callable[[dict], Any]] = field(default_factory=dict)
 
 
 HOOKS = Hooks()
+
+
+def guard_active() -> bool:
+    """Whether a permission guard other than the local ``AllowAllGuard`` is installed."""
+    return type(HOOKS.permission_guard) is not AllowAllGuard
+
+
+def check_permission(action: str, project_id: str | None = None) -> None:
+    """Ask the active guard about the current identity; ``AccessDeniedError`` to refuse. Free in local mode."""
+    guard = HOOKS.permission_guard
+    if type(guard) is not AllowAllGuard:
+        guard.check(_current_identity.get(), action, project_id)
+
+
+def is_permitted(action: str, project_id: str | None = None) -> bool:
+    """``check_permission`` as a boolean."""
+    try:
+        check_permission(action, project_id)
+    except AccessDeniedError:
+        return False
+    return True
 
 
 # --- the server edition ---------------------------------------------------------------
@@ -154,6 +234,10 @@ class EditionContext:
     hooks: Hooks
     # The built frontend served from this origin, or ``None`` (API only).
     frontend_dir: Any = None
+    # Sends a live-sync event (a JSON object) to every connected WebSocket client.
+    broadcast: Callable[[dict[str, Any]], Awaitable[None]] | None = None
+    # Whether a project id exists in the current data folder.
+    project_exists: Callable[[str], bool] | None = None
 
 
 class ServerEdition(Protocol):

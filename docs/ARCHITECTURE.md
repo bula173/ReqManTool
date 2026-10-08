@@ -1673,9 +1673,10 @@ Two editions run from one codebase. **local** (the default) is the
 community edition: one user, no login, identity from git config — exactly
 the behavior described in the rest of this document. **server** is the
 multi-user edition: one shared instance, every user logs in. It is
-delivered in slices; slice 1 (this section) is the mode switch and
-authentication. Users/roles/membership UI, permission enforcement, module
-edit locks, the audit log and the licence-file gate come later.
+delivered in slices: slice 1 is the mode switch and authentication; slice
+2 adds users, roles, project membership, permission enforcement and the
+admin pages ("Roles, membership and permissions" below). Module edit
+locks, the audit log and the licence-file gate come later.
 
 ### Separation
 
@@ -1708,11 +1709,28 @@ the import path).
 - `IdentityProvider` (`authenticate(scope)`): the shape of a request
   authenticator.
 - `PermissionGuard` (`check(identity, action, project_id)`, raises
-  `PermissionError`; local: `AllowAllGuard`) and `ModuleLockService`
-  (`check_write(identity, project_id, module_id)`, raises
-  `ModuleLockedError`; local: `NoLocks`) in `HOOKS`. Defined now, not yet
-  called: the slices that add membership and module locks will call them
-  from `ProjectService` (one guard, REST + WebSocket parity).
+  `AccessDeniedError`, a `PermissionError` subclass so an OS EACCES is
+  never mistaken for a refusal; local: `AllowAllGuard`). Actions are the
+  `ACTION_*` constants: `project.read` / `project.write` / `project.admin`
+  (with a project id), `project.create`, `library.write`,
+  `connections.use`, `connections.manage`, `git.remote_url`,
+  `server.config`. `check_permission(action, project_id)` asks the guard
+  about the current identity and is a type test only while the guard is
+  `AllowAllGuard` (`guard_active()`), so the local edition pays nothing.
+  Called by `ProjectService` (below), `GET /config` and the live-sync
+  broadcast.
+- `ProjectEvents` (`project_created(identity, id)`,
+  `project_removed(identity, id)`; local: `NoProjectEvents`): called by
+  `ProjectService` after a project was created (blank, template, clone) or
+  removed; a listener failure is logged, never raised.
+- `Hooks.rpc_methods`: extra WebSocket JSON-RPC methods of the edition
+  (sync or async callables taking the params; core names win). The core
+  dispatcher maps their errors like its own.
+- `EditionContext.broadcast(event)` (send a live-sync event to every
+  socket) and `EditionContext.project_exists(id)`.
+- `ModuleLockService` (`check_write(identity, project_id, module_id)`,
+  raises `ModuleLockedError`; local: `NoLocks`): defined, not yet called
+  (module edit locks slice).
 
 ### Configuration
 
@@ -1726,7 +1744,11 @@ the browser goes after login; default: same origin), `cookie_secure`
 (default true; false for `http://localhost` development),
 `session_max_age_hours` (12), `session_idle_minutes` (120),
 `persist_sessions` (true), `state_dir` (default: the config file's
-directory), `admins` (user names / e-mail addresses). Environment:
+directory), `admins` (user names / e-mail addresses), `admin_groups`
+(identity provider groups whose members become server admins at login),
+`group_roles` (`[{group, role: viewer | editor | project-admin, projects:
+["*" | project id, ...]}]`), `project_creation` (`everyone`, the default,
+or `admins`). Environment:
 `REQMAN_AUTH_<ID>_CLIENT_ID` / `_CLIENT_SECRET`, `REQMAN_SERVER_BASE_URL`,
 `REQMAN_SERVER_FRONTEND_URL`, `REQMAN_SERVER_COOKIE_SECURE`,
 `REQMAN_SERVER_STATE_DIR`, `REQMAN_SERVER_ADMINS`. The client secret is
@@ -1753,7 +1775,11 @@ signature is not verified: OIDC Core §3.1.3.7 lets a client rely on TLS
 for an ID token received directly from the token endpoint, which is the
 only way this client gets one — so every endpoint must be https (http only
 for a local host, or `allow_http` for tests), and `alg: none` is refused.
-HTTP uses `urllib` (timeout, 1 MiB limit): no new dependency.
+HTTP uses `urllib` (timeout, 1 MiB limit): no new dependency. Groups (for
+`admin_groups` / `group_roles`) come from the `groups` claim (Keycloak,
+Entra ID, GitLab userinfo) or GitLab's `groups_direct` ID token claim;
+when a group setting is configured and the ID token has neither, from the
+userinfo endpoint. They are stored on the user at each login.
 
 ### Sessions, CSRF and the middleware
 
@@ -1775,19 +1801,95 @@ the bundle. Anything else without a session: REST 401
 4401 before accept = HTTP 403). WebSocket handshakes must come from the
 server's own origin or `cors_origins` / `frontend_url` / `base_url`
 (4403 otherwise); the session is re-checked on each received message and
-the socket closed with 4401 once it ended. Until project permissions
-exist, `POST /config` and `/fs/*` (server data folder and file system)
-are limited to server admins.
+the socket closed with 4401 once it ended. `POST /config` and `/fs/*`
+(server data folder and file system) are limited to server admins in the
+middleware; everything else is decided by the permission guard.
 
 ### Users (`users.py`)
 
 `users.json` in the state directory: `id`, `name`, `email`, `username`,
 `provider`, `subject`, `server_admin`, `active`, `created_at`,
-`last_login_at`, keyed by `(provider, subject)`; created at the first
-login, name/e-mail refreshed at each login, re-read when the file is
-edited by hand. Admins: users matching `server.admins` (user name, or an
-e-mail not reported unverified); without that setting the first user ever
-becomes the admin. `active: false` refuses logins and ends sessions.
+`last_login_at`, `groups`, keyed by `(provider, subject)`; created at the
+first login, name/e-mail/groups refreshed at each login, re-read when the
+file is edited by hand. Admins: users matching `server.admins` (user name,
+or an e-mail not reported unverified) or in one of `server.admin_groups`;
+without `admins` the first user ever becomes the admin. The flag is never
+removed automatically (the admin page can). `active: false` refuses logins
+and ends sessions.
+
+### Roles, membership and permissions (slice 2)
+
+**Storage.** Memberships are server state, `memberships.json` next to
+`users.json` (`memberships.py`): a list of `{project_id, user_id, role,
+added_at, added_by}` sorted by project and user, re-read after a hand
+edit. Not in the project data or its git repository: projects stay
+edition-agnostic and can move between a local and a server installation
+unchanged. A removed project's entries are deleted (`project_removed`), so
+a new project reusing the id starts without members. Switching the data
+folder keeps the file (memberships are keyed by project id only).
+
+**Roles** (`permissions.py`): `viewer` (read), `editor` (also change the
+project's data: requirements, modules, folders, links, link
+configurations, views, attributes, row styles, references, imports,
+baselines, push/pull, reviews), `project-admin` (also lock/unlock, remove,
+purge the project, change its parent, enable history, git remote and
+auto-push, publish, and manage its members). A user's role in a project is
+the highest of their membership and the `group_roles` rules matching
+their groups. Server admins may do everything everywhere. Server-wide:
+`project.create` per `project_creation` (the creator becomes the
+project's admin through `project_created`), `library.write` (templates,
+prompts) for every user, and everything else — the GitLab/GitHub
+connections (`connections.use` / `.manage`), cloning from or setting a
+remote to an arbitrary URL (`git.remote_url`, which could reach any path
+or internal host of the server), the data folder (`server.config`) —
+for server admins only. The guard looks the user up on every check, so a
+deactivation, admin flag or membership change applies at once, also to
+open WebSocket connections.
+
+**Enforcement (one guard, REST + WebSocket parity).** `ProjectService` is
+decorated with `_install_permission_checks`: every public method whose
+first parameter is `project_id` checks, before it runs (and before the
+lock and sync-conflict guards), `project.write` for `_records_history`
+mutations, the action set with `_requires` (`project.admin` for lock,
+unlock, remove, purge, parent, enable history, remote, auto-push,
+publish; `project.write` for push, pull, reviews, baselines), else
+`project.read`. Explicit checks cover the rest: `create_project`
+(`project.create`, plus `project.write` on the parent of a subproject),
+`set_project_parent` (`project.write` on the new parent), cloning
+(`project.create` + `git.remote_url`, or `connections.use` from a
+provider), provider connections, template/prompt libraries
+(`library.write`), the cross-project reads (link target project, new
+references, `link_options`' other project, the prompt's selection
+project), and the cross-project cleanup cascade (`_check_incoming_cleanup`
+needs `project.write` on every referencing project whose links would be
+deleted — refused with 403 before anything is written). `list_projects`
+lists only readable projects; a project whose parent is hidden is listed
+at the top level (like a dangling parent). `project_references` and
+`incoming_links` leave out (or, for an own reference, name without
+details) projects the user cannot read; the connections list is empty for
+users without `connections.use`. Errors: `AccessDeniedError` → REST 403,
+WebSocket error code -32003. `GET /config` returns an opaque
+`data-folder:<hash>` id with `redacted: true` instead of the path to users
+without `server.config`; `remove_project` accepts that id in place of the
+path. Live sync: a `changed` event of a project is sent only to sockets
+whose user may read it (the identity is remembered per socket);
+`removed` events go to all.
+
+**Admin API** (`admin.py`): `GET /auth/permissions` (also `permissions`
+in `/auth/me`: `{server_admin, can_create_projects, roles: {project id:
+role}, default_role}`), `GET /admin/users`, `PUT /admin/users/{id}`
+(`active`, `server_admin`; never one's own account; deactivating ends the
+user's sessions), `GET /admin/projects/{id}/members` (memberships plus
+users with a group-rule role, marked `source: "group"`), `PUT
+/admin/projects/{id}/members` (`{user: e-mail | user name | id, role}`),
+`DELETE /admin/projects/{id}/members/{user_id}`. Users: server admins;
+members: project admins of that project and server admins; a project
+admin cannot leave the project without a project admin. WebSocket (via
+`HOOKS.rpc_methods`): `auth.permissions`, `admin.users.list`,
+`admin.users.update`, `admin.members.list`, `admin.members.set`,
+`admin.members.remove`. Every change broadcasts `{"event":
+"permissions_changed"}`; clients refetch their roles, the admin pages and
+every project query.
 
 ### API and frontend
 
@@ -1800,9 +1902,22 @@ login_url}]}`. Server edition only: `GET /auth/login/{provider}?next=`,
 `/edition` first; local (or no answer) shows the app as before. In the
 server edition the API client sends `credentials: 'include'` and the CSRF
 header, a 401 (or WebSocket close 4401) shows `LoginPage`, and the header
-has a `UserMenu` (name, e-mail, Log out); the data folder switcher is shown
-to server admins only. Login is a full-page round trip, so the live-sync
-socket connects again with the new cookie.
+has a `UserMenu` (name, e-mail, Administration…, Log out); the data
+folder switcher is shown to server admins only. Login is a full-page round
+trip, so the live-sync socket connects again with the new cookie.
+
+Roles in the frontend: `AuthValue.access` (`auth/context.ts`;
+`serverAccess` from `/auth/me`'s `permissions`, `LOCAL_ACCESS` allowing
+everything in the local edition) is part of the action `AppState`.
+`isActionAvailable` disables an `edits` action when its project is
+read-only (`isProjectReadOnly`: locked, or the role is below editor) and
+checks an action's `requires` (`projectEditor`, `projectAdmin`,
+`createProjects`, `connections`, `serverAdmin`). The project and module
+pages, the outline, the sidebar tree and the Git panel use the same
+checks for their inline controls; `ProjectRoleBadge` shows the role next
+to the project name. `AdminModal` (from the user menu, for server admins
+and project admins): Users tab (Active / Server admin switches) and
+Project members tab (add by e-mail or user name, change role, remove).
 
 ## Backend layering
 

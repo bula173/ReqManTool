@@ -23,7 +23,10 @@ Flow
    expired, 60 s leeway), ``iat`` (not in the future), ``nonce`` (equals the
    one sent) and ``sub`` (present). Name, e-mail and user name are taken
    from the ID token, completed from the userinfo endpoint when missing
-   (whose ``sub`` must match).
+   (whose ``sub`` must match). Group memberships (for ``server.group_roles``
+   / ``server.admin_groups``) come from the ``groups`` claim (Keycloak,
+   GitLab's userinfo) or GitLab's ``groups_direct`` ID token claim; with
+   ``want_groups`` and neither in the ID token, from the userinfo endpoint.
 
 The ID token's *signature is not verified*. OpenID Connect Core 1.0
 §3.1.3.7 (item 6) allows a client to rely on TLS server validation instead
@@ -286,11 +289,13 @@ class OidcClient:
             what=f"{self.provider.name} userinfo request",
         )
 
-    def identity_from_tokens(self, tokens: dict[str, Any], nonce: str) -> LoginClaims:
+    def identity_from_tokens(self, tokens: dict[str, Any], nonce: str, want_groups: bool = False) -> LoginClaims:
         claims = self.validate_id_token(tokens["id_token"], nonce)
         info: dict[str, Any] = dict(claims)
         access_token = tokens.get("access_token")
-        if not (claims.get("email") and (claims.get("name") or claims.get("nickname"))) and isinstance(access_token, str):
+        missing_groups = want_groups and not any(key in claims for key in GROUP_CLAIMS)
+        missing_profile = not (claims.get("email") and (claims.get("name") or claims.get("nickname")))
+        if (missing_profile or missing_groups) and isinstance(access_token, str):
             extra = self.userinfo(access_token)
             if extra:
                 if extra.get("sub") != claims["sub"]:
@@ -313,4 +318,25 @@ class OidcClient:
             email=text("email"),
             username=username,
             email_verified=verified if isinstance(verified, bool) else None,
+            groups=groups_of(info),
         )
+
+
+# Claims naming the user's groups: ``groups`` (Keycloak, Entra ID, GitLab userinfo), ``groups_direct`` (GitLab ID token).
+GROUP_CLAIMS = ("groups", "groups_direct")
+MAX_GROUPS = 1000
+
+
+def groups_of(info: dict[str, Any]) -> tuple[str, ...]:
+    """The group names of the claims (``GROUP_CLAIMS``), de-duplicated, at most ``MAX_GROUPS``."""
+    groups: list[str] = []
+    for key in GROUP_CLAIMS:
+        value = info.get(key)
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if isinstance(item, str) and item.strip() and item.strip() not in groups:
+                groups.append(item.strip()[:255])
+    return tuple(groups[:MAX_GROUPS])

@@ -1,5 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
+import { invalidatePermissions } from '../api/auth';
 import { WS_URL, notifyUnauthorized } from '../api/client';
 import { clearDatasetCache, handleProjectRemoved, invalidateCrossProject, queryKeys } from '../api/queries';
 
@@ -28,7 +29,13 @@ interface ConnectionsChangedEvent {
   event: 'connections_changed';
 }
 
+/** Server edition: a membership, role or user flag changed (no details: every client refetches its own roles). */
+interface PermissionsChangedEvent {
+  event: 'permissions_changed';
+}
+
 type LiveSyncEvent =
+  | PermissionsChangedEvent
   | ChangedEvent
   | RootChangedEvent
   | TemplatesChangedEvent
@@ -49,6 +56,9 @@ type LiveSyncEvent =
  * or module template was saved) refetches both template lists, and
  * {"event":"prompts_changed"} the AI prompt library, {"event":"connections_changed"}
  * the GitLab/GitHub connections (and which connection each project's remote uses).
+ * {"event":"permissions_changed"} (server edition) refetches the user's roles,
+ * the admin pages and every project query (projects may appear or disappear,
+ * or become read-only).
  *
  * On a reconnect (usually a backend restart, possibly as a different
  * version) the footer's version query is refetched; on the first connect it
@@ -105,6 +115,8 @@ export function useLiveSync(): void {
             qc.invalidateQueries({ queryKey: queryKeys.moduleTemplates });
           } else if (data.event === 'prompts_changed') {
             qc.invalidateQueries({ queryKey: queryKeys.prompts });
+          } else if (data.event === 'permissions_changed') {
+            invalidatePermissions(qc);
           } else if (data.event === 'connections_changed') {
             qc.invalidateQueries({ queryKey: queryKeys.providerConnections });
             qc.invalidateQueries({

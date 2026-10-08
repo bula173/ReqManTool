@@ -6,7 +6,8 @@
   the user (first login) and the session, sets the session cookie and
   redirects to ``frontend_url`` + ``next``. A failure redirects to
   ``frontend_url/?login_error=<message>`` instead.
-- ``GET /auth/me``: the logged-in user and the session's CSRF token (401
+- ``GET /auth/me``: the logged-in user, their roles (``permissions``, see
+  ``permissions.Permissions.summary``) and the session's CSRF token (401
   without a session — the middleware answers).
 - ``POST /auth/logout``: ends the session and clears the cookie (needs the
   CSRF token when a session exists).
@@ -25,6 +26,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from .middleware import cookie_value
 from .oidc import OidcClient, OidcError, pkce_pair
+from .permissions import Permissions
 from .sessions import PENDING_LOGIN_TTL, PendingLogin, PendingLogins, SessionStore
 from .settings import ServerSettings
 from .users import InactiveUserError, UserRegistry
@@ -49,6 +51,7 @@ def build_router(
     sessions: SessionStore,
     pending: PendingLogins,
     users: UserRegistry,
+    permissions: Permissions | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -127,7 +130,7 @@ def build_router(
             return login_error("The login response is incomplete; please log in again.")
         try:
             tokens = client.exchange_code(code, login.redirect_uri, login.code_verifier)
-            claims = client.identity_from_tokens(tokens, login.nonce)
+            claims = client.identity_from_tokens(tokens, login.nonce, want_groups=settings.wants_groups)
             user = users.login(claims)
         except OidcError as exc:
             return login_error(str(exc))
@@ -156,10 +159,10 @@ def build_router(
         user = users.get(session.user_id) if session else None
         if session is None or user is None:
             raise HTTPException(status_code=401, detail="Not logged in")
-        return JSONResponse(
-            {"user": user.public(), "csrf_token": session.csrf_token, "expires_at": int(session.expires)},
-            headers={"Cache-Control": "no-store"},
-        )
+        body = {"user": user.public(), "csrf_token": session.csrf_token, "expires_at": int(session.expires)}
+        if permissions is not None:
+            body["permissions"] = permissions.summary(user)
+        return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
     @router.post("/auth/logout")
     def logout(request: Request):

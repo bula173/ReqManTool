@@ -13,6 +13,7 @@ import { pendingLinkActions, requirementActions } from './requirementActions';
 import { matchesShortcut } from './shortcuts';
 import { moduleWindowActions, requirementWindowActions, tabActions, windowActions } from './tabActions';
 import type {
+  AccessRequirement,
   Action,
   ActionContext,
   ActionTargetOverrides,
@@ -122,12 +123,40 @@ export function isProjectLocked(state: AppState, projectId: string | null | unde
 }
 
 /**
- * Whether an action can run: its own `isAvailable`, and, for an action that
- * `edits`, its project is not locked. Every menu, shortcut and button goes
- * through this (never `action.isAvailable` alone).
+ * Whether the project's data cannot be changed here: it is locked, or the
+ * user's role does not allow changes (server edition: viewer or no role).
+ */
+export function isProjectReadOnly(state: AppState, projectId: string | null | undefined): boolean {
+  return isProjectLocked(state, projectId) || !state.access.canEdit(projectId);
+}
+
+function meets(state: AppState, requirement: AccessRequirement, projectId: string | null): boolean {
+  switch (requirement) {
+    case 'projectEditor':
+      return state.access.canEdit(projectId);
+    case 'projectAdmin':
+      return state.access.canAdmin(projectId);
+    case 'createProjects':
+      return state.access.canCreateProjects;
+    case 'connections':
+      return state.access.canUseConnections;
+    case 'serverAdmin':
+      return state.access.serverAdmin;
+  }
+}
+
+/**
+ * Whether an action can run: its own `isAvailable`; for an action that
+ * `edits`, its project is not read-only (locked, or the user's role does
+ * not allow changes); and the permissions it `requires`. Every menu,
+ * shortcut and button goes through this (never `action.isAvailable` alone).
  */
 export function isActionAvailable<E extends ElementType>(action: Action<E>, ctx: ActionContext<E>): boolean {
-  if (action.edits && isProjectLocked(ctx, actionProjectId(ctx as ActionContext))) return false;
+  if (action.edits || action.requires) {
+    const projectId = actionProjectId(ctx as ActionContext);
+    if (action.edits && isProjectReadOnly(ctx, projectId)) return false;
+    if (action.requires && !action.requires.every((r) => meets(ctx, r, projectId))) return false;
+  }
   return action.isAvailable(ctx);
 }
 

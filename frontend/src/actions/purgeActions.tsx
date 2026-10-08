@@ -56,6 +56,7 @@ export const purgeActions: Action<'app'>[] = [
   },
   {
     id: 'project.purge',
+    requires: ['projectAdmin'],
     element: 'app',
     edits: true,
     label: 'Purge project',

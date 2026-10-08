@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, type ReactNode } from 'react';
 import { authKeys, logout as logoutRequest, useAuthSession, useEdition } from '../api/auth';
 import { setCsrfToken, setUnauthorizedHandler } from '../api/client';
-import { AuthContext, type AuthValue } from '../auth/context';
+import { AuthContext, LOCAL_ACCESS, serverAccess, type AuthValue } from '../auth/context';
 import { LoginPage } from '../pages/LoginPage';
 
 /**
@@ -40,12 +40,19 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }, []);
 
   const user = session.data?.user ?? null;
+  const permissions = session.data?.permissions;
   const value = useMemo<AuthValue>(
     () =>
       serverMode
-        ? { mode: 'server', user, canManageServer: user?.server_admin ?? false, logout }
-        : { mode: 'local', user: null, canManageServer: true, logout: async () => undefined },
-    [serverMode, user, logout],
+        ? {
+            mode: 'server',
+            user,
+            canManageServer: user?.server_admin ?? false,
+            access: serverAccess(permissions, user?.server_admin ?? false),
+            logout,
+          }
+        : { mode: 'local', user: null, canManageServer: true, access: LOCAL_ACCESS, logout: async () => undefined },
+    [serverMode, user, permissions, logout],
   );
 
   if (edition.isPending || (serverMode && session.isPending)) {

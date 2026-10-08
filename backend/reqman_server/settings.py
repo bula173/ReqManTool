@@ -15,6 +15,12 @@ Example (``config.json``)::
         "persist_sessions": true,
         "state_dir": null,
         "admins": ["alice@example.com"],
+        "admin_groups": ["acme/reqman-admins"],
+        "group_roles": [
+          {"group": "acme/requirements", "role": "editor", "projects": ["*"]},
+          {"group": "acme/auditors", "role": "viewer", "projects": ["brake-system"]}
+        ],
+        "project_creation": "everyone",
         "auth_providers": [
           {"id": "gitlab", "type": "gitlab", "name": "GitLab", "url": "https://gitlab.example.com",
            "client_id": "...", "client_secret_env": "REQMAN_GITLAB_SECRET"},
@@ -29,6 +35,14 @@ Secrets: a provider's client secret comes from ``REQMAN_AUTH_<ID>_CLIENT_SECRET`
 variable named by ``client_secret_env``, else ``client_secret`` in the file.
 ``REQMAN_AUTH_<ID>_CLIENT_ID`` likewise overrides ``client_id``. The secret is
 never logged, returned by an endpoint or sent to the browser.
+
+Roles (``permissions.py``): a user's role in a project is the highest of
+their membership (``memberships.json``, managed on the admin pages) and
+the ``group_roles`` rules matching one of their identity provider groups
+(``"projects": ["*"]`` = every project; the default). ``admin_groups``
+makes a group's members server admins at login. ``project_creation``:
+``everyone`` (default; the creator becomes the project admin) or
+``admins`` (server admins only).
 
 Other environment overrides: ``REQMAN_SERVER_BASE_URL``,
 ``REQMAN_SERVER_FRONTEND_URL``, ``REQMAN_SERVER_COOKIE_SECURE`` (``0``/``1``),
@@ -45,6 +59,9 @@ from pathlib import Path
 from typing import Any
 
 PROVIDER_TYPES = ("gitlab", "oidc")
+# Project roles, lowest first (``permissions.ROLE_RANK``).
+ROLES = ("viewer", "editor", "project-admin")
+PROJECT_CREATION = ("everyone", "admins")
 DEFAULT_GITLAB_URL = "https://gitlab.com"
 DEFAULT_SCOPES = ("openid", "profile", "email")
 _PROVIDER_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
@@ -73,6 +90,18 @@ class ProviderSettings:
 
 
 @dataclass(frozen=True)
+class GroupRole:
+    """``server.group_roles`` entry: members of ``group`` get ``role`` in ``projects`` (``("*",)``: all)."""
+
+    group: str
+    role: str
+    projects: tuple[str, ...] = ("*",)
+
+    def applies_to(self, project_id: str) -> bool:
+        return "*" in self.projects or project_id in self.projects
+
+
+@dataclass(frozen=True)
 class ServerSettings:
     providers: tuple[ProviderSettings, ...]
     state_dir: Path
@@ -85,6 +114,14 @@ class ServerSettings:
     persist_sessions: bool = True
     admins: tuple[str, ...] = ()
     cors_origins: tuple[str, ...] = ()
+    admin_groups: tuple[str, ...] = ()
+    group_roles: tuple[GroupRole, ...] = ()
+    project_creation: str = "everyone"
+
+    @property
+    def wants_groups(self) -> bool:
+        """Whether logins should collect the user's groups (a group setting is configured)."""
+        return bool(self.admin_groups or self.group_roles)
 
     def provider(self, provider_id: str) -> ProviderSettings | None:
         return next((p for p in self.providers if p.id == provider_id), None)
@@ -190,6 +227,33 @@ def _parse_provider(raw: Any, index: int, env: dict[str, str]) -> ProviderSettin
     )
 
 
+def _string_list(value: Any, what: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
+        raise ServerConfigError(f"{what} must be a list of non-empty strings")
+    return tuple(v.strip() for v in value)
+
+
+def _parse_group_roles(raw: Any) -> tuple[GroupRole, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ServerConfigError("server.group_roles must be a list")
+    rules = []
+    for index, item in enumerate(raw):
+        what = f"server.group_roles[{index}]"
+        if not isinstance(item, dict):
+            raise ServerConfigError(f"{what} must be an object")
+        group = _str(item.get("group"), f"{what}.group", required=True)
+        role = _str(item.get("role"), f"{what}.role", required=True)
+        if role not in ROLES:
+            raise ServerConfigError(f"{what}.role must be one of {', '.join(ROLES)}, got {role!r}")
+        projects = _string_list(item.get("projects"), f"{what}.projects") or ("*",)
+        rules.append(GroupRole(group=group, role=role, projects=projects))
+    return tuple(rules)
+
+
 def load_server_settings(
     config_values: dict[str, Any],
     config_file: Path,
@@ -238,6 +302,12 @@ def load_server_settings(
         raise ServerConfigError("server.admins must be a list of user names or e-mail addresses")
     admins = tuple(a.strip().lower() for a in admins_raw if a.strip())
 
+    project_creation = _str(raw.get("project_creation"), "server.project_creation") or "everyone"
+    if project_creation not in PROJECT_CREATION:
+        raise ServerConfigError(
+            f"server.project_creation must be one of {', '.join(PROJECT_CREATION)}, got {project_creation!r}"
+        )
+
     max_age = _positive(raw.get("session_max_age_hours"), "server.session_max_age_hours", 12) * 3600
     idle = _positive(raw.get("session_idle_minutes"), "server.session_idle_minutes", 120) * 60
 
@@ -252,4 +322,7 @@ def load_server_settings(
         persist_sessions=_bool(raw.get("persist_sessions"), "server.persist_sessions", True),
         admins=admins,
         cors_origins=tuple(cors_origins),
+        admin_groups=_string_list(raw.get("admin_groups"), "server.admin_groups"),
+        group_roles=_parse_group_roles(raw.get("group_roles")),
+        project_creation=project_creation,
     )

@@ -1,4 +1,5 @@
 import type { ComponentType } from 'react';
+import type { ProjectAccess } from '../auth/context';
 import type {
   AttributeDefinition,
   GitPullResult,
@@ -297,6 +298,9 @@ export interface AppCommands {
 }
 
 /** Application state every action can read. Values are null/empty when the route does not provide them. */
+/** See `Action.requires`. */
+export type AccessRequirement = 'projectEditor' | 'projectAdmin' | 'createProjects' | 'connections' | 'serverAdmin';
+
 export interface AppState {
   projectId: string | null;
   moduleId: string | null;
@@ -321,6 +325,8 @@ export interface AppState {
    * and the open project. Actions marked `edits` are unavailable for them.
    */
   lockedProjectIds: ReadonlySet<string>;
+  /** What the user may do in which project (server edition roles; everything in the local edition). */
+  access: ProjectAccess;
   /** The data folder (null until known); dialogs that delete capture it. */
   dataDir: string | null;
   activeViewId: string | null;
@@ -396,6 +402,13 @@ export interface Action<E extends ElementType = ElementType> {
    * a change anyway (423).
    */
   edits?: boolean;
+  /**
+   * Further permissions the action needs (server edition; always met in the
+   * local edition): `projectEditor` / `projectAdmin` a role in the action's
+   * project, `createProjects` the right to create projects, `connections`
+   * the GitLab/GitHub connections and clone URLs, `serverAdmin` a server admin.
+   */
+  requires?: AccessRequirement[];
   run(ctx: ActionContext<E>): void;
   /** Present for actions that are a list of choices: rendered as a submenu instead of an item. */
   items?(ctx: ActionContext<E>): DynamicMenuItem[];

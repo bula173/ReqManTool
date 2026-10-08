@@ -1105,4 +1105,61 @@ export interface AuthSession {
   csrf_token: string;
   /** Unix time (seconds) when the session ends at the latest. */
   expires_at: number;
+  /** The user's roles (also GET /auth/permissions, WS `auth.permissions`). */
+  permissions?: UserPermissions;
+}
+
+/** A role in a project (server edition), lowest first: read; change data; also administer (lock, remove, members, git settings). */
+export type ProjectRole = 'viewer' | 'editor' | 'project-admin';
+
+export const PROJECT_ROLES: ProjectRole[] = ['viewer', 'editor', 'project-admin'];
+
+export const PROJECT_ROLE_LABELS: Record<ProjectRole, string> = {
+  viewer: 'Viewer',
+  editor: 'Editor',
+  'project-admin': 'Project admin',
+};
+
+/** GET /auth/permissions (server edition): the logged-in user's roles. */
+export interface UserPermissions {
+  /** A server admin may do everything, in every project. */
+  server_admin: boolean;
+  can_create_projects: boolean;
+  /** Project id → role (memberships and group rules naming the project). */
+  roles: Record<string, ProjectRole>;
+  /** The role group rules give in every project (`"projects": ["*"]`), or null. */
+  default_role: ProjectRole | null;
+}
+
+/** A user on the server admins' page (GET /admin/users). */
+export interface AdminUser extends SessionUser {
+  provider: string;
+  active: boolean;
+  created_at: string;
+  last_login_at: string;
+  /** Identity provider groups at the last login. */
+  groups: string[];
+}
+
+/** One entry of GET /admin/projects/{id}/members. */
+export interface ProjectMember {
+  user_id: string;
+  name: string;
+  email: string;
+  username: string;
+  active: boolean;
+  server_admin: boolean;
+  role: ProjectRole;
+  /** `member`: a membership (editable); `group`: only from a group rule (configured on the server). */
+  source: 'member' | 'group';
+  /** The role a group rule gives (the effective role is the higher one), or null. */
+  group_role: ProjectRole | null;
+  added_at: string;
+}
+
+/** GET/PUT/DELETE /admin/projects/{id}/members (WS `admin.members.*`). */
+export interface ProjectMembers {
+  project_id: string;
+  roles: ProjectRole[];
+  members: ProjectMember[];
 }

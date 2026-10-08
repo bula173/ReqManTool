@@ -18,8 +18,10 @@ middleware: ``SpaNavigationMiddleware`` (outside it) answers it with
   blocks cross-site WebSocket hijacking; the session is checked again on
   every received message, and the connection is closed (4401) once it ends.
 - Server-wide settings (switching the data folder, ``POST /config``, and
-  browsing the server's file system, ``/fs/*``) need a server admin (403).
-  Project-level permissions come with a later slice (``PermissionGuard``).
+  browsing the server's file system, ``/fs/*``) need a server admin (403);
+  ``GET /config`` shows other users an opaque id instead of the data
+  folder's path (the core asks the guard). Everything else is decided by
+  the permission guard (``permissions.MembershipGuard``) inside the core.
 
 For an authenticated request the user is put into
 ``reqman.extensions.current_identity`` (git commit author, lock owner).

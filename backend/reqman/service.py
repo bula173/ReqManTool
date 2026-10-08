@@ -17,11 +17,23 @@ projects whose files the operation wrote (``ProjectStore.recording_writes``)
 and, after the operation succeeded, auto-commits them with a message
 generated from the changed files (``history.describe_changes``). A new
 project gets its repository right after it is created.
+
+Permissions (server edition): the active ``PermissionGuard``
+(``extensions.HOOKS``) is asked at the service's choke points, so the REST
+and WebSocket APIs share them: every public method whose first parameter
+is ``project_id`` checks ``project.read``, ``project.write`` (the
+``_records_history`` mutations and the git write operations) or
+``project.admin`` (``_requires``) on entry (``_install_permission_checks``);
+project creation, listing (filtered to the readable projects), cross-
+project reads and cleanup cascades, libraries and connections check
+explicitly. In the local edition the guard is ``AllowAllGuard`` and none of
+this costs more than a type check.
 """
 
 from __future__ import annotations
 
 import functools
+import hashlib
 import inspect
 import json
 import logging
@@ -34,6 +46,22 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .csv_import import ID_COLUMN, LINK_COLUMN_PREFIX, PARENT_COLUMN, RESERVED_COLUMNS
+from .extensions import (
+    ACTION_CONNECTIONS_MANAGE,
+    ACTION_CONNECTIONS_USE,
+    ACTION_GIT_REMOTE_URL,
+    ACTION_LIBRARY_WRITE,
+    ACTION_PROJECT_ADMIN,
+    ACTION_PROJECT_CREATE,
+    ACTION_PROJECT_READ,
+    ACTION_PROJECT_WRITE,
+    HOOKS,
+    AccessDeniedError,
+    check_permission,
+    current_identity,
+    guard_active,
+    is_permitted,
+)
 from .formats import PROJECT_FORMAT, NewerFormatError, upgrade
 from .git_repo import (
     DEFAULT_LOG_LIMIT,
@@ -269,6 +297,21 @@ def _allowed_while_locked(method: Callable) -> Callable:
     return method
 
 
+# The permission a public ``project_id`` method needs, when not the default
+# (``project.write`` for ``_records_history`` mutations, else ``project.read``).
+_REQUIRED_ACTION = "_reqman_required_action"
+
+
+def _requires(action: str) -> Callable[[Callable], Callable]:
+    """Set the permission a public ``project_id`` method needs (apply below ``_records_history``)."""
+
+    def mark(method: Callable) -> Callable:
+        setattr(method, _REQUIRED_ACTION, action)
+        return method
+
+    return mark
+
+
 def _records_history(method: Callable) -> Callable:
     """Auto-commit the projects a successful mutation wrote (see ``ProjectService._auto_commit``).
 
@@ -311,7 +354,40 @@ def _records_history(method: Callable) -> Callable:
         self._last_touched.ids = set(touched)
         return result
 
+    setattr(wrapper, _REQUIRED_ACTION, getattr(method, _REQUIRED_ACTION, ACTION_PROJECT_WRITE))
     return wrapper
+
+
+def _install_permission_checks(cls: type) -> type:
+    """Wrap every public method of ``cls`` whose first parameter is ``project_id`` in a permission check.
+
+    The single choke point of the permission guard for project operations:
+    the method's ``_REQUIRED_ACTION`` (``project.write`` for
+    ``_records_history`` mutations, ``_requires`` for others), else
+    ``project.read``, is checked for the current identity before the method
+    runs (and so before the lock guard). Nested calls check again (cheap).
+    In the local edition (``AllowAllGuard``) the check is a type test.
+    """
+    for name, member in list(vars(cls).items()):
+        if name.startswith("_") or not inspect.isfunction(member):
+            continue
+        parameters = list(inspect.signature(member).parameters)
+        if len(parameters) < 2 or parameters[1] != "project_id":
+            continue
+        action = getattr(member, _REQUIRED_ACTION, ACTION_PROJECT_READ)
+
+        def make(method: Callable, action: str) -> Callable:
+            @functools.wraps(method)
+            def checked(self: "ProjectService", *args: Any, **kwargs: Any) -> Any:
+                if guard_active():
+                    project_id = args[0] if args else kwargs.get("project_id")
+                    check_permission(action, project_id if isinstance(project_id, str) else None)
+                return method(self, *args, **kwargs)
+
+            return checked
+
+        setattr(cls, name, make(member, action))
+    return cls
 
 
 CSV_IMPORT_MODES = ("create", "update")
@@ -400,6 +476,7 @@ def _unique_slug(
     raise ValueError(f"Cannot find a free id for {fallback} '{base}': too many are taken")
 
 
+@_install_permission_checks
 class ProjectService:
     """Business logic shared by the REST API and the WebSocket RPC endpoint."""
 
@@ -466,6 +543,7 @@ class ProjectService:
         self.store.load_project(project_id)
         return self.history.status(self.store.project_path(project_id))
 
+    @_requires(ACTION_PROJECT_ADMIN)
     def enable_history(self, project_id: str) -> dict[str, Any]:
         """Start recording git history for an existing project; returns the new status.
 
@@ -745,6 +823,7 @@ class ProjectService:
                 f"inside the data directory ({data_dir}); use a repository outside it"
             )
 
+    @_requires(ACTION_PROJECT_ADMIN)
     def set_git_remote(self, project_id: str, url: str | None) -> dict[str, Any]:
         """Set (or remove, with ``None``/empty) the project's remote URL; returns the new git status.
 
@@ -753,11 +832,15 @@ class ProjectService:
         agent / credential helper).
         """
         self.store.load_project(project_id)
+        if url:
+            # Server edition: a remote can point anywhere the server reaches (a local path, an internal host).
+            check_permission(ACTION_GIT_REMOTE_URL)
         project_dir = self.store.project_path(project_id)
         self._refuse_remote_in_data_dir(url)
         self._git_remote_call(lambda: self.history.set_remote(project_dir, url))
         return self.history.status(project_dir)
 
+    @_requires(ACTION_PROJECT_ADMIN)
     def set_git_auto_push(self, project_id: str, enabled: bool) -> dict[str, Any]:
         """Turn the per-project auto-push opt-in on or off; returns the new git status."""
         self.store.load_project(project_id)
@@ -765,6 +848,7 @@ class ProjectService:
         self._git_remote_call(lambda: self.history.set_auto_push(project_dir, bool(enabled)))
         return self.history.status(project_dir)
 
+    @_requires(ACTION_PROJECT_WRITE)
     def git_push(self, project_id: str) -> dict[str, Any]:
         """Push ``current``, ``baseline`` and the ``baseline/*`` tags to the project's remote.
 
@@ -774,6 +858,7 @@ class ProjectService:
         self.store.load_project(project_id)
         return self._git_remote_call(lambda: self.history.push(self.store.project_path(project_id)))
 
+    @_requires(ACTION_PROJECT_WRITE)
     def git_pull(self, project_id: str) -> dict[str, Any]:
         """Fetch the project's remote and fast-forward ``current`` (never a merge commit).
 
@@ -795,6 +880,12 @@ class ProjectService:
         rename. A taken id is 409 and an invalid clone is 400; either way
         nothing is left behind.
         """
+        check_permission(ACTION_PROJECT_CREATE)
+        check_permission(ACTION_GIT_REMOTE_URL)
+        return self._clone_project(url)
+
+    def _clone_project(self, url: str) -> Project:
+        """``add_project_from_remote`` after its permission checks; tells ``project_events``."""
         cleaned = (url or "").strip()
         self._refuse_remote_in_data_dir(cleaned)
         with self.store.staging_store() as staging:
@@ -814,7 +905,40 @@ class ProjectService:
                 raise ConflictError(
                     f"A project '{project_id}' already exists in this data directory: {exc}"
                 ) from exc
-        return self.store.load_project(project_id)
+        project = self.store.load_project(project_id)
+        self._project_created(project_id)
+        return project
+
+    # --- permissions (server edition; see the module docstring) --------------------
+
+    def _project_created(self, project_id: str) -> None:
+        """Tell the edition who created ``project_id`` (e.g. to make them its project admin).
+
+        The project exists by now: a listener failure is logged, never raised.
+        """
+        try:
+            HOOKS.project_events.project_created(current_identity(), project_id)
+        except Exception:  # noqa: BLE001 - the project was created; report it, keep it
+            logger.exception("Project %s was created, but the edition could not record it", project_id)
+
+    def _project_removed(self, project_id: str) -> None:
+        try:
+            HOOKS.project_events.project_removed(current_identity(), project_id)
+        except Exception:  # noqa: BLE001 - the project is gone already
+            logger.exception("Project %s was removed, but the edition could not record it", project_id)
+
+    def data_dir_token(self) -> str:
+        """An opaque, stable id of the data folder, shown instead of its path to users who may not see it.
+
+        ``remove_project`` accepts it in place of the path.
+        """
+        digest = hashlib.sha256(os.path.realpath(self.store.root).encode("utf-8", "surrogateescape")).hexdigest()
+        return f"data-folder:{digest[:16]}"
+
+    @staticmethod
+    def _can_read(project_id: str) -> bool:
+        """Whether the current identity may read ``project_id`` (always, in the local edition)."""
+        return not guard_active() or is_permitted(ACTION_PROJECT_READ, project_id)
 
     # --- GitLab / GitHub (providers) ----------------------------------------------
     #
@@ -825,30 +949,41 @@ class ProjectService:
     # while the project is locked (as Push and Pull are).
 
     def list_provider_connections(self) -> list[dict[str, Any]]:
-        """The GitLab/GitHub connections (never their tokens; ``has_token`` tells whether one is stored)."""
+        """The GitLab/GitHub connections (never their tokens; ``has_token`` tells whether one is stored).
+
+        Server edition: empty for a user who may not use the connections.
+        """
+        if guard_active() and not is_permitted(ACTION_CONNECTIONS_USE):
+            return []
         return self.providers.list_connections()
 
     def add_provider_connection(self, provider: Any, url: Any, name: Any, token: Any) -> dict[str, Any]:
         """Add a connection; the token is verified with the provider and stored in the OS keychain."""
+        check_permission(ACTION_CONNECTIONS_MANAGE)
         return self.providers.add_connection(provider, url, name, token)
 
     def update_provider_connection(self, connection_id: str, name: Any = None, token: Any = None) -> dict[str, Any]:
         """Rename a connection and/or replace its token (verified first)."""
+        check_permission(ACTION_CONNECTIONS_MANAGE)
         return self.providers.update_connection(connection_id, name, token)
 
     def remove_provider_connection(self, connection_id: str) -> dict[str, Any]:
         """Remove a connection and its keychain token. Project remotes stay configured."""
+        check_permission(ACTION_CONNECTIONS_MANAGE)
         return self.providers.remove_connection(connection_id)
 
     def provider_namespaces(self, connection_id: str) -> list[dict[str, Any]]:
         """Where a repository can be created: the user's own namespace, then groups / organisations."""
+        check_permission(ACTION_CONNECTIONS_USE)
         return self.providers.provider(connection_id).namespaces()
 
     def provider_repositories(self, connection_id: str, search: Any = None, page: Any = None) -> dict[str, Any]:
         """One page of the user's repositories (most recently active first), optionally filtered by name."""
+        check_permission(ACTION_CONNECTIONS_USE)
         provider = self.providers.provider(connection_id)
         return provider.repositories(self.providers.checked_search(search), self.providers.checked_page(page))
 
+    @_requires(ACTION_PROJECT_ADMIN)
     def publish_project(
         self,
         project_id: str,
@@ -866,6 +1001,7 @@ class ProjectService:
         the remote or pushing failed, the error says so (and the project is
         reported changed, so clients refresh its status).
         """
+        check_permission(ACTION_CONNECTIONS_USE)
         project = self.store.load_project(project_id)
         project_dir = self.store.project_path(project_id)
         status = self.history.status(project_dir)
@@ -914,12 +1050,15 @@ class ProjectService:
         The clone URL comes from the provider API (never from the client);
         then it is the same path as ``add_project_from_remote``.
         """
+        check_permission(ACTION_PROJECT_CREATE)
+        check_permission(ACTION_CONNECTIONS_USE)
         path = self.providers.checked_repository_path(full_path)
         repository = self.providers.provider(connection_id).repository(path)
         clone_url = repository.get("clone_url")
         if not clone_url:
             raise ValueError(f"The repository '{path}' has no HTTPS clone URL")
-        return self.add_project_from_remote(clone_url)
+        # The clone URL comes from the provider, not the client: no ``git.remote_url`` check.
+        return self._clone_project(clone_url)
 
     def _review_target(self, project_dir: Path) -> tuple[Any, str, str]:
         """``(provider, repository path, remote URL)`` of the project's remote; ``ValueError`` without one."""
@@ -1020,6 +1159,7 @@ class ProjectService:
         ]
         return "\n".join(lines)
 
+    @_requires(ACTION_PROJECT_WRITE)
     def start_review(
         self, project_id: str, branch: Any = None, title: Any = None
     ) -> dict[str, Any]:
@@ -1095,6 +1235,7 @@ class ProjectService:
             "repository": repo_path,
         }
 
+    @_requires(ACTION_PROJECT_WRITE)
     def forget_review(self, project_id: str) -> dict[str, Any]:
         """Stop tracking the project's merge/pull request (nothing changes on the provider)."""
         self.store.load_project(project_id)
@@ -1123,6 +1264,7 @@ class ProjectService:
 
     # --- baselines (git) ---------------------------------------------------------
 
+    @_requires(ACTION_PROJECT_WRITE)
     def create_baseline(
         self,
         project_id: str,
@@ -1377,7 +1519,14 @@ class ProjectService:
         helpers as the individual create operations, written into a staging
         directory, and moved into the data directory in one rename: an
         invalid template or a failed write leaves nothing behind.
+
+        Server edition: needs ``project.create``, and ``project.write`` on the
+        parent for a subproject; the creator is reported to
+        ``project_events`` (and so becomes the project's admin).
         """
+        check_permission(ACTION_PROJECT_CREATE)
+        if isinstance(parent_project_id, str):
+            check_permission(ACTION_PROJECT_WRITE, parent_project_id)
         self._check_parent(None, parent_project_id)
         if template_id is None:
             project_id = _unique_slug(
@@ -1392,6 +1541,7 @@ class ProjectService:
             )
             self.store.save_project(project)
             self._start_history(project)
+            self._project_created(project.id)
             return project
 
         template = self._load_template(template_id)
@@ -1422,6 +1572,7 @@ class ProjectService:
                 raise ValueError(f"{exc}; try again") from exc
         # The repository is created in the final folder, after the rename.
         self._start_history(project)
+        self._project_created(project.id)
         return project
 
     def _start_history(self, project: Project) -> None:
@@ -1445,9 +1596,14 @@ class ProjectService:
         ``format_version``, unreadable) is listed as a ``ProjectStub``
         carrying the error, at the top level, instead of failing the whole
         list. Its subprojects stay under it. Nothing is written.
+
+        Server edition: only the projects the user may read are listed; a
+        project whose parent is hidden is shown at the top level.
         """
         projects: list[Project | ProjectStub] = []
         for project_id in self.store.list_project_ids():
+            if not self._can_read(project_id):
+                continue
             try:
                 projects.append(self.store.load_project(project_id))
             except FileNotFoundError:
@@ -1540,9 +1696,16 @@ class ProjectService:
                 break  # a new project has no subprojects: only its parent's format matters
 
     @_records_history
+    @_requires(ACTION_PROJECT_ADMIN)
     def set_project_parent(self, project_id: str, parent_project_id: str | None) -> Project:
-        """Move a project in the subproject tree; ``None`` makes it top level."""
+        """Move a project in the subproject tree; ``None`` makes it top level.
+
+        Server edition: needs ``project.admin`` on the project and
+        ``project.write`` on the new parent.
+        """
         project = self.store.load_project(project_id)
+        if isinstance(parent_project_id, str) and parent_project_id != project.parent_project_id:
+            check_permission(ACTION_PROJECT_WRITE, parent_project_id)
         self._check_parent(project_id, parent_project_id)
         self._check_references_in_use(
             project, self._effective_references(replace(project, parent_project_id=parent_project_id))
@@ -1595,6 +1758,7 @@ class ProjectService:
         return text
 
     @_records_history
+    @_requires(ACTION_PROJECT_ADMIN)
     def lock_project(self, project_id: str, reason: Any = None, baseline: str | None = None) -> Project:
         """Lock a project: every change of it is then refused until it is unlocked (409 if already locked).
 
@@ -1618,6 +1782,7 @@ class ProjectService:
         return project
 
     @_records_history
+    @_requires(ACTION_PROJECT_ADMIN)
     @_allowed_while_locked
     def unlock_project(self, project_id: str) -> Project:
         """Unlock a project (the one change a locked project allows). Not locked: nothing is written."""
@@ -1722,6 +1887,7 @@ class ProjectService:
             "recovery": self._recovery_hint(status),
         }
 
+    @_requires(ACTION_PROJECT_ADMIN)
     def remove_project(self, project_id: str, confirm_name: Any, data_dir: Any = None) -> dict[str, Any]:
         """Delete a project's folder, with everything in it (its modules, links and own git history).
 
@@ -1737,7 +1903,9 @@ class ProjectService:
         """
         project = self.store.load_project(project_id)
         if data_dir is not None:
-            if not isinstance(data_dir, str) or os.path.realpath(data_dir) != os.path.realpath(self.store.root):
+            if not isinstance(data_dir, str) or (
+                data_dir != self.data_dir_token() and os.path.realpath(data_dir) != os.path.realpath(self.store.root)
+            ):
                 raise ConflictError(
                     "The data folder changed since the removal was confirmed; nothing was removed. "
                     "Open the project again to remove it."
@@ -1770,6 +1938,7 @@ class ProjectService:
         self.history.forget(project_dir)
         if leftover is not None:
             logger.warning("Removed project %s, but could not delete all of %s", project_id, leftover)
+        self._project_removed(project_id)
         return {"removed": project_id, "name": project.name, "leftover": leftover}
 
     # --- project references -----------------------------------------------------
@@ -1847,6 +2016,9 @@ class ProjectService:
         """
         project = self.store.load_project(project_id)
         refs = self._checked_references(project_id, references)
+        for ref in refs:
+            if ref not in project.references and ref != project.parent_project_id:
+                check_permission(ACTION_PROJECT_READ, ref)  # server edition: only readable ones are added
         self._check_references_in_use(project, self._effective_references(replace(project, references=refs)))
         if project.references != refs:
             project.references = refs
@@ -1876,13 +2048,17 @@ class ProjectService:
             try:
                 if ref not in listed:
                     raise FileNotFoundError(f"Project '{ref}' not found")
+                if not self._can_read(ref):
+                    entry["error"] = "You have no access to this project"
+                    references.append(entry)
+                    continue
                 entry["name"] = self.store.load_project(ref).name
             except (OSError, ValueError) as exc:
                 entry["error"] = str(exc)
             references.append(entry)
         referenced_by: list[dict[str, Any]] = []
         for other in self._other_projects(project_id):
-            if project_id not in self._effective_references(other):
+            if project_id not in self._effective_references(other) or not self._can_read(other.id):
                 continue
             configs = [
                 {
@@ -1919,6 +2095,7 @@ class ProjectService:
             )
         if not self.store.project_exists(config.target_project_id):
             raise FileNotFoundError(f"Project '{config.target_project_id}' not found")
+        check_permission(ACTION_PROJECT_READ, config.target_project_id)
         self.store.load_project(config.target_project_id)
         return config.target_project_id
 
@@ -3041,6 +3218,12 @@ class ProjectService:
         others = {other.id: other for other, _, _ in affected}
         for other_id in sorted(others):
             other = others[other_id]
+            if guard_active() and not is_permitted(ACTION_PROJECT_WRITE, other_id):
+                raise AccessDeniedError(
+                    f"Project '{other_id}' links to the requirement(s) being removed, and you may not "
+                    "change it, so those links cannot be deleted there. Ask one of its editors to remove "
+                    "the links first; nothing was changed."
+                )
             if other.locked is not None:
                 raise ProjectLockedError(
                     f"{self._locked_message(other)} It links to the requirement(s) being removed, and those "
@@ -3110,6 +3293,7 @@ class ProjectService:
         return len(ids)
 
     @_records_history
+    @_requires(ACTION_PROJECT_ADMIN)
     def purge_project(self, project_id: str) -> int:
         # A missing project is not found and a stub (unloadable project) is
         # refused, even when there is nothing to delete.
@@ -3155,6 +3339,7 @@ class ProjectService:
                 )
             if not self.store.project_exists(target_project_id):
                 raise FileNotFoundError(f"Project '{target_project_id}' not found")
+            check_permission(ACTION_PROJECT_READ, target_project_id)
             self.store.load_project(target_project_id)
         target_owner = target_project_id or project_id
         if not self.store.module_exists(project_id, source_module_id):
@@ -3495,6 +3680,8 @@ class ProjectService:
         if from_id == to_id and from_project_id == project_id:
             raise ValueError("A requirement cannot be linked to itself")
         project = self.store.load_project(project_id)
+        if from_project_id != project_id:
+            check_permission(ACTION_PROJECT_READ, from_project_id)
         from_project = project if from_project_id == project_id else self.store.load_project(from_project_id)
         from_module = self.store.find_requirement_module(from_project_id, from_id)
         if from_module is None:
@@ -3613,7 +3800,7 @@ class ProjectService:
             raise FileNotFoundError(f"Module '{module_id}' not found in project '{project_id}'")
         result: list[dict[str, Any]] = []
         for other in self._other_projects(project_id):
-            if project_id not in self._effective_references(other):
+            if project_id not in self._effective_references(other) or not self._can_read(other.id):
                 continue
             for config in other.link_configurations:
                 if config.target_project_id != project_id:
@@ -4038,6 +4225,7 @@ class ProjectService:
         already used by any template (built-in or user, case-insensitive)
         raises ``ConflictError``; existing files are never overwritten.
         """
+        check_permission(ACTION_LIBRARY_WRITE)
         project = self.store.load_project(project_id)
         if not isinstance(name, str) or not name.strip():
             raise ValueError("Template name must not be empty")
@@ -4091,6 +4279,7 @@ class ProjectService:
         informational and replaced. The file is written in the canonical
         template shape (stable key order; unknown keys are not kept).
         """
+        check_permission(ACTION_LIBRARY_WRITE)
         if not isinstance(text, str):
             raise ValueError("The template file content must be a string")
         # The limit is in UTF-8 bytes, as over REST (a BOM counts, as it does
@@ -4533,6 +4722,7 @@ class ProjectService:
         module template before it is written; a name used by any module
         template (case-insensitive) raises ``ConflictError``.
         """
+        check_permission(ACTION_LIBRARY_WRITE)
         project = self.store.load_project(project_id)
         module = self.store.load_module(project_id, module_id)
         if not isinstance(name, str) or not name.strip():
@@ -6101,6 +6291,7 @@ class ProjectService:
 
     def create_prompt(self, data: Any) -> dict[str, Any]:
         """Save a new user prompt (``user:<slug of its name>``); the name must be unused (409)."""
+        check_permission(ACTION_LIBRARY_WRITE)
         prompt = parse_prompt(self._prompt_fields(data), make_prompt_id(PROMPT_USER_SOURCE, "new"))
         self._check_prompt_name_free(prompt.name)
         local_id = _unique_slug(prompt.name, self.store.user_prompt_path_exists, fallback="prompt")
@@ -6110,6 +6301,7 @@ class ProjectService:
 
     def update_prompt(self, prompt_id: Any, data: Any) -> dict[str, Any]:
         """Replace a user prompt's content (its id stays). Built-in prompts are read-only."""
+        check_permission(ACTION_LIBRARY_WRITE)
         source, local_id = split_prompt_id(prompt_id)
         if source != PROMPT_USER_SOURCE:
             raise ValueError("Built-in prompts are read-only; duplicate the prompt to change it")
@@ -6120,6 +6312,7 @@ class ProjectService:
         return {**prompt.to_api(), "error": None}
 
     def delete_prompt(self, prompt_id: Any) -> None:
+        check_permission(ACTION_LIBRARY_WRITE)
         source, local_id = split_prompt_id(prompt_id)
         if source != PROMPT_USER_SOURCE:
             raise ValueError("Built-in prompts cannot be deleted")
@@ -6131,6 +6324,7 @@ class ProjectService:
 
     def import_prompt(self, text: Any) -> dict[str, Any]:
         """Save an uploaded prompt file as a new user prompt (never overwrites; a used name is 409)."""
+        check_permission(ACTION_LIBRARY_WRITE)
         if not isinstance(text, str):
             raise ValueError("The prompt file content must be a string")
         if len(text.encode("utf-8", "surrogatepass")) > MAX_PROMPT_IMPORT_BYTES:
@@ -6274,6 +6468,8 @@ class ProjectService:
         sel_project_id = selection_project_id or project_id
         if not isinstance(sel_project_id, str):
             raise ValueError("selection_project_id must be a project id")
+        if sel_project_id != project_id:
+            check_permission(ACTION_PROJECT_READ, sel_project_id)
         sel_project = project if sel_project_id == project_id else self.store.load_project(sel_project_id)
         sel_module_id = selection_module_id or module_id
         if not isinstance(sel_module_id, str):

@@ -2,6 +2,7 @@ import { useComputedColorScheme, useMantineColorScheme } from '@mantine/core';
 import { useLocalStorage, useMediaQuery } from '@mantine/hooks';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useAuth } from '../auth/context';
 import { api } from '../api/client';
 import {
   subscribeDatasetCleared,
@@ -447,6 +448,9 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     ],
   );
 
+  // What the user may do where (server edition roles; everything in the local edition).
+  const { access } = useAuth();
+
   // Locked projects: the list's entries, with the open project's own (fresher) state.
   const lockedProjectIds = useMemo(() => {
     const ids = new Set<string>();
@@ -475,6 +479,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     views,
     gitStatus: projectId ? (gitStatusQuery.data ?? null) : null,
     lockedProjectIds,
+    access,
     dataDir,
     activeViewId,
     leftPanelOpen,

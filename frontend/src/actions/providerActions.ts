@@ -18,6 +18,7 @@ export const providerActions: Action<'app'>[] = [
   {
     // Tools ▸ GitLab / GitHub connections (settings dialog).
     id: 'tools.providerConnections',
+    requires: ['connections'],
     element: 'app',
     label: 'GitLab / GitHub connections',
     icon: IconPlugConnected,
@@ -28,6 +29,7 @@ export const providerActions: Action<'app'>[] = [
   {
     // File ▸ Add project from GitLab / GitHub: browse the user's repositories and clone one.
     id: 'file.addProjectFromProvider',
+    requires: ['createProjects', 'connections'],
     element: 'app',
     label: 'Add project from GitLab / GitHub',
     icon: IconCloudPlus,
@@ -38,6 +40,7 @@ export const providerActions: Action<'app'>[] = [
   {
     // Create the remote repository, set it as the remote, push. Only without a remote.
     id: 'project.publish',
+    requires: ['projectAdmin', 'connections'],
     element: 'app',
     label: 'Publish project to GitLab / GitHub',
     icon: IconBrandGit,
@@ -56,6 +59,7 @@ export const providerActions: Action<'app'>[] = [
   {
     // Push `current` to a review branch and open a merge / pull request.
     id: 'project.requestReview',
+    requires: ['projectEditor'],
     element: 'app',
     label: 'Request review (merge / pull request)',
     icon: IconGitPullRequest,

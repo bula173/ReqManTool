@@ -34,7 +34,7 @@ import {
   LINK_NAVIGATION_MENU,
   REQUIREMENT_CONTEXT_MENU,
   REQUIREMENT_NAVIGATION_MENU,
-  isProjectLocked,
+  isProjectReadOnly,
 } from '../actions/registry';
 import { contextMenuTargetProps } from '../actions/shortcuts';
 import { applicableAttributes } from '../api/applicability';
@@ -50,6 +50,7 @@ import {
 } from '../api/queries';
 import { EditableAttributeCell } from '../components/EditableAttributeCell';
 import { ProjectLockBadge } from '../components/ProjectLockBadge';
+import { ProjectRoleBadge } from '../components/ProjectRoleBadge';
 import { RequirementDetailPanel } from '../components/RequirementDetailPanel';
 import { StatusBadge } from '../components/ReportParts';
 import { ResizableHeaderCell, type ColumnMenuKind } from '../components/ResizableHeaderCell';
@@ -277,8 +278,9 @@ export function ModulePage() {
     });
   const selectedId = appState.selectedRequirement?.id ?? null;
   const selectedRequirement = requirements.find((r) => r.id === selectedId) ?? null;
-  // A locked project refuses every change (server-side): no inline editing, no drop-to-link, no row actions.
-  const locked = isProjectLocked(appState, projectId);
+  // A locked project, or one the user may not change (viewer), refuses every change (server-side):
+  // no inline editing, no drop-to-link, no row actions.
+  const locked = isProjectReadOnly(appState, projectId);
 
   const toggleExpanded = (id: string) => {
     setCollapsed((prev) => {
@@ -322,6 +324,7 @@ export function ModulePage() {
           <Title order={2}>{module.name}</Title>
           <Badge variant="outline">{module.prefix}</Badge>
           <ProjectLockBadge lock={projectQuery.data.locked} />
+          <ProjectRoleBadge projectId={projectId} />
         </Group>
         <Text c="dimmed">{module.description || 'No description'}</Text>
       </div>

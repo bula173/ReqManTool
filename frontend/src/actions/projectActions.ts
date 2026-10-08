@@ -64,6 +64,7 @@ export const projectActions: Action<'project'>[] = [
   {
     // A new project whose parent is the target project (the project page's button).
     id: 'project.newSubproject',
+    requires: ['createProjects', 'projectEditor'],
     element: 'project',
     label: 'New subproject',
     icon: IconFolderPlus,
@@ -142,6 +143,7 @@ export const projectActions: Action<'project'>[] = [
   {
     // Lock: every change of the project is refused (server-side) until unlocked; the dialog asks for a reason.
     id: 'project.lock',
+    requires: ['projectAdmin'],
     element: 'project',
     label: 'Lock project',
     icon: IconLock,
@@ -157,6 +159,7 @@ export const projectActions: Action<'project'>[] = [
   },
   {
     id: 'project.unlock',
+    requires: ['projectAdmin'],
     element: 'project',
     label: 'Unlock project',
     icon: IconLockOpen,
@@ -178,6 +181,7 @@ export const projectActions: Action<'project'>[] = [
     // Deletes the project folder after a typed-name confirmation; refused while locked, with
     // subprojects or while referenced (the dialog lists why). `edits`: unavailable while locked.
     id: 'project.remove',
+    requires: ['projectAdmin'],
     element: 'project',
     label: 'Remove project',
     icon: IconTrashX,

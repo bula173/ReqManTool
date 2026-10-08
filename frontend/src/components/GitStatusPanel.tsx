@@ -30,6 +30,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAppActions } from '../actions/context';
 import { ApiError } from '../api/client';
+import { useAuth } from '../auth/context';
 import {
   queryKeys,
   useBaselines,
@@ -124,6 +125,12 @@ function RemoteSync({ projectId, remote }: { projectId: string; remote: GitRemot
   const setAutoPush = useSetGitAutoPush(projectId);
   const push = useGitPush(projectId);
   const pull = useGitPull(projectId);
+  // Server edition: push/pull need the editor role; the remote URL a server admin
+  // (it may point anywhere the server reaches); auto-push the project admin role.
+  const { access } = useAuth();
+  const canSync = access.canEdit(projectId);
+  const canSetRemote = access.canAdmin(projectId) && access.canUseConnections;
+  const canSetAutoPush = access.canAdmin(projectId);
   const [editing, setEditing] = useState(false);
   const [url, setUrl] = useState(remote.url ?? '');
   // Derived, not snapshotted: a live-sync removal of the remote must show the
@@ -158,9 +165,14 @@ function RemoteSync({ projectId, remote }: { projectId: string; remote: GitRemot
               if (event.key === 'Enter') save();
             }}
             style={{ flex: 1 }}
-            disabled={busy}
+            disabled={busy || !canSetRemote}
           />
-          <Button size="xs" onClick={save} loading={setRemote.isPending} disabled={busy && !setRemote.isPending}>
+          <Button
+            size="xs"
+            onClick={save}
+            loading={setRemote.isPending}
+            disabled={(busy && !setRemote.isPending) || !canSetRemote}
+          >
             Save
           </Button>
           {remote.url !== null && (
@@ -194,7 +206,7 @@ function RemoteSync({ projectId, remote }: { projectId: string; remote: GitRemot
             variant="default"
             leftSection={<IconCloudUpload size={14} />}
             loading={push.isPending}
-            disabled={busy && !push.isPending}
+            disabled={(busy && !push.isPending) || !canSync}
             onClick={() => push.mutate()}
           >
             Push
@@ -204,12 +216,12 @@ function RemoteSync({ projectId, remote }: { projectId: string; remote: GitRemot
             variant="default"
             leftSection={<IconCloudDownload size={14} />}
             loading={pull.isPending}
-            disabled={busy && !pull.isPending}
+            disabled={(busy && !pull.isPending) || !canSync}
             onClick={() => pull.mutate()}
           >
             Pull
           </Button>
-          <Button size="xs" variant="subtle" disabled={busy} onClick={() => setEditing(true)}>
+          <Button size="xs" variant="subtle" disabled={busy || !canSetRemote} onClick={() => setEditing(true)}>
             Change…
           </Button>
         </Group>
@@ -219,7 +231,7 @@ function RemoteSync({ projectId, remote }: { projectId: string; remote: GitRemot
           size="xs"
           label="Push automatically after each change and baseline"
           checked={remote.auto_push}
-          disabled={busy}
+          disabled={busy || !canSetAutoPush}
           onChange={(event) => setAutoPush.mutate(event.currentTarget.checked)}
         />
       )}
@@ -262,6 +274,7 @@ const REVIEW_STATE_COLORS: Record<string, string> = { open: 'blue', merged: 'gre
 
 /** The tracked merge/pull request, live from the provider: state, approvals, merge status. */
 function ReviewDetails({ projectId, tracked, noun }: { projectId: string; tracked: TrackedReview; noun: string }) {
+  const { access } = useAuth();
   const reviewQuery = useGitReview(projectId);
   const forget = useForgetReview(projectId);
   const review: ChangeRequest | null = reviewQuery.data?.review ?? null;
@@ -292,7 +305,14 @@ function ReviewDetails({ projectId, tracked, noun }: { projectId: string; tracke
             <IconRefresh size={14} />
           </Button>
         </Tooltip>
-        <Button size="compact-xs" variant="subtle" color="gray" loading={forget.isPending} onClick={() => forget.mutate()}>
+        <Button
+          size="compact-xs"
+          variant="subtle"
+          color="gray"
+          loading={forget.isPending}
+          disabled={!access.canEdit(projectId)}
+          onClick={() => forget.mutate()}
+        >
           Forget
         </Button>
       </Group>
@@ -522,6 +542,7 @@ function Baselines({ projectId, canCreate }: { projectId: string; canCreate: boo
  * (create / browse / compare).
  */
 export function GitStatusPanel({ projectId }: { projectId: string }) {
+  const { access } = useAuth();
   const statusQuery = useGitStatus(projectId);
   const { run, isAvailable } = useAppActions();
   const enabling = useIsMutating({ mutationKey: queryKeys.enableHistory(projectId) }) > 0;
@@ -629,7 +650,9 @@ export function GitStatusPanel({ projectId }: { projectId: string }) {
               <RecentCommits projectId={projectId} />
             </>
           )}
-          {hasRepo && <Baselines projectId={projectId} canCreate={status.state === 'ready'} />}
+          {hasRepo && (
+            <Baselines projectId={projectId} canCreate={status.state === 'ready' && access.canEdit(projectId)} />
+          )}
         </Stack>
       )}
     </Card>

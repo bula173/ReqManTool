@@ -12,7 +12,7 @@ import {
 } from '@tabler/icons-react';
 import { useState, type DragEvent, type MouseEvent, type ReactNode } from 'react';
 import { useAppActions } from '../actions/context';
-import { FOLDER_NODE_MENU, MODULE_NODE_MENU, PROJECT_NODE_MENU, isProjectLocked } from '../actions/registry';
+import { FOLDER_NODE_MENU, MODULE_NODE_MENU, PROJECT_NODE_MENU, isProjectReadOnly } from '../actions/registry';
 import { contextMenuTargetProps } from '../actions/shortcuts';
 import type { ActionTargetOverrides, MenuEntry } from '../actions/types';
 import { ApiError } from '../api/client';
@@ -117,8 +117,8 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
   const parent = projects.find((p) => forest.childrenOf.get(p.id)?.some((child) => child.id === projectId));
   const subprojects = forest.childrenOf.get(projectId) ?? [];
   const canAddSubproject = isAvailable('project.newSubproject', { project });
-  // Modules and folders of a locked project cannot be moved (no drag and drop).
-  const editable = readable && !isProjectLocked(state, projectId);
+  // Modules and folders of a locked or read-only project cannot be moved (no drag and drop).
+  const editable = readable && !isProjectReadOnly(state, projectId);
   const moduleIds = (modulesQuery.data ?? []).map((m) => m.id);
   // Modules shown flat (in display order) until the tree has loaded, or if it failed to load.
   const nodes = buildModuleTreeNodes(treeQuery.data, modulesQuery.data ?? []);

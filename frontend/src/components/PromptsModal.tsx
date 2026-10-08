@@ -211,7 +211,8 @@ function UsePrompt({
   const modules = modulesQuery.data ?? [];
   const sourceModule = modules.find((m) => m.id === moduleId);
   const target = modules.find((m) => m.id === targetId);
-  const locked = state.lockedProjectIds.has(projectId);
+  // Locked, or not changeable by this user (server edition viewer): no import of the answer.
+  const locked = state.lockedProjectIds.has(projectId) || !state.access.canEdit(projectId);
 
   const promptOptions = useMemo(
     () => [

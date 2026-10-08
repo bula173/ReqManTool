@@ -3,7 +3,8 @@ endpoint, and the live-sync broadcast connection manager.
 
 Route handlers are intentionally thin — parse the request, call a
 ``ProjectService`` method via ``_wrap`` (which maps ``FileNotFoundError``
-to 404, ``ProjectLockedError`` to 423, ``ConflictError`` and
+to 404, ``AccessDeniedError`` (the server edition's permission guard) to
+403, ``ProjectLockedError`` to 423, ``ConflictError`` and
 ``NewerFormatError`` to 409 and ``ValueError`` to 400), broadcast on success. All real business
 logic lives in ``service.py``; see its module docstring and
 docs/ARCHITECTURE.md for why. ``RPC_METHODS`` mirrors the REST surface
@@ -13,6 +14,7 @@ frontend) and a REST client see identical behavior.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -35,7 +37,19 @@ from .config import (
     read_config_values,
     save_data_dir,
 )
-from .extensions import HOOKS, MODE_SERVER, EditionContext, load_server_edition
+from .extensions import (
+    ACTION_PROJECT_READ,
+    ACTION_SERVER_CONFIG,
+    HOOKS,
+    MODE_SERVER,
+    AccessDeniedError,
+    EditionContext,
+    RequestIdentity,
+    current_identity,
+    guard_active,
+    is_permitted,
+    load_server_edition,
+)
 from .csv_import import MAX_CSV_IMPORT_BYTES
 from .test_results_import import MAX_TEST_RESULTS_IMPORT_BYTES
 from .formats import NewerFormatError
@@ -108,6 +122,9 @@ else:
             config_values=read_config_values(SETTINGS.config_file),
             hooks=HOOKS,
             frontend_dir=FRONTEND_DIR,
+            # Late-bound: the manager and the service (replaced on a data folder switch) are defined below.
+            broadcast=lambda message: manager.send_event(message),
+            project_exists=lambda project_id: service.store.project_exists(project_id),
         ),
     )
     logger.info("Server edition: %s", SERVER_EDITION.name)
@@ -177,14 +194,27 @@ if SERVER_EDITION is not None:
 
 
 class ConnectionManager:
+    """The live-sync WebSocket connections.
+
+    Each connection remembers the identity it was opened with (server
+    edition; ``None`` in the local edition). A ``changed`` event of a project
+    is only sent to connections whose user may read that project (the
+    permission guard), so project ids never reach other users; ``removed``
+    events go to everyone (the members are forgotten with the project).
+    """
+
     def __init__(self) -> None:
-        self.connections: set[WebSocket] = set()
+        self.connections: dict[WebSocket, RequestIdentity | None] = {}
 
     def add(self, websocket: WebSocket) -> None:
-        self.connections.add(websocket)
+        self.connections[websocket] = current_identity()
 
     def discard(self, websocket: WebSocket) -> None:
-        self.connections.discard(websocket)
+        self.connections.pop(websocket, None)
+
+    async def send_event(self, message: dict) -> None:
+        """Send an edition's live-sync event (e.g. ``permissions_changed``) to every connection."""
+        await self._send_all(message)
 
     async def broadcast(self, project_id: str, exclude: WebSocket | None = None) -> None:
         """``changed`` for the project, then for every other project the last mutation wrote.
@@ -215,14 +245,25 @@ class ConnectionManager:
         """A GitLab/GitHub connection was added, changed or removed (never carries a token)."""
         await self._send_all({"event": "connections_changed"}, exclude)
 
+    @staticmethod
+    def _may_receive(identity: RequestIdentity | None, message: dict) -> bool:
+        project_id = message.get("project_id")
+        if not guard_active() or not isinstance(project_id, str) or message.get("removed"):
+            return True
+        try:
+            HOOKS.permission_guard.check(identity, ACTION_PROJECT_READ, project_id)
+        except AccessDeniedError:
+            return False
+        return True
+
     async def _send_all(self, message: dict, exclude: WebSocket | None = None) -> None:
-        for connection in list(self.connections):
-            if connection is exclude:
+        for connection, identity in list(self.connections.items()):
+            if connection is exclude or not self._may_receive(identity, message):
                 continue
             try:
                 await connection.send_json(message)
             except Exception:  # noqa: BLE001 - a dead connection shouldn't break the broadcast
-                self.connections.discard(connection)
+                self.connections.pop(connection, None)
 
 
 manager = ConnectionManager()
@@ -279,6 +320,10 @@ class SetDataDirBody(BaseModel):
 
 @app.get("/config")
 def get_config():
+    """The data folder. Server edition: its path only for server admins; others get an opaque id
+    (``redacted: true``), which identifies the folder (e.g. for a removal confirmation) without the path."""
+    if guard_active() and not is_permitted(ACTION_SERVER_CONFIG):
+        return {"data_dir": service.data_dir_token(), "redacted": True}
     return {"data_dir": str(DATA_DIR)}
 
 
@@ -580,6 +625,8 @@ class RenderPromptBody(BaseModel):
 def _wrap(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
+    except AccessDeniedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ProjectLockedError as exc:
@@ -1760,6 +1807,8 @@ def _error_response(request_id, code: int, message: str) -> dict:
 
 # WebSocket error code of a change refused because the project is locked (REST 423).
 PROJECT_LOCKED_RPC_CODE = -32004
+# WebSocket error code of an action the permission guard refused (server edition; REST 403).
+ACCESS_DENIED_RPC_CODE = -32003
 
 MUTATING_METHODS = {
     "project.create", "project.set_parent", "project.purge", "project.git_enable", "baseline.create",
@@ -1802,12 +1851,14 @@ async def _dispatch(request: dict, sender: WebSocket | None = None) -> dict:
     method_name = request.get("method")
     params = request.get("params") or {}
 
-    method = RPC_METHODS.get(method_name)
+    method = RPC_METHODS.get(method_name) or HOOKS.rpc_methods.get(method_name)
     if method is None:
         return _error_response(request_id, -32601, f"Method not found: {method_name}")
 
     try:
         result = method(params)
+        if inspect.isawaitable(result):  # an edition's async method (``HOOKS.rpc_methods``)
+            result = await result
         if method_name == "project.remove":
             await manager.broadcast_removed(params["id"], exclude=sender)
         elif method_name in MUTATING_METHODS:
@@ -1821,6 +1872,8 @@ async def _dispatch(request: dict, sender: WebSocket | None = None) -> dict:
         elif method_name in CONNECTION_MUTATING_METHODS:
             await manager.broadcast_connections_changed(exclude=sender)
         return {"jsonrpc": "2.0", "id": request_id, "result": _serialize(result)}
+    except AccessDeniedError as exc:
+        return _error_response(request_id, ACCESS_DENIED_RPC_CODE, str(exc))
     except FileNotFoundError as exc:
         return _error_response(request_id, -32001, str(exc))
     except ProjectLockedError as exc:

@@ -4,22 +4,24 @@ A user is created on their first login, keyed by ``(provider, subject)`` —
 the identity provider's stable subject id, never the e-mail address, which
 can change. Fields (stable order): ``id``, ``name``, ``email``,
 ``username``, ``provider``, ``subject``, ``server_admin``, ``active``,
-``created_at``, ``last_login_at``.
+``created_at``, ``last_login_at``, ``groups`` (the identity provider's
+group names at the last login, for ``server.group_roles``).
 
 Server admins: if ``server.admins`` lists user names / e-mail addresses,
 a user matching one of them is made an admin at login (an e-mail address
-counts only when the provider does not report it as unverified); without
-the setting, the first user ever created becomes the admin. The flag is
-never removed automatically; edit ``users.json`` (or, later, the admin
-page) to demote someone. ``active: false`` refuses the user's logins and
-ends their sessions.
+counts only when the provider does not report it as unverified), as is a
+member of one of the ``server.admin_groups``; without ``server.admins``,
+the first user ever created becomes the admin. The flag is never removed
+automatically; demote someone on the admin page (``set_flags``) or in
+``users.json``. ``active: false`` refuses the user's logins and ends their
+sessions.
 """
 
 from __future__ import annotations
 
 import threading
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -46,6 +48,7 @@ class User:
     active: bool = True
     created_at: str = ""
     last_login_at: str = ""
+    groups: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -63,6 +66,9 @@ class User:
             active=bool(data.get("active", True)),
             created_at=str(data.get("created_at") or ""),
             last_login_at=str(data.get("last_login_at") or ""),
+            groups=[g for g in data.get("groups") or [] if isinstance(g, str)]
+            if isinstance(data.get("groups"), list)
+            else [],
         )
 
     def public(self) -> dict:
@@ -73,6 +79,17 @@ class User:
             "email": self.email,
             "username": self.username,
             "server_admin": self.server_admin,
+        }
+
+    def admin_view(self) -> dict:
+        """What the server admins' user list shows (never the provider subject)."""
+        return {
+            **self.public(),
+            "provider": self.provider,
+            "active": self.active,
+            "created_at": self.created_at,
+            "last_login_at": self.last_login_at,
+            "groups": list(self.groups),
         }
 
 
@@ -86,12 +103,14 @@ class LoginClaims:
     email: str
     username: str
     email_verified: bool | None = None
+    groups: tuple[str, ...] = ()
 
 
 class UserRegistry:
-    def __init__(self, path: Path, admins: tuple[str, ...] = ()) -> None:
+    def __init__(self, path: Path, admins: tuple[str, ...] = (), admin_groups: tuple[str, ...] = ()) -> None:
         self.path = path
         self.admins = tuple(a.lower() for a in admins)
+        self.admin_groups = frozenset(admin_groups)
         self._lock = threading.Lock()
         self._users: dict[str, User] = {}
         self._mtime: int | None = None
@@ -131,9 +150,45 @@ class UserRegistry:
             return self._users.get(user_id)
 
     def all(self) -> list[User]:
-        return list(self._users.values())
+        with self._lock:
+            self._reload_if_changed()
+            return list(self._users.values())
+
+    def find(self, query: str) -> User | None:
+        """The user whose id, e-mail address or user name is ``query`` (case-insensitive), else ``None``.
+
+        Several users with the same e-mail address or user name (different
+        providers): ``ValueError`` asking for the id.
+        """
+        wanted = query.strip().lower()
+        if not wanted:
+            return None
+        with self._lock:
+            self._reload_if_changed()
+            if query.strip() in self._users:
+                return self._users[query.strip()]
+            found = [u for u in self._users.values() if wanted in (u.email.lower(), u.username.lower())]
+        if len(found) > 1:
+            raise ValueError(f"Several users match '{query}'; use the user id")
+        return found[0] if found else None
+
+    def set_flags(self, user_id: str, active: bool | None = None, server_admin: bool | None = None) -> User:
+        """Activate/deactivate a user and/or set the server admin flag; ``KeyError`` for an unknown user."""
+        with self._lock:
+            self._reload_if_changed()
+            user = self._users.get(user_id)
+            if user is None:
+                raise KeyError(user_id)
+            if active is not None:
+                user.active = active
+            if server_admin is not None:
+                user.server_admin = server_admin
+            self._save()
+            return user
 
     def _is_configured_admin(self, claims: LoginClaims) -> bool:
+        if self.admin_groups and self.admin_groups.intersection(claims.groups):
+            return True
         if not self.admins:
             return False
         if claims.username and claims.username.lower() in self.admins:
@@ -164,6 +219,7 @@ class UserRegistry:
                     server_admin=self._is_configured_admin(claims) or (first and not self.admins),
                     active=True,
                     created_at=now,
+                    groups=list(claims.groups),
                 )
                 self._users[user.id] = user
             else:
@@ -172,6 +228,7 @@ class UserRegistry:
                 user.name = claims.name or user.name
                 user.email = claims.email or user.email
                 user.username = claims.username or user.username
+                user.groups = list(claims.groups)
                 if self._is_configured_admin(claims):
                     user.server_admin = True
             user.last_login_at = now
