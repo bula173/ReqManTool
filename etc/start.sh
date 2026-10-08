@@ -11,6 +11,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Local secrets (e.g. REQMAN_AUTH_GITHUB_CLIENT_SECRET) live in the
+# git-ignored .reqman/server.env as KEY=value lines.
+if [ -f "$ROOT/.reqman/server.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "$ROOT/.reqman/server.env"
+    set +a
+fi
+
 BACKEND_ARGS=()
 for arg in "$@"; do
     case "$arg" in
