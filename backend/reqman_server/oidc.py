@@ -116,7 +116,9 @@ def _http_json(
     data: bytes | None = None,
     headers: dict[str, str] | None = None,
     what: str,
-) -> dict[str, Any]:
+    allow_list: bool = False,
+) -> Any:
+    """The JSON object (or, with ``allow_list``, array) at ``url``; ``OidcError`` (no secrets) otherwise."""
     request = urllib.request.Request(url, data=data, headers={"Accept": "application/json", **(headers or {})})
     try:
         with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:  # noqa: S310 - URL checked by caller
@@ -141,7 +143,7 @@ def _http_json(
         payload = json.loads(body)
     except ValueError:
         raise OidcError(f"{what} failed: the response is not JSON.") from None
-    if not isinstance(payload, dict):
+    if not isinstance(payload, dict) and not (allow_list and isinstance(payload, list)):
         raise OidcError(f"{what} failed: the response is not a JSON object.")
     return payload
 
@@ -224,7 +226,6 @@ class OidcClient:
 
     def exchange_code(self, code: str, redirect_uri: str, code_verifier: str) -> dict[str, Any]:
         """The token endpoint's response (``id_token``, ``access_token``, ...)."""
-        discovery = self.discovery()
         form = {
             "grant_type": "authorization_code",
             "code": code,
@@ -232,6 +233,22 @@ class OidcClient:
             "code_verifier": code_verifier,
             "client_id": self.provider.client_id,
         }
+        tokens = self._token_request(form, f"{self.provider.name} token request")
+        if not isinstance(tokens.get("id_token"), str):
+            raise OidcError(f"{self.provider.name} returned no ID token (is the 'openid' scope allowed?).")
+        return tokens
+
+    def refresh_tokens(self, refresh_token: str) -> dict[str, Any]:
+        """New tokens for a refresh token (``grant_type=refresh_token``); ``OidcError`` when refused."""
+        form = {"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": self.provider.client_id}
+        tokens = self._token_request(form, f"{self.provider.name} token refresh")
+        if not isinstance(tokens.get("access_token"), str) or not tokens["access_token"]:
+            raise OidcError(f"{self.provider.name} returned no access token.")
+        return tokens
+
+    def _token_request(self, form: dict[str, str], what: str) -> dict[str, Any]:
+        """POST ``form`` to the token endpoint with the client's credentials."""
+        discovery = self.discovery()
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
         secret = self.provider.client_secret
         if secret:
@@ -242,15 +259,12 @@ class OidcClient:
                 # RFC 6749 §2.3.1: form-urlencode id and secret before Basic encoding.
                 raw = f"{urllib.parse.quote(self.provider.client_id, safe='')}:{urllib.parse.quote(secret, safe='')}"
                 headers["Authorization"] = "Basic " + base64.b64encode(raw.encode("utf-8")).decode("ascii")
-        tokens = self._http_json(
+        return self._http_json(
             discovery.token_endpoint,
             data=urllib.parse.urlencode(form).encode("ascii"),
             headers=headers,
-            what=f"{self.provider.name} token request",
+            what=what,
         )
-        if not isinstance(tokens.get("id_token"), str):
-            raise OidcError(f"{self.provider.name} returned no ID token (is the 'openid' scope allowed?).")
-        return tokens
 
     def validate_id_token(self, id_token: str, nonce: str) -> dict[str, Any]:
         """The ID token's claims, validated (see the module docstring); ``OidcError`` otherwise."""

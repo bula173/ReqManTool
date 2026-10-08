@@ -7,7 +7,15 @@ import {
   type UseQueryResult,
 } from '@tanstack/react-query';
 import { API_BASE_URL, ApiError, api, enableServerSession, setCsrfToken } from './client';
-import type { AdminUser, AuditPage, AuthSession, EditionInfo, ProjectMembers, ProjectRole } from './types';
+import type {
+  AccessSyncResult,
+  AdminUser,
+  AuditPage,
+  AuthSession,
+  EditionInfo,
+  ProjectMembers,
+  ProjectRole,
+} from './types';
 
 /**
  * Query keys of the edition and the server-edition session. Under `version`
@@ -141,6 +149,20 @@ export function useRemoveProjectMember(projectId: string) {
       qc.setQueryData(authKeys.members(projectId), data);
       invalidatePermissions(qc);
     },
+  });
+}
+
+/**
+ * POST /admin/access/sync ("Sync access now"): look up the roles that come from repository
+ * permissions again, for every logged-in user — of one project (its project admins) or, without a
+ * project, of all (server admins).
+ */
+export function useSyncAccess() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string | null) =>
+      api.post<AccessSyncResult>('/admin/access/sync', projectId ? { project_id: projectId } : {}),
+    onSuccess: () => invalidatePermissions(qc),
   });
 }
 

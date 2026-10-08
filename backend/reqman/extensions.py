@@ -22,7 +22,10 @@ plugs in through exactly these interfaces:
   taking a ``project_id``, project creation and listing, cross-project
   reads and cascades, libraries and connections); the actions are the
   ``ACTION_*`` constants below. The local edition's ``AllowAllGuard`` is
-  skipped without a call (``guard_active``).
+  skipped without a call (``guard_active``). The requirement status guards
+  (sign-off and approval, ``ProjectService._check_status_changes``) ask it
+  for ``project.review`` / ``project.approve`` and run only when a guard is
+  active, so the local edition never sees them.
 - **Project events** (``ProjectEvents``): told after a project was created
   (by whom) or removed, e.g. to make the creator its project admin and to
   forget the memberships of a removed project.
@@ -119,12 +122,17 @@ class IdentityProvider(Protocol):
 # --- permission guard -----------------------------------------------------------------
 
 # Project actions (with a ``project_id``), in increasing order of privilege:
-# read anything of the project; change its data (requirements, modules,
-# links, views, attributes, imports, baselines, push/pull); administer it
-# (lock/unlock, remove, purge, parent, git history/remote/publish, members).
+# read anything of the project; sign off requirements (change only their
+# status attribute, see ``ProjectService`` "status guards"); change its data
+# (requirements, modules, links, imports, push/pull); administer it
+# (lock/unlock, baselines, attribute definitions, views, link
+# configurations, remove, purge, parent, git history/remote/publish,
+# members); approve requirements (status → Approved, or out of Approved).
 ACTION_PROJECT_READ = "project.read"
+ACTION_PROJECT_REVIEW = "project.review"
 ACTION_PROJECT_WRITE = "project.write"
 ACTION_PROJECT_ADMIN = "project.admin"
+ACTION_PROJECT_APPROVE = "project.approve"
 # Server-wide actions (``project_id`` is ``None``).
 ACTION_PROJECT_CREATE = "project.create"  # create a project (blank, template, clone)
 ACTION_LIBRARY_WRITE = "library.write"  # change the shared template / prompt libraries
@@ -317,6 +325,10 @@ class EditionContext:
     project_exists: Callable[[str], bool] | None = None
     # Whether a module exists in a project of the current data folder.
     module_exists: Callable[[str, str], bool] | None = None
+    # The ids of the projects of the current data folder.
+    project_ids: Callable[[], list[str]] | None = None
+    # The URL of a project's git remote (``None``: no remote, no repository, or no such project).
+    project_remote_url: Callable[[str], str | None] | None = None
 
 
 class ServerEdition(Protocol):

@@ -1106,7 +1106,7 @@ export interface StartReviewResult {
 /** A login provider of the server edition (GET /edition). */
 export interface AuthProviderInfo {
   id: string;
-  /** `gitlab` or `oidc` (generic OpenID Connect). */
+  /** `gitlab`, `github` (OAuth 2.0) or `oidc` (generic OpenID Connect). */
   type: string;
   name: string;
   /** Backend path that starts the login (append `?next=<path>`). */
@@ -1142,26 +1142,68 @@ export interface AuthSession {
   permissions?: UserPermissions;
 }
 
-/** A role in a project (server edition), lowest first: read; change data; also administer (lock, remove, members, git settings). */
-export type ProjectRole = 'viewer' | 'editor' | 'project-admin';
+/**
+ * A role in a project (server edition), lowest first: read; sign off requirements (change only their
+ * status); change data; also administer (baselines, lock, attributes, views, link configurations,
+ * approval, remove, members, git settings).
+ */
+export type ProjectRole = 'viewer' | 'reviewer' | 'editor' | 'project-admin';
 
-export const PROJECT_ROLES: ProjectRole[] = ['viewer', 'editor', 'project-admin'];
+export const PROJECT_ROLES: ProjectRole[] = ['viewer', 'reviewer', 'editor', 'project-admin'];
 
 export const PROJECT_ROLE_LABELS: Record<ProjectRole, string> = {
   viewer: 'Viewer',
+  reviewer: 'Reviewer',
   editor: 'Editor',
   'project-admin': 'Project admin',
 };
+
+/** A project's repository on a GitLab/GitHub login provider (server edition: roles from repository permissions). */
+export interface RepoBindingInfo {
+  provider_id: string;
+  provider_type: 'gitlab' | 'github';
+  provider_name: string;
+  /** e.g. `rbc/rbc-gp`. */
+  path: string;
+  /** e.g. `gitlab.example.com/rbc/rbc-gp`. */
+  repository: string;
+}
+
+/** A role from a repository permission (`UserPermissions.repo_roles`). */
+export interface RepoRoleInfo extends RepoBindingInfo {
+  source: 'repo';
+  /** The provider's name for the permission (`Developer`, `Write`, ...); null: no access. */
+  permission: string | null;
+  role: ProjectRole | null;
+  /** Epoch seconds of the lookup. */
+  checked_at: number;
+  /** The last lookup failed (the role is the last good one, or null). */
+  error: string | null;
+}
+
+/** POST /admin/access/sync ("Sync access now"). */
+export interface AccessSyncResult {
+  users: number;
+  projects: number;
+  errors: { project_id: string; user_id: string; error: string }[];
+  /** False when roles from repository permissions are turned off (`server.repo_roles`). */
+  enabled: boolean;
+}
 
 /** GET /auth/permissions (server edition): the logged-in user's roles. */
 export interface UserPermissions {
   /** A server admin may do everything, in every project. */
   server_admin: boolean;
   can_create_projects: boolean;
-  /** Project id → role (memberships and group rules naming the project). */
-  roles: Record<string, ProjectRole>;
+  /**
+   * Project id → role (memberships and group rules naming the project, and repository permissions of
+   * projects bound to the login provider; null there: no access, `default_role` does not apply).
+   */
+  roles: Record<string, ProjectRole | null>;
   /** The role group rules give in every project (`"projects": ["*"]`), or null. */
   default_role: ProjectRole | null;
+  /** Projects whose role comes from a repository permission: where from (absent in older servers). */
+  repo_roles?: Record<string, RepoRoleInfo>;
 }
 
 /** One entry of the server edition's audit log (GET /admin/audit; keys without a value are absent). */
@@ -1204,8 +1246,16 @@ export interface ProjectMember {
   active: boolean;
   server_admin: boolean;
   role: ProjectRole;
-  /** `member`: a membership (editable); `group`: only from a group rule (configured on the server). */
-  source: 'member' | 'group';
+  /**
+   * `member`: a membership (editable); `group`: only from a group rule (configured on the server);
+   * `repo`: from the user's permission on the project's repository (`permission`, `repository`).
+   */
+  source: 'member' | 'group' | 'repo';
+  /** `repo` entries: the provider's permission name and the repository. */
+  permission?: string | null;
+  repository?: string;
+  /** The user's role comes from the repository instead: this membership / group rule does not apply. */
+  superseded?: boolean;
   /** The role a group rule gives (the effective role is the higher one), or null. */
   group_role: ProjectRole | null;
   added_at: string;
@@ -1216,6 +1266,8 @@ export interface ProjectMembers {
   project_id: string;
   roles: ProjectRole[];
   members: ProjectMember[];
+  /** The project's repository on GitLab/GitHub login providers (roles of their users come from it). */
+  repositories?: RepoBindingInfo[];
 }
 
 /** A module checked out for editing (server edition; GET /projects/{id}/module-locks). */

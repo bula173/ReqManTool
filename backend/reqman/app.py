@@ -129,6 +129,10 @@ else:
             project_exists=lambda project_id: service.store.project_exists(project_id),
             module_exists=lambda project_id, module_id: service.store.project_exists(project_id)
             and service.store.module_exists(project_id, module_id),
+            project_ids=lambda: service.store.list_project_ids(),
+            project_remote_url=lambda project_id: service.history.remote_url(service.store.project_path(project_id))
+            if service.store.project_exists(project_id)
+            else None,
         ),
     )
     logger.info("Server edition: %s", SERVER_EDITION.name)

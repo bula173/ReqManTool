@@ -651,7 +651,7 @@ export function GitStatusPanel({ projectId }: { projectId: string }) {
             </>
           )}
           {hasRepo && (
-            <Baselines projectId={projectId} canCreate={status.state === 'ready' && access.canEdit(projectId)} />
+            <Baselines projectId={projectId} canCreate={status.state === 'ready' && access.canAdmin(projectId)} />
           )}
         </Stack>
       )}

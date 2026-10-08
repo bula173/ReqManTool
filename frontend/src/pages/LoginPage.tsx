@@ -1,5 +1,5 @@
 import { Alert, Button, Center, Paper, Stack, Text, Title } from '@mantine/core';
-import { IconAlertTriangle, IconBrandGitlab, IconLogin } from '@tabler/icons-react';
+import { IconAlertTriangle, IconBrandGithub, IconBrandGitlab, IconLogin } from '@tabler/icons-react';
 import { useState } from 'react';
 import { loginUrl } from '../api/auth';
 import type { AuthProviderInfo } from '../api/types';
@@ -65,7 +65,15 @@ export function LoginPage({ providers, error, onRetry }: LoginPageProps) {
                 key={provider.id}
                 component="a"
                 href={loginUrl(provider.login_url, next)}
-                leftSection={provider.type === 'gitlab' ? <IconBrandGitlab size={18} /> : <IconLogin size={18} />}
+                leftSection={
+                  provider.type === 'gitlab' ? (
+                    <IconBrandGitlab size={18} />
+                  ) : provider.type === 'github' ? (
+                    <IconBrandGithub size={18} />
+                  ) : (
+                    <IconLogin size={18} />
+                  )
+                }
                 variant="default"
                 size="md"
                 fullWidth

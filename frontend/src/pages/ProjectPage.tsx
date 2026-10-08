@@ -287,6 +287,8 @@ export function ProjectPage() {
   const locked = !!project.locked;
   const readOnly = isProjectReadOnly(appState, projectId);
   const canAdminister = appState.access.canAdmin(projectId);
+  // Attribute definitions, link configurations and views: project admins only (server edition).
+  const configReadOnly = readOnly || !canAdminister;
 
   const attributeLabel = (attrId: string) =>
     project.attributes.find((a) => a.id === attrId)?.name ?? attrId;
@@ -430,7 +432,7 @@ export function ProjectPage() {
       <Card withBorder>
         <Group justify="space-between" mb="sm">
           <Title order={4}>Attributes</Title>
-          <Button size="xs" leftSection={<IconPlus size={14} />} disabled={readOnly} onClick={() => setAddAttributeOpened(true)}>
+          <Button size="xs" leftSection={<IconPlus size={14} />} disabled={configReadOnly} onClick={() => setAddAttributeOpened(true)}>
             Add attribute
           </Button>
         </Group>
@@ -468,10 +470,10 @@ export function ProjectPage() {
                         variant="subtle"
                         aria-label={`Modules for ${attr.name}`}
                         // data-disabled, not disabled, so the tooltip still shows.
-                        data-disabled={attr.required || readOnly || undefined}
-                        aria-disabled={attr.required || readOnly}
+                        data-disabled={attr.required || configReadOnly || undefined}
+                        aria-disabled={attr.required || configReadOnly}
                         onClick={() => {
-                          if (!attr.required && !readOnly) setScopedAttribute(attr);
+                          if (!attr.required && !configReadOnly) setScopedAttribute(attr);
                         }}
                       >
                         <IconAdjustments size={16} />
@@ -488,7 +490,7 @@ export function ProjectPage() {
       <Card withBorder>
         <Group justify="space-between" mb="sm">
           <Title order={4}>Link configurations</Title>
-          <Button size="xs" leftSection={<IconPlus size={14} />} disabled={readOnly} onClick={() => setNewLinkConfigOpened(true)}>
+          <Button size="xs" leftSection={<IconPlus size={14} />} disabled={configReadOnly} onClick={() => setNewLinkConfigOpened(true)}>
             New link configuration
           </Button>
         </Group>
@@ -525,7 +527,7 @@ export function ProjectPage() {
                   </Table.Td>
                   <Table.Td>
                     <Tooltip label="Remove">
-                      <ActionIcon variant="subtle" color="red" disabled={readOnly} onClick={() => handleRemoveLinkConfig(config)}>
+                      <ActionIcon variant="subtle" color="red" disabled={configReadOnly} onClick={() => handleRemoveLinkConfig(config)}>
                         <IconTrash size={16} />
                       </ActionIcon>
                     </Tooltip>
@@ -540,7 +542,7 @@ export function ProjectPage() {
       <Card withBorder>
         <Group justify="space-between" mb="sm">
           <Title order={4}>Views</Title>
-          <Button size="xs" leftSection={<IconPlus size={14} />} disabled={readOnly} onClick={() => setNewViewOpened(true)}>
+          <Button size="xs" leftSection={<IconPlus size={14} />} disabled={configReadOnly} onClick={() => setNewViewOpened(true)}>
             New view
           </Button>
         </Group>
@@ -580,7 +582,7 @@ export function ProjectPage() {
                         <ActionIcon
                           variant="subtle"
                           aria-label={`Edit view ${view.name}`}
-                          disabled={readOnly}
+                          disabled={configReadOnly}
                           onClick={() =>
                             appState.commands.openDialog({ kind: 'editView', projectId: project.id, viewId: view.id })
                           }
@@ -589,7 +591,7 @@ export function ProjectPage() {
                         </ActionIcon>
                       </Tooltip>
                       <Tooltip label="Remove">
-                        <ActionIcon variant="subtle" color="red" disabled={readOnly} onClick={() => handleRemoveView(view)}>
+                        <ActionIcon variant="subtle" color="red" disabled={configReadOnly} onClick={() => handleRemoveView(view)}>
                           <IconTrash size={16} />
                         </ActionIcon>
                       </Tooltip>

@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import type { ProjectRole, SessionUser, UserPermissions } from '../api/types';
+import type { ProjectRole, RepoRoleInfo, SessionUser, UserPermissions } from '../api/types';
 
 /**
  * What the logged-in user may do (server edition), mirroring the backend's
@@ -17,6 +17,10 @@ export interface ProjectAccess {
   canOpenAdministration: boolean;
   /** The user's role in a project; null without access. Server admins and the local edition: `project-admin`. */
   role: (projectId: string | null | undefined) => ProjectRole | null;
+  /** Where the role comes from when it is a repository permission (server edition), else null. */
+  repoRole: (projectId: string | null | undefined) => RepoRoleInfo | null;
+  /** Sign off requirements: change only their status (reviewer or more). A null project id is allowed. */
+  canReview: (projectId: string | null | undefined) => boolean;
   /** Change the project's data (editor or more). A null project id (no project) is allowed. */
   canEdit: (projectId: string | null | undefined) => boolean;
   /** Lock/unlock, remove, purge, parent, git settings, members (project admin). Null project id: allowed. */
@@ -30,11 +34,13 @@ export const LOCAL_ACCESS: ProjectAccess = {
   canUseConnections: true,
   canOpenAdministration: false,
   role: () => 'project-admin',
+  repoRole: () => null,
+  canReview: () => true,
   canEdit: () => true,
   canAdmin: () => true,
 };
 
-const RANK: Record<ProjectRole, number> = { viewer: 1, editor: 2, 'project-admin': 3 };
+const RANK: Record<ProjectRole, number> = { viewer: 1, reviewer: 2, editor: 3, 'project-admin': 4 };
 
 /** The server edition's access rules for a user's permissions (from GET /auth/me). */
 export function serverAccess(permissions: UserPermissions | undefined, serverAdmin: boolean): ProjectAccess {
@@ -42,7 +48,9 @@ export function serverAccess(permissions: UserPermissions | undefined, serverAdm
   const role = (projectId: string | null | undefined): ProjectRole | null => {
     if (admin) return 'project-admin';
     if (!projectId || !permissions) return null;
-    return permissions.roles[projectId] ?? permissions.default_role ?? null;
+    // A project with an entry (a membership, a group rule, a repository permission — even none) ignores default_role.
+    if (Object.prototype.hasOwnProperty.call(permissions.roles, projectId)) return permissions.roles[projectId] ?? null;
+    return permissions.default_role ?? null;
   };
   const atLeast = (projectId: string | null | undefined, needed: ProjectRole) => {
     if (!projectId) return true;
@@ -59,6 +67,8 @@ export function serverAccess(permissions: UserPermissions | undefined, serverAdm
       permissions?.default_role === 'project-admin' ||
       Object.values(permissions?.roles ?? {}).includes('project-admin'),
     role,
+    repoRole: (projectId) => (projectId ? (permissions?.repo_roles?.[projectId] ?? null) : null),
+    canReview: (projectId) => atLeast(projectId, 'reviewer'),
     canEdit: (projectId) => atLeast(projectId, 'editor'),
     canAdmin: (projectId) => atLeast(projectId, 'project-admin'),
   };

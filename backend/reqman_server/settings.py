@@ -23,9 +23,12 @@ Example (``config.json``)::
         "project_creation": "everyone",
         "module_lock_idle_minutes": 60,
         "require_module_checkout": false,
+        "repo_roles": {"enabled": true, "cache_minutes": 5, "grace_minutes": 60},
         "auth_providers": [
           {"id": "gitlab", "type": "gitlab", "name": "GitLab", "url": "https://gitlab.example.com",
-           "client_id": "...", "client_secret_env": "REQMAN_GITLAB_SECRET"},
+           "client_id": "...", "client_secret_env": "REQMAN_GITLAB_SECRET",
+           "git_hosts": ["ssh.gitlab.example.com"]},
+          {"id": "github", "type": "github", "url": "https://github.com", "client_id": "..."},
           {"id": "sso", "type": "oidc", "name": "Company SSO",
            "issuer": "https://sso.example.com/realms/main", "client_id": "..."}
         ]
@@ -45,6 +48,15 @@ the ``group_roles`` rules matching one of their identity provider groups
 makes a group's members server admins at login. ``project_creation``:
 ``everyone`` (default; the creator becomes the project admin) or
 ``admins`` (server admins only).
+
+Roles from repository permissions (``repo_access.py``): with
+``repo_roles.enabled`` (default true) a project whose git remote is on a
+``gitlab`` / ``github`` login provider gives its users the role of their
+repository permission (cached ``cache_minutes``, last good role kept for
+``grace_minutes`` when a lookup fails); ``gitlab`` logins then also request
+the ``read_api`` scope. ``git_hosts``: other host names of the provider's
+git remotes (e.g. an ssh host). ``github`` is plain OAuth 2.0 (default
+scopes ``read:user user:email``; see ``github_oauth.py``).
 
 Module edit locks (``module_locks.py``): a lock nobody used for
 ``module_lock_idle_minutes`` (default 60) expires; with
@@ -66,12 +78,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-PROVIDER_TYPES = ("gitlab", "oidc")
+PROVIDER_TYPES = ("gitlab", "github", "oidc")
 # Project roles, lowest first (``permissions.ROLE_RANK``).
-ROLES = ("viewer", "editor", "project-admin")
+ROLES = ("viewer", "reviewer", "editor", "project-admin")
 PROJECT_CREATION = ("everyone", "admins")
 DEFAULT_GITLAB_URL = "https://gitlab.com"
+DEFAULT_GITHUB_URL = "https://github.com"
 DEFAULT_SCOPES = ("openid", "profile", "email")
+# GitHub login is plain OAuth 2.0 (no OpenID Connect): the profile and the verified e-mail addresses.
+DEFAULT_GITHUB_SCOPES = ("read:user", "user:email")
+# The GitLab scope the repository permission lookup needs (``GET /projects/:id``, ``/members/all``).
+GITLAB_API_SCOPE = "read_api"
 _PROVIDER_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
@@ -92,6 +109,8 @@ class ProviderSettings:
     scopes: tuple[str, ...] = DEFAULT_SCOPES
     # Allow plain-http endpoints for a non-local issuer (testing only).
     allow_http: bool = False
+    # Other host names of the provider's git remotes (e.g. a separate ssh host), for repository roles.
+    git_hosts: tuple[str, ...] = ()
 
     def public_info(self) -> dict[str, Any]:
         return {"id": self.id, "type": self.type, "name": self.name, "login_url": f"/auth/login/{self.id}"}
@@ -127,6 +146,10 @@ class ServerSettings:
     project_creation: str = "everyone"
     module_lock_idle_seconds: int = 60 * 60
     require_module_checkout: bool = False
+    # Roles from repository permissions (``repo_access.py``): on/off, cache lifetime, grace on errors.
+    repo_roles: bool = True
+    repo_roles_ttl_seconds: int = 5 * 60
+    repo_roles_grace_seconds: int = 60 * 60
 
     @property
     def wants_groups(self) -> bool:
@@ -184,7 +207,7 @@ def _positive(value: Any, what: str, default: float) -> float:
     return float(value)
 
 
-def _parse_provider(raw: Any, index: int, env: dict[str, str]) -> ProviderSettings:
+def _parse_provider(raw: Any, index: int, env: dict[str, str], repo_roles: bool = False) -> ProviderSettings:
     what = f"server.auth_providers[{index}]"
     if not isinstance(raw, dict):
         raise ServerConfigError(f"{what} must be an object")
@@ -201,6 +224,11 @@ def _parse_provider(raw: Any, index: int, env: dict[str, str]) -> ProviderSettin
     if provider_type == "gitlab":
         issuer = _str(raw.get("url"), f"{what}.url") or _str(raw.get("issuer"), f"{what}.issuer") or DEFAULT_GITLAB_URL
         name = _str(raw.get("name"), f"{what}.name") or "GitLab"
+    elif provider_type == "github":
+        issuer = _str(raw.get("url"), f"{what}.url") or DEFAULT_GITHUB_URL
+        if (urllib.parse.urlsplit(issuer).hostname or "").lower() == "api.github.com":
+            issuer = DEFAULT_GITHUB_URL
+        name = _str(raw.get("name"), f"{what}.name") or "GitHub"
     else:
         issuer = _str(raw.get("issuer"), f"{what}.issuer", required=True)
         name = _str(raw.get("name"), f"{what}.name") or "Single sign-on"
@@ -218,13 +246,17 @@ def _parse_provider(raw: Any, index: int, env: dict[str, str]) -> ProviderSettin
     )
     scopes_raw = raw.get("scopes")
     if scopes_raw is None:
-        scopes = DEFAULT_SCOPES
+        scopes = DEFAULT_GITHUB_SCOPES if provider_type == "github" else DEFAULT_SCOPES
     elif isinstance(scopes_raw, list) and all(isinstance(s, str) and s.strip() for s in scopes_raw):
         scopes = tuple(s.strip() for s in scopes_raw)
-        if "openid" not in scopes:
+        if "openid" not in scopes and provider_type != "github":
             scopes = ("openid", *scopes)
     else:
         raise ServerConfigError(f"{what}.scopes must be a list of strings")
+    if provider_type == "gitlab" and repo_roles and GITLAB_API_SCOPE not in scopes and "api" not in scopes:
+        # Roles from GitLab project permissions read the API with the user's token.
+        scopes = (*scopes, GITLAB_API_SCOPE)
+    git_hosts = tuple(h.lower() for h in _string_list(raw.get("git_hosts"), f"{what}.git_hosts"))
     return ProviderSettings(
         id=provider_id,
         type=provider_type,
@@ -234,6 +266,7 @@ def _parse_provider(raw: Any, index: int, env: dict[str, str]) -> ProviderSettin
         client_secret=client_secret,
         scopes=scopes,
         allow_http=allow_http,
+        git_hosts=git_hosts,
     )
 
 
@@ -279,7 +312,17 @@ def load_server_settings(
     providers_raw = raw.get("auth_providers") or []
     if not isinstance(providers_raw, list):
         raise ServerConfigError("server.auth_providers must be a list")
-    providers = tuple(_parse_provider(item, i, env) for i, item in enumerate(providers_raw))
+    repo_raw = raw.get("repo_roles")
+    if repo_raw is None:
+        repo_raw = {}
+    elif isinstance(repo_raw, bool):
+        repo_raw = {"enabled": repo_raw}
+    elif not isinstance(repo_raw, dict):
+        raise ServerConfigError("server.repo_roles must be an object (or true/false)")
+    repo_roles = _bool(repo_raw.get("enabled"), "server.repo_roles.enabled", True)
+    repo_ttl = _positive(repo_raw.get("cache_minutes"), "server.repo_roles.cache_minutes", 5) * 60
+    repo_grace = _positive(repo_raw.get("grace_minutes"), "server.repo_roles.grace_minutes", 60) * 60
+    providers = tuple(_parse_provider(item, i, env, repo_roles) for i, item in enumerate(providers_raw))
     if not providers:
         raise ServerConfigError(
             f"mode is 'server' but no login provider is configured: add server.auth_providers to {config_file}"
@@ -340,4 +383,7 @@ def load_server_settings(
         require_module_checkout=_bool(
             raw.get("require_module_checkout"), "server.require_module_checkout", False
         ),
+        repo_roles=repo_roles,
+        repo_roles_ttl_seconds=int(repo_ttl),
+        repo_roles_grace_seconds=int(max(repo_grace, repo_ttl)),
     )

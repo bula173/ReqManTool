@@ -17,7 +17,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconRefresh, IconTrash, IconUserPlus } from '@tabler/icons-react';
+import { IconRefresh, IconRefreshDot, IconTrash, IconUserPlus } from '@tabler/icons-react';
 import { useMemo, useState } from 'react';
 import {
   useAdminUsers,
@@ -25,6 +25,7 @@ import {
   useProjectMembers,
   useRemoveProjectMember,
   useSetProjectMember,
+  useSyncAccess,
   useUpdateUser,
 } from '../api/auth';
 import { useProjects } from '../api/queries';
@@ -35,6 +36,50 @@ const ROLE_OPTIONS = PROJECT_ROLES.map((role) => ({ value: role, label: PROJECT_
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown error';
+}
+
+/** "Sync access now": roles from repository permissions looked up again (one project, or all). */
+function SyncAccessButton({ projectId }: { projectId: string | null }) {
+  const sync = useSyncAccess();
+  return (
+    <Tooltip
+      label={
+        projectId
+          ? 'Look up the GitLab/GitHub permissions of every logged-in user on this project’s repository again now'
+          : 'Look up the GitLab/GitHub permissions of every logged-in user on every project repository again now'
+      }
+      multiline
+      w={300}
+      withArrow
+    >
+      <Button
+        variant="default"
+        size="xs"
+        leftSection={<IconRefreshDot size={16} />}
+        loading={sync.isPending}
+        onClick={() =>
+          sync.mutate(projectId, {
+            onSuccess: (result) =>
+              notifications.show({
+                color: result.errors.length > 0 ? 'yellow' : 'green',
+                title: 'Access synced',
+                message: !result.enabled
+                  ? 'Roles from repository permissions are turned off on this server.'
+                  : `${result.users} logged-in user${result.users === 1 ? '' : 's'}, ${result.projects} project${
+                      result.projects === 1 ? '' : 's'
+                    } with a repository` +
+                    (result.errors.length > 0
+                      ? `; ${result.errors.length} lookup${result.errors.length === 1 ? '' : 's'} failed: ${result.errors[0].error}`
+                      : ''),
+              }),
+            onError: (error) => notifications.show({ color: 'red', title: 'Could not sync access', message: errorText(error) }),
+          })
+        }
+      >
+        Sync access now
+      </Button>
+    </Tooltip>
+  );
 }
 
 function formatDate(iso: string): string {
@@ -73,9 +118,12 @@ function UsersTab() {
   }
   return (
     <Stack gap="xs">
-      <Text size="sm" c="dimmed">
-        Users are created at their first login. A deactivated user cannot log in, and their sessions end at once.
-      </Text>
+      <Group justify="space-between" align="flex-start" wrap="nowrap">
+        <Text size="sm" c="dimmed">
+          Users are created at their first login. A deactivated user cannot log in, and their sessions end at once.
+        </Text>
+        <SyncAccessButton projectId={null} />
+      </Group>
       <Table striped withTableBorder>
         <Table.Thead>
           <Table.Tr>
@@ -165,8 +213,28 @@ function MembersEditor({ projectId }: { projectId: string }) {
     return <Alert color="red">Failed to load the members: {errorText(membersQuery.error)}</Alert>;
   }
   const members = membersQuery.data?.members ?? [];
+  const repositories = membersQuery.data?.repositories ?? [];
   return (
     <Stack gap="sm">
+      {repositories.length > 0 && (
+        <Alert color="blue" title="Roles from repository permissions">
+          <Stack gap={6}>
+            {repositories.map((repo) => (
+              <Text size="sm" key={repo.provider_id}>
+                Users who log in with {repo.provider_name} get their role from their permission on{' '}
+                <b>{repo.repository}</b>:{' '}
+                {repo.provider_type === 'gitlab'
+                  ? 'Guest/Reporter → Viewer, Developer → Editor, Maintainer/Owner → Project admin.'
+                  : 'Read → Viewer, Triage → Reviewer, Write → Editor, Maintain/Admin → Project admin.'}{' '}
+                Change their access in {repo.provider_name}; memberships here apply to the other users.
+              </Text>
+            ))}
+            <Group justify="flex-end">
+              <SyncAccessButton projectId={projectId} />
+            </Group>
+          </Stack>
+        </Alert>
+      )}
       <Group align="flex-end" gap="xs" wrap="nowrap">
         <TextInput
           label="Add a user"
@@ -222,6 +290,13 @@ function MembersEditor({ projectId }: { projectId: string }) {
                         Deactivated
                       </Badge>
                     )}
+                    {m.superseded && (
+                      <Tooltip label="This user’s role here comes from their repository permission; this entry does not apply" withArrow>
+                        <Badge size="xs" variant="light" color="orange">
+                          Not applied
+                        </Badge>
+                      </Tooltip>
+                    )}
                   </Group>
                   <Text size="xs" c="dimmed">
                     {m.email || m.username || m.user_id}
@@ -253,6 +328,12 @@ function MembersEditor({ projectId }: { projectId: string }) {
                         </Text>
                       )}
                     </Group>
+                  ) : m.source === 'repo' ? (
+                    <Tooltip label={`From the user’s permission on ${m.repository ?? 'the repository'} (looked up at login or sync)`} withArrow>
+                      <Text size="sm">
+                        {PROJECT_ROLE_LABELS[m.role]} ({m.permission ?? 'repository'})
+                      </Text>
+                    </Tooltip>
                   ) : (
                     <Tooltip label="From a group rule in the server configuration (server.group_roles)" withArrow>
                       <Text size="sm">{PROJECT_ROLE_LABELS[m.role]} (group)</Text>

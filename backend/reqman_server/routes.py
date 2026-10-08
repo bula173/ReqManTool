@@ -3,8 +3,10 @@
 - ``GET /auth/login/{provider}?next=/path``: start a login; redirects to the
   provider (OIDC authorization code flow with PKCE, see ``oidc.py``).
 - ``GET /auth/callback/{provider}``: the provider's redirect back; creates
-  the user (first login) and the session, sets the session cookie and
-  redirects to ``frontend_url`` + ``next``. A failure redirects to
+  the user (first login) and the session (which keeps the OAuth tokens,
+  server-side only), looks up the user's roles from repository permissions
+  (``repo_access.py``), sets the session cookie and redirects to
+  ``frontend_url`` + ``next``. A failure redirects to
   ``frontend_url/?login_error=<message>`` instead.
 - ``GET /auth/me``: the logged-in user, their roles (``permissions``, see
   ``permissions.Permissions.summary``) and the session's CSRF token (401
@@ -30,8 +32,10 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from .audit import AUDIT_LOGIN, AUDIT_LOGIN_FAILED, AUDIT_LOGOUT, AuditLog
 from .middleware import cookie_value
+from .github_oauth import GitHubOAuthClient
 from .oidc import OidcClient, OidcError, pkce_pair
 from .permissions import Permissions
+from .repo_access import RepoAccess
 from .sessions import PENDING_LOGIN_TTL, PendingLogin, PendingLogins, SessionStore
 from .settings import ServerSettings
 from .users import InactiveUserError, UserRegistry
@@ -52,7 +56,7 @@ def safe_next(value: str | None) -> str:
 
 def build_router(
     settings: ServerSettings,
-    clients: dict[str, OidcClient],
+    clients: dict[str, OidcClient | GitHubOAuthClient],
     sessions: SessionStore,
     pending: PendingLogins,
     users: UserRegistry,
@@ -60,6 +64,7 @@ def build_router(
     locks: Any = None,
     broadcast: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     audit: AuditLog | None = None,
+    repo: RepoAccess | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -172,8 +177,15 @@ def build_router(
             )
             login_failed(request, provider_id, str(exc), user_id=refused.id if refused else None)
             return login_error(str(exc))
-        token, _session = sessions.create(user.id, provider=provider_id)
+        token, _session = sessions.create(user.id, provider=provider_id, oauth_tokens=tokens)
         logger.info("User %s (%s) logged in with %s", user.id, user.username or user.email, provider_id)
+        if repo is not None:
+            # Roles from repository permissions: resolved now, then cached (see repo_access.py).
+            try:
+                repo.forget_remotes()
+                repo.resolve_user(user)
+            except Exception:  # noqa: BLE001 - the login itself succeeded; roles are looked up again on use
+                logger.exception("Repository roles of %s could not be resolved at login", user.id)
         if audit is not None:
             audit.safe_record(
                 None, AUDIT_LOGIN, None, {"provider": provider_id, "first_login": user.id not in known or None},

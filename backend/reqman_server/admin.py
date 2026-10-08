@@ -13,10 +13,24 @@ REST (every route needs a session; state-changing ones the CSRF token):
   name, "role": viewer | editor | project-admin}``: add a member or change
   the role.
 - ``DELETE /admin/projects/{project_id}/members/{user_id}``: remove a member.
+- ``POST /auth/permissions/sync``: look up the logged-in user's roles from
+  repository permissions again now (``repo_access.py``); returns the roles.
+- ``POST /admin/access/sync`` ``{"project_id"?: id}``: "Sync access now":
+  read the remote URLs again and look the repository roles up again,
+  bypassing the cache, for every user with a live session (one project:
+  its project admins; all projects: server admins). A failed lookup keeps
+  the last good role within the grace period, as always.
 
 WebSocket methods (``HOOKS.rpc_methods``, same rules and results):
-``auth.permissions``, ``admin.users.list``, ``admin.users.update``,
-``admin.members.list``, ``admin.members.set``, ``admin.members.remove``.
+``auth.permissions``, ``auth.permissions.sync``, ``admin.users.list``,
+``admin.users.update``, ``admin.members.list``, ``admin.members.set``,
+``admin.members.remove``, ``admin.access.sync``.
+
+The member list of a project whose remote lives on a GitLab/GitHub login
+provider names the repository (``repositories``) and lists the users whose
+role comes from it (``source: "repo"``, from the cache: users appear once
+their role was looked up, e.g. at login); memberships and group rules of
+those users do not apply there (``superseded: true``).
 
 Every change broadcasts ``{"event": "permissions_changed"}``: clients
 refetch their roles and the project list. A refusal is ``AccessDeniedError``
@@ -32,6 +46,7 @@ import logging
 from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from reqman.extensions import ACTION_PROJECT_ADMIN, AccessDeniedError, RequestIdentity, current_identity
@@ -39,6 +54,7 @@ from reqman.extensions import ACTION_PROJECT_ADMIN, AccessDeniedError, RequestId
 from .audit import AUDIT_MEMBER_REMOVE, AUDIT_MEMBER_SET, AUDIT_USER_UPDATE, AuditLog
 from .memberships import MembershipRegistry
 from .permissions import MembershipGuard, Permissions
+from .repo_access import RepoAccess
 from .sessions import SessionStore
 from .settings import ROLES
 from .users import User, UserRegistry
@@ -59,8 +75,10 @@ class AdminService:
         project_exists: Callable[[str], bool] | None,
         locks: Any = None,
         audit: AuditLog | None = None,
+        repo: RepoAccess | None = None,
     ) -> None:
         self.permissions = permissions
+        self.repo = repo
         self.audit = audit
         self.guard = guard
         self.users = users
@@ -97,6 +115,37 @@ class AdminService:
 
     def my_permissions(self) -> dict[str, Any]:
         return self.permissions.summary(self._actor())
+
+    def sync_mine(self) -> dict[str, Any]:
+        """Look up the logged-in user's repository roles again now; their roles afterwards."""
+        user = self._actor()
+        if self.repo is not None:
+            self.repo.forget_remotes()
+            self.repo.resolve_user(user)
+        return self.permissions.summary(user)
+
+    def sync_access(self, project_id: Any = None) -> dict[str, Any]:
+        """"Sync access now": repository roles looked up again for every user with a live session.
+
+        One project (its project admins) or, without ``project_id``, all
+        (server admins). Returns ``{"users", "projects", "errors"}``.
+        """
+        if project_id is None:
+            self._server_admin()
+        else:
+            self._project_admin(project_id)
+        if self.repo is None or not self.repo.enabled:
+            return {"users": 0, "projects": 0, "errors": [], "enabled": False}
+        self.repo.forget_remotes(project_id)
+        users = [u for u in (self.users.get(uid) for uid in sorted(self.sessions.user_ids())) if u and u.active]
+        ids = [project_id] if project_id is not None else (self.repo.project_ids() if self.repo.project_ids else [])
+        errors: list[dict[str, Any]] = []
+        for user in users:
+            errors += self.repo.resolve_user(user, ids)["errors"]
+        projects = [pid for pid in ids if self.repo.bindings(pid)]
+        logger.info("Repository roles synced (%s): %d users, %d errors", project_id or "all projects", len(users),
+                    len(errors))
+        return {"users": len(users), "projects": len(projects), "errors": errors, "enabled": True}
 
     # --- users (server admins) --------------------------------------------------------
 
@@ -138,6 +187,8 @@ class AdminService:
     def list_members(self, project_id: Any) -> dict[str, Any]:
         self._project_admin(project_id)
         users = {u.id: u for u in self.users.all()}
+        bindings = self.repo.bindings(project_id) if self.repo is not None else []
+        bound = {b.provider.id for b in bindings}
         members: list[dict[str, Any]] = []
         listed: set[str] = set()
         for membership in self.memberships.of_project(project_id):
@@ -150,8 +201,24 @@ class AdminService:
             group_role = self.permissions.group_role(user, project_id)
             if group_role is not None and user.id not in listed:
                 members.append(self._member(project_id, user.id, user, group_role, "group", ""))
-        members.sort(key=lambda m: (-ROLES.index(m["role"]), m["name"].lower(), m["user_id"]))
-        return {"project_id": project_id, "roles": list(ROLES), "members": members}
+        for member in members:
+            user = users.get(member["user_id"])
+            member["superseded"] = bool(user is not None and user.provider in bound)
+        for user in users.values():
+            cached = self.repo.cached(user.id, project_id) if self.repo is not None and user.provider in bound else None
+            if cached is not None and cached.role is not None:
+                entry = self._member(project_id, user.id, user, cached.role, "repo", "")
+                entry["permission"] = cached.permission
+                entry["repository"] = cached.binding.display
+                entry["superseded"] = False
+                members.append(entry)
+        members.sort(key=lambda m: (m["superseded"], -ROLES.index(m["role"]), m["name"].lower(), m["user_id"]))
+        return {
+            "project_id": project_id,
+            "roles": list(ROLES),
+            "members": members,
+            "repositories": [b.public() for b in bindings],
+        }
 
     def _member(
         self, project_id: str, user_id: str, user: User | None, role: str, source: str, added_at: str
@@ -230,6 +297,10 @@ class SetMemberBody(BaseModel):
     role: str
 
 
+class SyncAccessBody(BaseModel):
+    project_id: str | None = None
+
+
 def _call(fn, *args):
     try:
         return fn(*args)
@@ -253,6 +324,18 @@ def build_admin_router(
     @router.get("/auth/permissions")
     def my_permissions():
         return _call(admin.my_permissions)
+
+    @router.post("/auth/permissions/sync")
+    async def sync_mine():
+        result = await run_in_threadpool(_call, admin.sync_mine)
+        await changed()
+        return result
+
+    @router.post("/admin/access/sync")
+    async def sync_access(body: SyncAccessBody | None = None):
+        result = await run_in_threadpool(_call, admin.sync_access, body.project_id if body else None)
+        await changed()
+        return result
 
     @router.get("/admin/users")
     def list_users():
@@ -302,6 +385,8 @@ def build_rpc_methods(
 
     return {
         "auth.permissions": lambda p: admin.my_permissions(),
+        "auth.permissions.sync": mutation(lambda p: admin.sync_mine()),
+        "admin.access.sync": mutation(lambda p: admin.sync_access(p.get("project_id"))),
         "admin.users.list": lambda p: admin.list_users(),
         "admin.users.update": mutation(
             lambda p: admin.update_user(p.get("user_id"), p.get("active"), p.get("server_admin"))

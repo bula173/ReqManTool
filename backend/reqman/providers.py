@@ -77,7 +77,15 @@ _SCP_RE = re.compile(r"^(?:[^@/:\s]+@)?([^@/:\s]{2,}):(.+)$")
 
 
 class ProviderError(ValueError):
-    """A provider API call failed; the message carries the provider's own error verbatim."""
+    """A provider API call failed; the message carries the provider's own error verbatim.
+
+    ``status`` is the HTTP status of an error response (``None``: no
+    response, e.g. unreachable or a timeout).
+    """
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 # --- connections -----------------------------------------------------------------
@@ -308,7 +316,9 @@ class ProviderHttp:
                     f"{label} API redirected {method} {where} to {location or 'another address'} "
                     f"(HTTP {exc.code}); check the connection URL"
                 ) from exc
-            raise ProviderError(f"{label} API error {exc.code}: {_error_text(raw_error, exc.reason)}") from exc
+            raise ProviderError(
+                f"{label} API error {exc.code}: {_error_text(raw_error, exc.reason)}", status=exc.code
+            ) from exc
         except (socket.timeout, TimeoutError) as exc:
             raise ProviderError(f"{label} did not answer within {self.timeout:g} s ({where})") from exc
         except urllib.error.URLError as exc:
@@ -364,10 +374,12 @@ class Provider:
 
     kind = ""
 
-    def __init__(self, connection: ProviderConnection, token: str, http: ProviderHttp):
+    def __init__(self, connection: ProviderConnection, token: str, http: ProviderHttp, oauth: bool = False):
         self.connection = connection
         self._token = token
         self.http = http
+        # An OAuth access token (server edition login) instead of a personal access token.
+        self.oauth = oauth
 
     @property
     def label(self) -> str:
@@ -412,6 +424,25 @@ class Provider:
     def change_request(self, full_path: str, number: int) -> dict[str, Any]:
         raise NotImplementedError
 
+    def repository_permission(self, full_path: str, user_id: str | None = None) -> str | None:
+        """The token owner's permission on a repository, as the provider names it, or ``None``.
+
+        GitLab: ``Guest``, ``Planner``, ``Reporter``, ``Developer``,
+        ``Maintainer``, ``Owner`` (the highest of the project and inherited
+        group memberships; ``user_id`` is the GitLab user id, needed for
+        inherited memberships), ``Read`` for a visible (public/internal)
+        project without membership. GitHub: ``Read``, ``Triage``, ``Write``,
+        ``Maintain``, ``Admin``. ``None``: the repository does not exist for
+        the token's owner (no access). Other failures raise ``ProviderError``.
+        """
+        raise NotImplementedError
+
+
+# GitLab access levels (``access_level``) and their names, lowest first.
+GITLAB_ACCESS_LEVELS = {10: "Guest", 15: "Planner", 20: "Reporter", 30: "Developer", 40: "Maintainer", 50: "Owner"}
+# GitHub repository permissions (``permissions`` of ``GET /repos/{owner}/{repo}``), highest first.
+GITHUB_PERMISSIONS = (("admin", "Admin"), ("maintain", "Maintain"), ("push", "Write"), ("triage", "Triage"), ("pull", "Read"))
+
 
 def _slug(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", name.strip()).strip("-.") or "project"
@@ -421,7 +452,45 @@ class GitLabProvider(Provider):
     kind = GITLAB
 
     def _headers(self) -> dict[str, str]:
+        if self.oauth:
+            return {"Authorization": f"Bearer {self._token}"}
         return {"PRIVATE-TOKEN": self._token}
+
+    def repository_permission(self, full_path: str, user_id: str | None = None) -> str | None:
+        try:
+            project = self._json("GET", f"/projects/{self._project_ref(full_path)}")
+        except ProviderError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        if not isinstance(project, dict):
+            raise ProviderError(f"GitLab answered /projects/{full_path} with something that is not a project")
+        levels: list[int] = []
+        permissions = project.get("permissions") if isinstance(project.get("permissions"), dict) else {}
+        for key in ("project_access", "group_access"):
+            entry = permissions.get(key)
+            if isinstance(entry, dict) and isinstance(entry.get("access_level"), int):
+                levels.append(entry["access_level"])
+        if user_id and str(user_id).isdigit() and project.get("id") is not None:
+            # Includes memberships inherited from parent groups (``permissions`` may not).
+            try:
+                member = self._json(
+                    "GET", f"/projects/{urllib.parse.quote(str(project['id']), safe='')}/members/all/{user_id}"
+                )
+            except ProviderError as exc:
+                if exc.status != 404:
+                    raise
+            else:
+                if isinstance(member, dict) and isinstance(member.get("access_level"), int):
+                    if member.get("state") in (None, "active"):
+                        levels.append(member["access_level"])
+        known = [level for level in levels if level >= min(GITLAB_ACCESS_LEVELS)]
+        if known:
+            # An unknown level (a future one) counts as the highest named level below it.
+            best = max(level for level in GITLAB_ACCESS_LEVELS if level <= max(known))
+            return GITLAB_ACCESS_LEVELS[best]
+        # Visible (public or internal) without a membership: the code can be read.
+        return "Read"
 
     @staticmethod
     def _project_ref(full_path: str) -> str:
@@ -679,6 +748,22 @@ class GitHubProvider(Provider):
     def repository(self, full_path: str) -> dict[str, Any]:
         data = self._json("GET", f"/repos/{self._repo_ref(full_path)}")
         return self._repository(data if isinstance(data, dict) else {})
+
+    def repository_permission(self, full_path: str, user_id: str | None = None) -> str | None:
+        try:
+            data = self._json("GET", f"/repos/{self._repo_ref(full_path)}")
+        except ProviderError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        permissions = data.get("permissions") if isinstance(data, dict) else None
+        if not isinstance(permissions, dict):
+            # Public repository read with a token that may not see its permissions.
+            return "Read" if isinstance(data, dict) and not data.get("private") else None
+        for key, name in GITHUB_PERMISSIONS:
+            if permissions.get(key) is True:
+                return name
+        return None
 
     def _pull_request(self, full_path: str, data: dict[str, Any], with_reviews: bool) -> dict[str, Any]:
         state = data.get("state")

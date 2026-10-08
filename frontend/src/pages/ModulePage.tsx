@@ -35,10 +35,12 @@ import {
   LINK_NAVIGATION_MENU,
   REQUIREMENT_CONTEXT_MENU,
   REQUIREMENT_NAVIGATION_MENU,
+  canChangeStatusOnly,
   isModuleLockedByOther,
   isModuleReadOnly,
   moduleLockOf,
   moduleNeedsCheckout,
+  statusAttributeId,
 } from '../actions/registry';
 import { contextMenuTargetProps } from '../actions/shortcuts';
 import { applicableAttributes, applicableViews } from '../api/applicability';
@@ -303,6 +305,9 @@ export function ModulePage() {
   // A locked project, one the user may not change (viewer), or (server edition) a module another user
   // checked out refuses every change (server-side): no inline editing, no drop-to-link, no row actions.
   const locked = isModuleReadOnly(appState, projectId, moduleId);
+  // Server edition: a reviewer may still change the status attribute (sign-off); the server decides each change.
+  const statusAttrId = statusAttributeId(visibleAttributes);
+  const statusEditable = !locked || canChangeStatusOnly(appState, projectId, moduleId);
   // Server edition: the module's edit lock (null in the local edition).
   const moduleLock = moduleLockOf(appState, projectId, moduleId);
   const lockedByOther = isModuleLockedByOther(appState, projectId, moduleId);
@@ -630,7 +635,9 @@ export function ModulePage() {
                               attr={attr}
                               value={req.attributes[attr.id]}
                               onSave={(value) => handleCellSave(req, attr.id, value)}
-                              disabled={updateRequirement.isPending || locked}
+                              disabled={
+                                updateRequirement.isPending || (attr.id === statusAttrId ? !statusEditable : locked)
+                              }
                               projectId={projectId}
                               onNavigateToLinked={handleNavigateToLinked}
                               onLinkMenu={(link, kind, position) => openLinkMenu(req, attr.id, link, kind, position)}

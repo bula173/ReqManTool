@@ -1626,3 +1626,63 @@ Newest entries are appended at the end.
       queries.ts}`, `docs/ARCHITECTURE.md`. Not covered: no frontend tests
       (no test runner); no browser smoke test; "Save column widths to
       view" was replaced by "Save layout to view".
+- [x] **Server edition: roles from GitLab/GitHub repository permissions,
+      reviewer role and status guards** (2026-10-08; requested
+      2026-10-08, slice 5 of the server edition); design in
+      `docs/ARCHITECTURE.md` ("Roles from repository permissions, reviewer
+      and status guards (slice 5)"). A project is bound to a user when its
+      git remote is on the instance the user logged in with (https by
+      host/port/path prefix, ssh/scp by host, provider `git_hosts`
+      aliases); the role comes from the provider API with the user's OAuth
+      token: GitLab `GET /api/v4/projects/:path` permissions plus
+      `/members/all/:user_id` (inherited), GitHub `GET /repos/{o}/{r}`
+      permissions. Mapping: GitLab Guest / Reporter / Planner, GitHub Read
+      → viewer; GitHub Triage → reviewer; GitLab Developer, GitHub Write →
+      editor; GitLab Maintainer / Owner, GitHub Maintain / Admin →
+      project-admin; visible but not a member → viewer; invisible
+      repository → no role. Cache per (user, project)
+      `server.repo_roles.cache_minutes` (5), resolved at login (8 in
+      parallel), failed lookups retried after 30 s, last good role kept
+      for `grace_minutes` (60). Tokens (access, refresh, expiry) only in
+      the server-side session (`sessions.json`, 0600), refreshed once on
+      expiry/401; GitLab logins add the `read_api` scope when repo_roles
+      is on. New GitHub OAuth2 login provider (`type: "github"`, state +
+      PKCE, `/user` and `/user/emails`, orgs as groups). New role
+      **reviewer** (viewer < reviewer < editor < project-admin) in role
+      lists, group roles, memberships and admin pickers. Status guards in
+      `ProjectService` (server mode only; status attribute found by
+      name): a reviewer may change only the status; → Reviewed needs
+      reviewer rank and independence (not the last content author, by
+      e-mail then name; refused without git history or with uncommitted
+      changes); to/from Approved needs project-admin and only from
+      Reviewed; applies to update, add and CSV import. Project-admin only:
+      baselines, attribute definitions/scope, views, link configurations
+      (lock/unlock already). Errors name the role and its source ("needs
+      Developer on gitlab.example.com/rbc/rbc-gp (you have Reporter …)"),
+      403 / WS -32003. API: `POST /auth/permissions/sync`, `POST
+      /admin/access/sync {project_id?}`, WS `auth.permissions.sync`,
+      `admin.access.sync`, broadcast `permissions_changed`; `/auth/me`
+      permissions gain `repo_roles` and nullable roles; the members list
+      gains repository entries. Config `server.repo_roles {enabled,
+      cache_minutes, grace_minutes}`, provider `type: github`,
+      `git_hosts`. Core hooks: `ACTION_PROJECT_REVIEW`,
+      `ACTION_PROJECT_APPROVE`, `EditionContext.project_ids` /
+      `project_remote_url`, `GitHistory.remote_url`,
+      `providers.repository_permission`. Decisions: the repository
+      permission wins over in-app membership for bound projects (both
+      directions); server-admin stays in-app; no sign-off without history;
+      approval only from Reviewed and revoking it needs project-admin;
+      sync bypasses the cache but keeps the last good role within grace;
+      old sessions need a fresh login; `read_api` may trigger a new
+      consent prompt. Backend: `backend/reqman/{extensions.py, app.py,
+      service.py, git_repo.py, providers.py}`, `backend/reqman_server/`
+      (`repo_access.py` and `github_oauth.py` new; `admin.py`, `oidc.py`,
+      `permissions.py`, `routes.py`, `sessions.py`, `settings.py`). UI:
+      `LoginPage` (GitHub), `AdminModal` ("Sync access now", reviewer in
+      pickers, repository members), `ProjectRoleBadge` (shows the source;
+      orange when the last check failed), status-only editing for
+      reviewers in `ModulePage`, project configuration (attributes, link
+      configurations, views) disabled below project-admin in
+      `ProjectPage`. Not covered: tests;
+      follow-ups in the backlog ("Repository-permission roles:
+      follow-ups").

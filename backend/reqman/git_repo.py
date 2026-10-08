@@ -1989,6 +1989,20 @@ class GitHistory:
             f"Invalid remote URL '{url}': relative local paths are not allowed; {rule}"
         )
 
+    def remote_url(self, project_dir: Path) -> str | None:
+        """The configured remote's URL, or ``None`` (no remote, no usable repository, git off). Never raises.
+
+        Read-only; used by the server edition to find the repository whose
+        permissions give a user's role in the project.
+        """
+        try:
+            info = self.detect(project_dir)
+            if info.state not in (STATE_READY, STATE_PAUSED):
+                return None
+            return self._remote_url(info)
+        except (GitError, OSError, ValueError):
+            return None
+
     def _remote_url(self, info: RepoInfo) -> str | None:
         result = self._repo(
             info, ["config", "--get", f"remote.{REMOTE_NAME}.url"], check=False, read_only=True

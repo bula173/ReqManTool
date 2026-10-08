@@ -12,6 +12,13 @@ A pending login (``PendingLogins``) holds the OAuth ``state``, ``nonce`` and
 PKCE ``code_verifier`` between the redirect to the provider and the
 callback (in memory, ten minutes, single use), bound to the browser by a
 random value in a short-lived cookie.
+
+A session also keeps the OAuth tokens of its login (``access_token``,
+``refresh_token``, ``token_expires``), server-side only: the repository
+permission lookup (``repo_access.py``) calls the GitLab/GitHub API with
+them. They are never sent to the browser or logged, and leave the server
+only to the provider that issued them; ``sessions.json`` is written owner
+readable only (0600). They go with the session (logout, expiry).
 """
 
 from __future__ import annotations
@@ -20,7 +27,7 @@ import hashlib
 import secrets
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -44,6 +51,11 @@ class Session:
     last_seen: float
     expires: float
     provider: str = ""
+    # OAuth tokens of the login (server-side only; repr=False keeps them out of logs and tracebacks).
+    access_token: str = field(default="", repr=False)
+    refresh_token: str = field(default="", repr=False)
+    # When the access token expires (epoch seconds; 0: unknown / does not expire).
+    token_expires: float = 0.0
 
 
 class SessionStore:
@@ -82,8 +94,10 @@ class SessionStore:
             del self._sessions[key]
         return bool(dead)
 
-    def create(self, user_id: str, provider: str = "") -> tuple[str, Session]:
-        """A new session: ``(cookie token, session)``."""
+    def create(
+        self, user_id: str, provider: str = "", oauth_tokens: dict | None = None
+    ) -> tuple[str, Session]:
+        """A new session: ``(cookie token, session)``; ``oauth_tokens``: the token endpoint's response."""
         token = secrets.token_urlsafe(32)
         now = self.clock()
         session = Session(
@@ -94,6 +108,7 @@ class SessionStore:
             expires=now + self.max_age,
             provider=provider,
         )
+        _apply_tokens(session, oauth_tokens or {}, now)
         with self._lock:
             self._purge_expired()
             self._sessions[_hash(token)] = session
@@ -141,6 +156,40 @@ class SessionStore:
             now = self.clock()
             return any(s.user_id == user_id and self._alive(s, now) for s in self._sessions.values())
 
+    def oauth_session(self, user_id: str, provider: str) -> tuple[str, Session] | None:
+        """``(session key, session)`` of the user's newest live session of ``provider`` with an access token."""
+        with self._lock:
+            now = self.clock()
+            found = [
+                (key, s)
+                for key, s in self._sessions.items()
+                if s.user_id == user_id and s.provider == provider and s.access_token and self._alive(s, now)
+            ]
+        if not found:
+            return None
+        return max(found, key=lambda item: item[1].created)
+
+    def session_by_key(self, key: str) -> Session | None:
+        """The live session stored under ``key`` (the hash of its cookie token), or ``None``."""
+        with self._lock:
+            session = self._sessions.get(key)
+            return session if session is not None and self._alive(session, self.clock()) else None
+
+    def update_tokens(self, key: str, oauth_tokens: dict) -> None:
+        """Store refreshed OAuth tokens (a token endpoint response) in the session ``key`` (if still there)."""
+        with self._lock:
+            session = self._sessions.get(key)
+            if session is None:
+                return
+            _apply_tokens(session, oauth_tokens, self.clock())
+            self._persist(force=True)
+
+    def user_ids(self) -> set[str]:
+        """The users with a live session."""
+        with self._lock:
+            now = self.clock()
+            return {s.user_id for s in self._sessions.values() if self._alive(s, now)}
+
     def _persist(self, force: bool) -> None:
         if self.path is None:
             return
@@ -149,6 +198,23 @@ class SessionStore:
             return
         self._last_persist = now
         write_json_file(self.path, {"sessions": {k: asdict(s) for k, s in self._sessions.items()}})
+
+
+def _apply_tokens(session: Session, tokens: dict, now: float) -> None:
+    access = tokens.get("access_token")
+    if not isinstance(access, str) or not access:
+        return
+    session.access_token = access
+    refresh = tokens.get("refresh_token")
+    if isinstance(refresh, str) and refresh:
+        session.refresh_token = refresh  # else keep the old one (not every refresh rotates it)
+    expires_in = tokens.get("expires_in")
+    if isinstance(expires_in, str) and expires_in.strip().isdigit():
+        expires_in = int(expires_in.strip())
+    if isinstance(expires_in, (int, float)) and not isinstance(expires_in, bool) and expires_in > 0:
+        session.token_expires = now + float(expires_in)
+    else:
+        session.token_expires = 0.0
 
 
 @dataclass(frozen=True)

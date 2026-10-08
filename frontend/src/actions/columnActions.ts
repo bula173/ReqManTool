@@ -69,6 +69,7 @@ export const columnActions: Action<'column'>[] = [
     id: 'column.attributeModules',
     element: 'column',
     edits: true,
+    requires: ['projectAdmin'],
     label: 'Attribute modules',
     icon: IconAdjustments,
     opensDialog: true,

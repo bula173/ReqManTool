@@ -185,6 +185,42 @@ export function isModuleReadOnly(
   return isModuleLockedByOther(state, projectId, moduleId) || moduleNeedsCheckout(state, projectId, moduleId);
 }
 
+// Names of the requirement status attribute, compared lower-case with punctuation collapsed — the
+// backend's `REPORT_ATTRIBUTE_ROLES["status"]` (the server decides; this only enables the cell).
+const STATUS_ATTRIBUTE_NAMES = ['status', 'review status', 'approval status', 'requirement status', 'lifecycle status'];
+
+function attributeKey(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^0-9a-z]+/g, ' ')
+    .trim();
+}
+
+/** The id of the module's requirement status attribute (the RBC "Status" enum), or null. */
+export function statusAttributeId(attributes: { id: string; name: string; type: string; system?: boolean }[]): string | null {
+  const candidates = attributes.filter((a) => !a.system && (a.type === 'enum' || a.type === 'string'));
+  for (const wanted of STATUS_ATTRIBUTE_NAMES) {
+    const found = candidates.find((a) => attributeKey(a.name) === wanted || attributeKey(a.id) === wanted);
+    if (found) return found.id;
+  }
+  return null;
+}
+
+/**
+ * Whether the user may change requirement statuses in the module although its content is read-only
+ * for them (server edition: a reviewer signs off). The project must not be locked and the module not
+ * checked out by someone else. The server's status guards still decide each change.
+ */
+export function canChangeStatusOnly(
+  state: AppState,
+  projectId: string | null | undefined,
+  moduleId: string | null | undefined,
+): boolean {
+  if (!state.access.serverMode || !projectId || isProjectLocked(state, projectId)) return false;
+  if (!state.access.canReview(projectId)) return false;
+  return !isModuleLockedByOther(state, projectId, moduleId) && !moduleNeedsCheckout(state, projectId, moduleId);
+}
+
 /** The module whose content an action changes: the target module/tab, a link's source module, else the open module. */
 function actionModuleId(ctx: ActionContext): string | null {
   switch (ctx.element) {

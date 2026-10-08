@@ -32,6 +32,14 @@ create/lock/unlock/remove/purge; server admins read it (``GET
 /admin/audit``, ``admin.audit.list``). Commit authorship and the per-user
 squash window, and ``by`` in live-sync events, are core behavior driven by
 the request identity.
+
+Roles from repository permissions (``repo_access.py``): a project whose
+git remote lives on the GitLab / GitHub instance a user logged in with
+(GitHub login: ``github_oauth.py``) gives that user the role their
+repository permission maps to; the user's OAuth token stays in the session.
+New role ``reviewer`` (status sign-off); the requirement status guards
+themselves are core rules (``reqman.service``) asked through the
+permission guard (``project.review``, ``project.approve``).
 """
 
 from __future__ import annotations
@@ -42,12 +50,14 @@ from typing import Any
 from reqman.extensions import EditionContext
 
 from .admin import AdminService, build_admin_router, build_rpc_methods
+from .github_oauth import GitHubOAuthClient
 from .audit import AuditLog, AuditService, build_audit_router, build_audit_rpc_methods
 from .memberships import MembershipRegistry
 from .module_locks import ModuleLockRegistry, ModuleLocks, build_lock_router, build_lock_rpc_methods
 from .middleware import AuthMiddleware
 from .oidc import OidcClient
 from .permissions import MembershipEvents, MembershipGuard, Permissions
+from .repo_access import RepoAccess
 from .routes import build_router
 from .sessions import PendingLogins, SessionStore
 from .settings import ServerSettings, load_server_settings
@@ -74,6 +84,7 @@ class ServerEditionImpl:
         self.memberships: MembershipRegistry | None = None
         self.locks: ModuleLocks | None = None
         self.audit: AuditLog | None = None
+        self.repo: RepoAccess | None = None
 
     def install(self, app, context: EditionContext) -> None:
         settings = load_server_settings(
@@ -83,13 +94,17 @@ class ServerEditionImpl:
         users = UserRegistry(settings.state_dir / USERS_FILE, admins=settings.admins, admin_groups=settings.admin_groups)
         audit = AuditLog(settings.state_dir / AUDIT_FILE, users)
         memberships = MembershipRegistry(settings.state_dir / MEMBERSHIPS_FILE)
-        permissions = Permissions(settings, users, memberships)
-        guard = MembershipGuard(permissions)
         sessions = SessionStore(
             settings.state_dir / SESSIONS_FILE if settings.persist_sessions else None,
             max_age=settings.session_max_age_seconds,
             idle=settings.session_idle_seconds,
         )
+        clients = {
+            p.id: GitHubOAuthClient(p) if p.type == "github" else OidcClient(p) for p in settings.providers
+        }
+        repo = RepoAccess(settings, clients, sessions, context.project_remote_url, context.project_ids)
+        permissions = Permissions(settings, users, memberships, repo=repo if repo.enabled else None)
+        guard = MembershipGuard(permissions)
         lock_registry = ModuleLockRegistry(settings.state_dir / MODULE_LOCKS_FILE, settings.module_lock_idle_seconds)
         locks = ModuleLocks(
             lock_registry,
@@ -100,15 +115,16 @@ class ServerEditionImpl:
             module_exists=context.module_exists,
             audit=audit,
         )
-        clients = {p.id: OidcClient(p) for p in settings.providers}
+        repo_roles = repo if repo.enabled else None
         app.include_router(
             build_router(
                 settings, clients, sessions, PendingLogins(), users, permissions,
-                locks=lock_registry, broadcast=context.broadcast, audit=audit,
+                locks=lock_registry, broadcast=context.broadcast, audit=audit, repo=repo_roles,
             )
         )
         admin = AdminService(
-            permissions, guard, users, memberships, sessions, context.project_exists, locks=lock_registry, audit=audit
+            permissions, guard, users, memberships, sessions, context.project_exists, locks=lock_registry, audit=audit,
+            repo=repo_roles,
         )
         audit_service = AuditService(audit, permissions)
         app.include_router(build_admin_router(admin, context.broadcast))
@@ -117,7 +133,7 @@ class ServerEditionImpl:
         # The core asks these at its choke points (ProjectService) and in its WebSocket dispatcher.
         context.hooks.permission_guard = guard
         context.hooks.lock_service = locks
-        context.hooks.project_events = MembershipEvents(memberships, locks=lock_registry)
+        context.hooks.project_events = MembershipEvents(memberships, locks=lock_registry, repo=repo_roles)
         context.hooks.audit = audit
         context.hooks.rpc_methods.update(build_rpc_methods(admin, context.broadcast))
         context.hooks.rpc_methods.update(build_lock_rpc_methods(locks, context.broadcast))
@@ -128,6 +144,7 @@ class ServerEditionImpl:
         self.settings, self.sessions, self.users, self.memberships = settings, sessions, users, memberships
         self.locks = locks
         self.audit = audit
+        self.repo = repo_roles
         if not settings.cookie_secure:
             logger.warning("Server edition: the session cookie is not marked Secure (cookie_secure: false)")
         logger.info(
@@ -135,6 +152,12 @@ class ServerEditionImpl:
             ", ".join(f"{p.name} ({p.issuer})" for p in settings.providers),
             settings.state_dir,
         )
+        if repo_roles is not None:
+            logger.info(
+                "Server edition: roles from repository permissions on %s (cached %d s)",
+                ", ".join(p.name for p in settings.providers if p.type in ("gitlab", "github")),
+                settings.repo_roles_ttl_seconds,
+            )
 
     def public_info(self) -> dict[str, Any]:
         providers = [p.public_info() for p in self.settings.providers] if self.settings else []

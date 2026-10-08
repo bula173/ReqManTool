@@ -27,7 +27,16 @@ is ``project_id`` checks ``project.read``, ``project.write`` (the
 project creation, listing (filtered to the readable projects), cross-
 project reads and cleanup cascades, libraries and connections check
 explicitly. In the local edition the guard is ``AllowAllGuard`` and none of
-this costs more than a type check.
+this costs more than a type check. Project admins only: baselines, lock /
+unlock, attribute definitions, views and link configurations.
+
+Requirement status guards (server edition, only while a guard is active):
+``update_requirement`` needs just ``project.review``, so a reviewer may
+sign off; a change of any attribute other than the status still needs
+``project.write``. Status changes (update, add, CSV import) go through
+``_check_status_changes``: Reviewed only by someone other than the last
+content author (git history), Approved only from Reviewed and by
+``project.approve`` (see "requirement status guards" below).
 
 Module edit locks (server edition): the active ``ModuleLockService`` is
 asked before a write to a module's content (``_check_module_writes``):
@@ -65,8 +74,10 @@ from .extensions import (
     ACTION_GIT_REMOTE_URL,
     ACTION_LIBRARY_WRITE,
     ACTION_PROJECT_ADMIN,
+    ACTION_PROJECT_APPROVE,
     ACTION_PROJECT_CREATE,
     ACTION_PROJECT_READ,
+    ACTION_PROJECT_REVIEW,
     ACTION_PROJECT_WRITE,
     AUDIT_PROJECT_CREATE,
     AUDIT_PROJECT_LOCK,
@@ -218,6 +229,11 @@ REPORT_ATTRIBUTE_ROLES: dict[str, dict[str, Any]] = {
         "contains": ("evidence",),
     },
     "object_type": {"types": ("enum", "string"), "names": ("object type",)},
+    # The requirement status the server edition's sign-off guards watch (``_check_status_changes``).
+    "status": {
+        "types": ("enum", "string"),
+        "names": ("status", "review status", "approval status", "requirement status", "lifecycle status"),
+    },
     # The test case attribute a test result import matches on by default (else the requirement id).
     "test_id": {
         "types": ("string", "integer", "enum"),
@@ -252,6 +268,13 @@ REPORT_RESULT_WORDS: dict[str, tuple[str, ...]] = {
     "not_run": ("not run", "not executed", "pending", "skipped", ""),
 }
 REPORT_RESULTS = ("passed", "failed", "blocked", "not_run", "not_applicable")
+
+# Status values (compared like attribute names) the server edition's status
+# guards treat as signed off (``reviewed``) and approved (``approved``).
+STATUS_STAGE_WORDS: dict[str, tuple[str, ...]] = {
+    "reviewed": ("reviewed",),
+    "approved": ("approved",),
+}
 REPORT_EXECUTED_RESULTS = ("passed", "failed", "blocked")
 VERIFICATION_STATUSES = ("verified", "failed", "not_run", "not_covered")
 EXECUTION_TEST_STATUSES = ("passed", "failed", "blocked", "not_run", "not_planned")
@@ -1327,7 +1350,7 @@ class ProjectService:
 
     # --- baselines (git) ---------------------------------------------------------
 
-    @_requires(ACTION_PROJECT_WRITE)
+    @_requires(ACTION_PROJECT_ADMIN)
     def create_baseline(
         self,
         project_id: str,
@@ -2171,6 +2194,7 @@ class ProjectService:
         return [c for c in project.link_configurations if c.target_project_id is None]
 
     @_records_history
+    @_requires(ACTION_PROJECT_ADMIN)
     def add_attribute_definition(
         self,
         project_id: str,
@@ -2204,6 +2228,7 @@ class ProjectService:
         return project
 
     @_records_history
+    @_requires(ACTION_PROJECT_ADMIN)
     def set_attribute_modules(
         self, project_id: str, attr_id: str, modules: Any, drop_values: Any = False, module_types: Any = None
     ) -> dict[str, Any]:
@@ -3039,6 +3064,10 @@ class ProjectService:
         attributes = self._sanitized_text_values(project, attributes)
         self._validate_attributes(project, attributes, is_create=True, module_id=module_id, module_type=module.type)
         merged = self._merged_attributes(project, attributes, module_id, module.type)
+        if guard_active():
+            status = self._status_attribute(project, module)
+            if status is not None and merged.get(status.id) not in (None, ""):
+                self._check_status_changes(project_id, module_id, [(None, None, merged[status.id])])
 
         requirement_id = self._allocate_requirement_id(project, module)
         siblings = self.store.load_all_requirements(project_id, module_id)
@@ -3187,6 +3216,7 @@ class ProjectService:
         return self.store.load_requirement(project_id, module_id, new_root.id)
 
     @_records_history
+    @_requires(ACTION_PROJECT_REVIEW)
     def update_requirement(
         self, project_id: str, module_id: str, requirement_id: str, attributes: dict[str, Any]
     ) -> Requirement:
@@ -3195,10 +3225,136 @@ class ProjectService:
         attributes = self._sanitized_text_values(project, attributes)
         self._validate_attributes(project, attributes, is_create=False, module_id=module_id, module_type=module_type)
         requirement = self.store.load_requirement(project_id, module_id, requirement_id)
+        if guard_active():
+            # Server edition: a reviewer may change only the status; the status guards apply to everyone.
+            module = self.store.load_module(project_id, module_id)
+            status = self._status_attribute(project, module)
+            changed = {k for k, v in attributes.items() if requirement.attributes.get(k) != v}
+            if changed - ({status.id} if status else set()):
+                check_permission(ACTION_PROJECT_WRITE, project_id)
+            if status is not None and status.id in changed:
+                self._check_status_changes(
+                    project_id, module_id, [(requirement_id, requirement.attributes.get(status.id), attributes[status.id])]
+                )
         self._mark_rich_text_format(project, attributes)
         requirement.attributes.update(attributes)
         self.store.save_requirement(project_id, module_id, requirement)
         return requirement
+
+    # --- requirement status guards (server edition) ------------------------------
+    #
+    # Only while a permission guard is active (``guard_active``): the local
+    # edition never runs any of this. The status attribute is found by name
+    # like a report attribute (``REPORT_ATTRIBUTE_ROLES["status"]``: the RBC
+    # "Status" enum); its values are compared like attribute names
+    # (``STATUS_STAGE_WORDS``). Per changed status:
+    #
+    # - to or from Approved: ``project.approve`` (project admin), and only
+    #   from Reviewed (approval never skips the independent review);
+    # - to Reviewed: ``project.review`` (reviewer or more) by someone other
+    #   than the requirement's last content author (independence, see
+    #   ``_require_independent_reviewer``); a new requirement cannot start
+    #   as Reviewed;
+    # - any other change: ``project.review``.
+
+    def _status_attribute(self, project: Project, module: Module) -> AttributeDefinition | None:
+        """The module's requirement status attribute (by name, like a report attribute), or ``None``."""
+        return self._report_attribute(project, module, "status")
+
+    @classmethod
+    def _status_stage(cls, value: Any) -> str | None:
+        """``reviewed`` / ``approved`` for a signed-off / approved status value, else ``None``."""
+        key = cls._report_key(value) if isinstance(value, str) else ""
+        for stage, words in STATUS_STAGE_WORDS.items():
+            if key in words:
+                return stage
+        return None
+
+    def _check_status_changes(
+        self, project_id: str, module_id: str, changes: list[tuple[str | None, Any, Any]]
+    ) -> None:
+        """Refuse status changes the current identity may not make (``AccessDeniedError``, 403 / -32003).
+
+        ``changes``: ``(requirement id or None for a new one, old value, new value)``.
+        A ``ValueError`` (400) for approving a requirement that was not reviewed.
+        """
+        for requirement_id, old, new in changes:
+            if old == new:
+                continue
+            old_stage, new_stage = self._status_stage(old), self._status_stage(new)
+            label = requirement_id or "A new requirement"
+            if "approved" in (old_stage, new_stage):
+                check_permission(ACTION_PROJECT_APPROVE, project_id)
+                if new_stage == "approved" and old_stage != "reviewed":
+                    raise ValueError(
+                        f"{label} cannot be approved: its status is {old or 'empty'}, and only a reviewed "
+                        "requirement can be approved (independent review first)"
+                    )
+                continue
+            check_permission(ACTION_PROJECT_REVIEW, project_id)
+            if new_stage == "reviewed":
+                if requirement_id is None:
+                    raise AccessDeniedError(
+                        f"A new requirement cannot start as {new}: its author cannot review it; "
+                        "another reviewer signs it off after it was created"
+                    )
+                self._require_independent_reviewer(project_id, module_id, requirement_id, new)
+
+    def _require_independent_reviewer(self, project_id: str, module_id: str, requirement_id: str, value: Any) -> None:
+        """Refuse a sign-off by the requirement's last content author (``AccessDeniedError``).
+
+        The last content author is the author of the newest commit in the
+        requirement's git history (``requirement_history``: the
+        ``created``/``modified`` computation) that created it or changed one
+        of its attributes other than the status and the system (link mirror)
+        attributes; moves and reorders do not count. The author is compared
+        with the identity commits get (e-mail address, else name). Without a
+        readable history, or with changes not committed yet, the last author
+        is unknown and the sign-off is refused.
+        """
+        project_dir = self.store.project_path(project_id)
+        project = self.store.load_project(project_id)
+        status = self._status_attribute(project, self.store.load_module(project_id, module_id))
+        history = self.history.requirement_history(
+            project_dir, self.store.requirement_relative_path(module_id, requirement_id), requirement_id
+        )
+        if not history.get("available"):
+            raise AccessDeniedError(
+                f"{requirement_id} cannot be marked {value}: independent review needs the project history "
+                f"(git) to know who changed it last ({history.get('reason') or 'no history'})"
+            )
+        if history.get("uncommitted"):
+            raise AccessDeniedError(
+                f"{requirement_id} cannot be marked {value}: it has changes that are not in the project "
+                "history yet, so its last author is unknown"
+            )
+        # Not content: the status itself, derived attributes (link mirrors), the place in the tree.
+        not_content = {a.id for a in project.attributes if a.system} | ({status.id} if status else set())
+        author = None
+        for entry in history.get("entries") or []:
+            content = (
+                entry.get("change") != "modified"
+                or entry.get("unreadable")
+                or any(d.get("kind") == "attribute" and d.get("attribute_id") not in not_content for d in entry.get("diffs") or [])
+            )
+            if content:
+                author = entry
+                break
+        if author is None:
+            raise AccessDeniedError(
+                f"{requirement_id} cannot be marked {value}: the project history does not show who wrote it"
+            )
+        name, email = self.history.user_identity(project_dir)
+        author_name, author_email = str(author.get("author_name") or ""), str(author.get("author_email") or "")
+        if email and author_email:
+            same = email.strip().lower() == author_email.strip().lower()
+        else:
+            same = bool(name) and name.strip() == author_name.strip()
+        if same:
+            raise AccessDeniedError(
+                f"{requirement_id} cannot be marked {value} by you: you made its last change "
+                f"(commit {str(author.get('commit') or '')[:8]}); independent review needs another reviewer"
+            )
 
     def _mark_rich_text_format(self, project: Project, values: dict[str, Any]) -> None:
         """Rewrite project.json at the current format if ``values`` store rich text in an older-format project.
@@ -3382,6 +3538,7 @@ class ProjectService:
     # --- link configurations ("link modules") ----------------------------------
 
     @_records_history
+    @_requires(ACTION_PROJECT_ADMIN)
     def create_link_configuration(
         self,
         project_id: str,
@@ -3486,6 +3643,7 @@ class ProjectService:
         return self.store.load_project(project_id).link_configurations
 
     @_records_history
+    @_requires(ACTION_PROJECT_ADMIN)
     def remove_link_configuration(self, project_id: str, config_id: str) -> None:
         project = self.store.load_project(project_id)
         if not any(c.id == config_id for c in project.link_configurations):
@@ -3506,6 +3664,7 @@ class ProjectService:
     # --- views ----------------------------------------------------------------
 
     @_records_history
+    @_requires(ACTION_PROJECT_ADMIN)
     def create_view(
         self,
         project_id: str,
@@ -3525,6 +3684,7 @@ class ProjectService:
         return view
 
     @_records_history
+    @_requires(ACTION_PROJECT_ADMIN)
     def set_view_column_widths(self, project_id: str, view_id: str, column_widths: Any) -> View:
         """Store (or, with None or an empty mapping, clear) a view's shared column widths."""
         project = self.store.load_project(project_id)
@@ -3534,6 +3694,7 @@ class ProjectService:
         return view
 
     @_records_history
+    @_requires(ACTION_PROJECT_ADMIN)
     def update_view(self, project_id: str, view_id: str, changes: Any) -> View:
         """Change any of a view's ``name``, ``attribute_ids``, ``column_widths``, ``single_line`` and ``modules``.
 
@@ -3726,6 +3887,7 @@ class ProjectService:
         return self.store.load_project(project_id).views
 
     @_records_history
+    @_requires(ACTION_PROJECT_ADMIN)
     def remove_view(self, project_id: str, view_id: str) -> None:
         project = self.store.load_project(project_id)
         if not any(v.id == view_id for v in project.views):
@@ -6436,6 +6598,20 @@ class ProjectService:
         plan = self._csv_import_plan(project_id, module_id, csv_text, mode)
         project = plan.project
         created = [r for _, r in plan.created]
+        if guard_active():
+            # Server edition: the status guards apply to imported statuses too (before anything is written).
+            status = self._status_attribute(project, plan.module)
+            if status is not None:
+                self._check_status_changes(
+                    project_id,
+                    module_id,
+                    [(None, None, r.attributes[status.id]) for r in created if r.attributes.get(status.id) not in (None, "")]
+                    + [
+                        (r.id, changes[status.id][0], changes[status.id][1])
+                        for _, r, changes in plan.updates
+                        if status.id in changes
+                    ],
+                )
         if created:
             self._write_new_requirements(project, module_id, created)
         if plan.updates:

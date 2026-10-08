@@ -1739,8 +1739,10 @@ delivered in slices: slice 1 is the mode switch and authentication; slice
 2 adds users, roles, project membership, permission enforcement and the
 admin pages ("Roles, membership and permissions" below); slice 3 adds
 module edit locks ("Module edit locks" below); slice 4 adds attribution
-and the audit log ("Attribution and audit" below). The licence-file gate
-comes later.
+and the audit log ("Attribution and audit" below); slice 5 derives roles
+from GitLab/GitHub repository permissions and adds the reviewer role and
+the requirement status guards ("Roles from repository permissions" below).
+The licence-file gate comes later.
 
 ### Separation
 
@@ -1775,8 +1777,9 @@ the import path).
 - `PermissionGuard` (`check(identity, action, project_id)`, raises
   `AccessDeniedError`, a `PermissionError` subclass so an OS EACCES is
   never mistaken for a refusal; local: `AllowAllGuard`). Actions are the
-  `ACTION_*` constants: `project.read` / `project.write` / `project.admin`
-  (with a project id), `project.create`, `library.write`,
+  `ACTION_*` constants: `project.read` / `project.review` /
+  `project.write` / `project.admin` / `project.approve` (with a project
+  id), `project.create`, `library.write`,
   `connections.use`, `connections.manage`, `git.remote_url`,
   `server.config`. `check_permission(action, project_id)` asks the guard
   about the current identity and is a type test only while the guard is
@@ -1798,7 +1801,9 @@ the import path).
   asked by `ProjectService` before a write to a module's content
   (`check_module_write`, skipped without a call while `NoLocks` is
   installed: `module_locks_active()`). See "Module edit locks".
-- `EditionContext.module_exists(project_id, module_id)`.
+- `EditionContext.module_exists(project_id, module_id)`,
+  `EditionContext.project_ids()` and `EditionContext.project_remote_url(id)`
+  (the project's git remote, `GitHistory.remote_url`; `None` without one).
 - `AuditTrail` (`HOOKS.audit`; `record(identity, action, project_id,
   details)`; local: `NoAudit`, skipped without a call): told by
   `ProjectService` (`extensions.audit(...)`) after `project.create`,
@@ -1810,9 +1815,10 @@ the import path).
 
 The `server` section of the config file (`reqman_server/settings.py` has
 a full example): `auth_providers` (required: a list of `{id, type:
-"gitlab" | "oidc", name, url (gitlab, default https://gitlab.com) | issuer
-(oidc), client_id, client_secret | client_secret_env, scopes,
-allow_http}`), `base_url` (public URL of the backend, used for the OAuth
+"gitlab" | "github" | "oidc", name, url (gitlab, default
+https://gitlab.com; github, default https://github.com) | issuer (oidc),
+client_id, client_secret | client_secret_env, scopes, allow_http,
+git_hosts}`), `base_url` (public URL of the backend, used for the OAuth
 `redirect_uri`; default: the request's base URL), `frontend_url` (where
 the browser goes after login; default: same origin), `cookie_secure`
 (default true; false for `http://localhost` development),
@@ -1820,10 +1826,12 @@ the browser goes after login; default: same origin), `cookie_secure`
 `persist_sessions` (true), `state_dir` (default: the config file's
 directory), `admins` (user names / e-mail addresses), `admin_groups`
 (identity provider groups whose members become server admins at login),
-`group_roles` (`[{group, role: viewer | editor | project-admin, projects:
-["*" | project id, ...]}]`), `project_creation` (`everyone`, the default,
-or `admins`), `module_lock_idle_minutes` (60), `require_module_checkout`
-(false). Environment:
+`group_roles` (`[{group, role: viewer | reviewer | editor | project-admin,
+projects: ["*" | project id, ...]}]`), `project_creation` (`everyone`, the
+default, or `admins`), `module_lock_idle_minutes` (60),
+`require_module_checkout` (false), `repo_roles` (`{enabled: true,
+cache_minutes: 5, grace_minutes: 60}`, or `true`/`false`; see "Roles from
+repository permissions"). Environment:
 `REQMAN_AUTH_<ID>_CLIENT_ID` / `_CLIENT_SECRET`, `REQMAN_SERVER_BASE_URL`,
 `REQMAN_SERVER_FRONTEND_URL`, `REQMAN_SERVER_COOKIE_SECURE`,
 `REQMAN_SERVER_STATE_DIR`, `REQMAN_SERVER_ADMINS`. The client secret is
@@ -1903,7 +1911,9 @@ unchanged. A removed project's entries are deleted (`project_removed`), so
 a new project reusing the id starts without members. Switching the data
 folder keeps the file (memberships are keyed by project id only).
 
-**Roles** (`permissions.py`): `viewer` (read), `editor` (also change the
+**Roles** (`permissions.py`; slice 5 adds `reviewer` and moves link
+configurations, views, attributes and baselines to project admins, see
+below): `viewer` (read), `editor` (also change the
 project's data: requirements, modules, folders, links, link
 configurations, views, attributes, row styles, references, imports,
 baselines, push/pull, reviews), `project-admin` (also lock/unlock, remove,
@@ -2106,6 +2116,117 @@ appended; `action` is an action or a prefix ending in `.` (`auth.`);
 `AdminModal` for server admins (`useAuditLog`, an infinite query under
 `['admin', 'audit', filter]`, so `permissions_changed` refetches it; a
 filter by kind, Refresh, "Load older events").
+
+### Roles from repository permissions, reviewer and status guards (slice 5)
+
+**Source of truth** (`reqman_server/repo_access.py`). A project whose git
+remote lives on the GitLab or GitHub instance a user logged in with is
+*bound* to that repository for the user: their role is their permission on
+the repository, read with their own OAuth access token. Mapping: GitLab
+Guest / Planner / Reporter and GitHub Read → `viewer`; GitHub Triage →
+`reviewer`; GitLab Developer and GitHub Write → `editor`; GitLab
+Maintainer / Owner and GitHub Maintain / Admin → `project-admin`. A
+repository the user can see without a membership (public or internal) is
+`Read` → viewer; one they cannot see (404) gives no role. GitLab:
+`GET /api/v4/projects/:path` (`permissions.project_access` /
+`group_access`) and `GET /projects/:id/members/all/:user_id` (inherited
+group memberships; the GitLab OIDC `sub` is the user id), the highest
+wins. GitHub: `GET /repos/{owner}/{repo}` `permissions`. The calls are
+`Provider.repository_permission` in `reqman/providers.py` (`oauth=True`:
+`Authorization: Bearer`; `ProviderError.status` carries the HTTP status).
+The remote URL is matched to the provider's URL: https by host and the
+URL's path prefix, ssh / scp-like by host, plus the provider's `git_hosts`.
+
+**Combination.** When the project is bound for the user, the repository
+permission *is* the role (one source of truth, revoking access in GitLab
+revokes it here): in-app memberships and group rules of that user do not
+apply to it (the admin page marks them "Not applied"). Unbound projects (no
+remote, a remote elsewhere, a user who logged in with another provider or
+a generic OIDC one) keep the in-app membership and group rules. Server
+admins stay in-app and may do everything. `/auth/me`'s `permissions.roles`
+holds the bound projects too (`null`: no access — `default_role` does not
+apply to them) and `permissions.repo_roles` says where each comes from
+(`{provider_id, provider_type, provider_name, path, repository,
+permission, role, checked_at, error}`).
+
+**Tokens.** The login stores the token endpoint's `access_token`,
+`refresh_token` and expiry in the server-side session (`sessions.json`,
+0600; `repr=False`), never in a response, log or the browser. An expired
+token (GitLab: two hours) or a 401 is renewed once with the refresh token
+(`OidcClient.refresh_tokens` / `GitHubOAuthClient.refresh_tokens`, one
+refresh at a time). GitLab logins request `read_api` in addition to the
+configured scopes while `repo_roles` is on (`read_repository` does not
+grant the REST API; `api` is accepted instead). A session from before this
+slice holds no token: the user is told to log in again.
+
+**Cache and refresh.** Per (user, project) for `cache_minutes` (5);
+resolved for every bound project at login (eight lookups in parallel) and
+on demand. A failed lookup is retried after 30 s; meanwhile the last good
+role is kept for up to `grace_minutes` (60), else the user has no access
+and the 403 says why. Remote URLs are re-read at most every minute.
+"Sync access now": `POST /admin/access/sync` (`{project_id?}`; WS
+`admin.access.sync`; one project: its project admins; all: server admins)
+reads the remotes again and looks the roles up again, bypassing the cache
+(a failed lookup keeps the last good role within the grace period), for
+every user with a live session; `POST /auth/permissions/sync` (WS `auth.permissions.sync`) does it
+for the caller. Both broadcast `permissions_changed`.
+
+**GitHub login** (`reqman_server/github_oauth.py`). GitHub is plain OAuth
+2.0, not OpenID Connect, so `type: "github"` has its own client with the
+`OidcClient` interface: authorize with `state` and PKCE, back-channel code
+exchange (GitHub's HTTP 200 + `error` answer fails the login), identity
+from `GET /user` (numeric `id` = subject, `login` = user name; the primary
+verified address of `GET /user/emails`), organizations as groups when a
+group setting is configured. Default scopes `read:user user:email`; a
+GitHub App needs "Metadata: read" (and installation on the repositories),
+an OAuth App needs `repo` to see private repositories' permissions.
+
+**Reviewer and the status guards.** `reviewer` ranks between viewer and
+editor: read, plus requirement sign-off. The core (`ProjectService`, only
+while a guard is active, so the local edition is unchanged) finds the
+status attribute by name like a report role (`REPORT_ATTRIBUTE_ROLES
+["status"]`: Status, Review status, Approval status, ...) and compares its
+values like attribute names. `update_requirement` needs `project.review`;
+a change of any other attribute (values that differ from the stored ones)
+still needs `project.write`, so a reviewer can change only the status.
+Each status change (update, add, CSV import; before anything is written):
+to or from **Approved** needs `project.approve` (project admin; later an
+approver role) and approval only from **Reviewed** (400 otherwise, so
+approval never skips the review); to **Reviewed** needs `project.review`
+and independence — not by the requirement's last content author, the
+author of the newest commit in its git history that created it or changed
+an attribute other than the status and the system (link mirror)
+attributes, compared by e-mail (else name) with the identity commits get;
+a new requirement cannot start as Reviewed; without readable history, or
+with uncommitted changes of the file, the sign-off is refused (the last
+author is unknown); any other status change needs `project.review`.
+Refusals are `AccessDeniedError` (403 / -32003).
+
+**Project admin only** (tightened `_requires`): baselines
+(`create_baseline`), lock/unlock, attribute definitions
+(`add_attribute_definition`, `set_attribute_modules`), views
+(`create_view`, `update_view`, `set_view_column_widths`, `remove_view`) and
+link configurations (`create_link_configuration`,
+`remove_link_configuration`). Row styles, references and folders stay
+`project.write`.
+
+**Messages** name the missing role and its source: "You may not change
+its content in project 'rbc-gp': it needs Developer on
+gitlab.example.com/rbc/rbc-gp (you have Reporter on
+gitlab.example.com/rbc/rbc-gp, viewer)"; in-app: "Your role in project
+'x' is reviewer (membership): you may not change its content; it needs the
+editor role (a reviewer may change only requirement statuses)".
+
+**Frontend.** `ProjectRole` gains `reviewer` (role lists, admin role
+pickers, `ProjectRoleBadge` with the repository source, an orange badge
+when the last check failed). `ProjectAccess.canReview` / `repoRole`;
+`roles` entries win over `default_role`. On the module page a reviewer can
+edit the status cell only (`statusAttributeId`, `canChangeStatusOnly` in
+`actions/registry.ts`; the server decides each change). View, attribute,
+link configuration and baseline controls need `projectAdmin`. The members
+tab names the bound repositories, lists users with a repository role
+(`source: "repo"`, from the cache) and has "Sync access now" (also on the
+Users tab, for all projects). The login page shows a GitHub button.
 
 ### API and frontend
 

@@ -84,28 +84,6 @@ item first (phase A), then test, review and fix by area (phase B).
 
 ### Next — requested, in delivery order
 
-- [ ] Server edition: access from GitLab/GitHub repository permissions.
-      Requested 2026-10-08, PRIORITY. Decision: variant 2 — the role of a
-      user in a project is derived from their permission on that
-      project's git repository (one source of truth; revoking access in
-      GitLab/GitHub revokes it in ReqManTool). Mapping: GitLab Guest /
-      Reporter, GitHub Read → viewer; GitHub Triage → reviewer; GitLab
-      Developer, GitHub Write → editor; GitLab Maintainer / Owner, GitHub
-      Maintain / Admin → project-admin. Resolved at login and refreshed
-      periodically / on demand (admin "Sync access now"), cached with a
-      short TTL; projects without a remote, or whose provider is not the
-      login provider, fall back to the existing in-app membership (admin
-      UI); server-admin stays in-app. New role **reviewer**: read plus
-      comment and status sign-off, no content edits. Status guards in
-      `ProjectService`: Draft → Reviewed only by a reviewer (or higher)
-      who is not the requirement's last author (independence), Reviewed →
-      Approved only by project-admin (later: an approver role);
-      project-admin only for baselines, lock/unlock, attributes, views,
-      link configurations. Server-only code in `backend/reqman_server/`
-      (provider permission lookup via the GitLab/GitHub API with the
-      user's OAuth token); the local edition is unaffected. REST + WS
-      parity; errors name the missing role and its source ("needs
-      Developer on gitlab.example.com/rbc/rbc-gp").
 - [ ] Server edition: more identity providers and group-based roles.
       Requested 2026-10-08 (after the repository-permission item). Login
       providers, all pluggable through the existing server auth extension
@@ -193,11 +171,8 @@ area by area once phase A is complete.
       background so an unreachable remote never stalls edits.
       (3) `_is_non_fast_forward` matches "[rejected]" but not "[remote
       rejected]", so some remote rejections map to 400 instead of 409.
-- [ ] Rich text slice 2: follow-ups (2026-10-08). (1) Tests for the
-      slice 2 exports (DOCX formatting, ReqIF XHTML typing) are pending;
-      `tests/test_rich_text.py::test_exports_write_the_plain_projection`
-      still expects plain ReqIF and must be updated. (2) No ReqIF
-      importer reads the XHTML back yet. (3) Later slice: rich-text
+- [ ] Rich text slice 2: follow-ups (2026-10-08). (1) No ReqIF
+      importer reads the XHTML back yet. (2) Later slice: rich-text
       tables and images.
 - [ ] Commit browser: follow-ups (2026-10-08). (1) Structured module
       rename/reorder/folder entries in the compare engine (today shown as
@@ -499,6 +474,20 @@ area by area once phase A is complete.
       no `server` section template. (21) Tests pending for all four
       slices (phase B; fake-IdP end-to-end scripts are in the session
       scratchpad).
+- [ ] Repository-permission roles: follow-ups (2026-10-08). (1)
+      `copy_requirement` copies a Reviewed/Approved status without the
+      status guards, and editing an Approved requirement does not reset
+      its status. (2) Test-result import is not status-guarded. (3)
+      Reviewers cannot check out modules, so `server.require_module_checkout`
+      blocks their sign-off. (4) The frontend's status-name matching
+      duplicates the backend list. (5) Comments for reviewers do not exist
+      (with the comments item). (6) Row styles, references and folders
+      still need editor, not project-admin. (7) No background role refresh
+      (only at login, on cache expiry and "Sync access now"). (8) The
+      member list shows repository users only once their role has been
+      resolved. (9) No tests for `backend/reqman_server/` at all (phase B;
+      fake-forge end-to-end scripts are in the session scratchpad,
+      `e2e5/`).
 
 ### Open decisions
 
