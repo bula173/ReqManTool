@@ -414,3 +414,128 @@ export interface RequirementHistory {
   /** The requirement file has changes that are not committed yet. */
   uncommitted: boolean;
 }
+
+// --- reports (read-only; see docs/ARCHITECTURE.md "Reports") ---------------------------
+
+/** A module as the reports describe it (`type` always present here). */
+export interface ReportModule {
+  id: string;
+  name: string;
+  type: ModuleType;
+}
+
+/** A reportable object (headings, information and definitions are left out). */
+export interface ReportItem {
+  id: string;
+  /** Plain text of ObjectText, whitespace collapsed. */
+  text: string;
+  /** Nesting depth in its module (0: top level). */
+  level: number;
+}
+
+/** One link configuration of a traceability chain: rows of `from_module_id` × columns of `to_module_id`. */
+export interface TraceabilityStep {
+  config: LinkConfiguration;
+  from_module_id: string;
+  to_module_id: string;
+  /** [row id, column id] pairs, in row then column order. */
+  links: [string, string][];
+  total: number;
+  covered: number;
+  covered_percent: number;
+  /** Rows with no link to the next module. */
+  uncovered: string[];
+  /** Columns with no link from the previous module. */
+  orphans: string[];
+}
+
+/** GET /projects/{id}/reports/traceability?config=… (WS `report.traceability`). */
+export interface TraceabilityReport {
+  project_id: string;
+  /** The chain's modules in order, each with its items in tree order and how many objects were left out. */
+  modules: (ReportModule & { items: ReportItem[]; excluded: number })[];
+  steps: TraceabilityStep[];
+  /** Every first-module item: the ids reached in each later module, and whether it reaches the last one. */
+  trace: { id: string; reached: string[][]; complete: boolean }[];
+  summary: { total: number; covered: number; covered_percent: number; traced: number; traced_percent: number };
+  /** Items of a requirements module of the chain that reach no item of the next test_cases module. */
+  unverified: { module_id: string; test_module_id: string; total: number; ids: string[] }[];
+}
+
+export type ExecutionResult = 'passed' | 'failed' | 'blocked' | 'not_run' | 'not_applicable';
+export type VerificationStatus = 'verified' | 'failed' | 'not_run' | 'not_covered';
+export type ExecutionTestStatus = 'passed' | 'failed' | 'blocked' | 'not_run' | 'not_planned';
+
+/** Which attribute plays each role in an execution module (null: none found). */
+export type ExecutionAttributes = Record<
+  'result' | 'execution_date' | 'executed_by' | 'version' | 'evidence',
+  { id: string; name: string } | null
+>;
+
+/** One object of a test_execution module. */
+export interface ExecutionRecord {
+  id: string;
+  module_id: string;
+  text: string;
+  result: ExecutionResult;
+  /** The stored result value, as written. */
+  result_value: unknown;
+  execution_date: string | null;
+  executed_by: unknown;
+  version: unknown;
+  evidence: unknown;
+  /** Execution report only: the test cases the record executes. */
+  test_case_ids?: string[];
+}
+
+export interface VerificationTest {
+  id: string;
+  module_id: string;
+  text: string;
+  result: ExecutionResult;
+  /** `execution`: from the latest execution record; `test_case`: the test case's own result attribute; null: none. */
+  source: 'execution' | 'test_case' | null;
+  /** Number of execution records linked to the test case. */
+  executions: number;
+  latest: ExecutionRecord | null;
+}
+
+/** GET /projects/{id}/modules/{module}/reports/verification (WS `report.verification`). */
+export interface VerificationReport {
+  project_id: string;
+  module: ReportModule;
+  test_modules: ReportModule[];
+  execution_modules: (ReportModule & { test_module_id: string; attributes: ExecutionAttributes })[];
+  requirements: (ReportItem & { status: VerificationStatus; tests: VerificationTest[] })[];
+  totals: Record<VerificationStatus | 'total' | 'excluded', number>;
+  percent: Record<VerificationStatus, number>;
+}
+
+export interface ExecutionTestCase {
+  id: string;
+  module_id: string;
+  text: string;
+  status: ExecutionTestStatus;
+  /** Ids of this module's records linked to the test case. */
+  records: string[];
+  latest: ExecutionRecord | null;
+}
+
+/** GET /projects/{id}/modules/{module}/reports/execution (WS `report.execution`). */
+export interface ExecutionReport {
+  project_id: string;
+  module: ReportModule;
+  attributes: ExecutionAttributes;
+  test_modules: ReportModule[];
+  records: ExecutionRecord[];
+  record_counts: Record<ExecutionResult | 'total' | 'excluded', number>;
+  test_cases: ExecutionTestCase[];
+  test_counts: Record<ExecutionTestStatus | 'total' | 'planned' | 'executed' | 'executed_percent' | 'pass_percent', number>;
+  /** Failed and blocked test cases with the requirements they verify. */
+  problems: (ExecutionTestCase & { requirements: { id: string; module_id: string; text: string }[] })[];
+  unlinked_records: string[];
+  versions: string[];
+  executors: string[];
+  /** [first, last] execution date of the executed records, or null. */
+  date_range: [string, string] | null;
+}

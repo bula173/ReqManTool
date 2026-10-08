@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query';
-import { api } from './client';
+import { API_BASE_URL, api } from './client';
 import type {
   AttributeDefinition,
   Baseline,
@@ -7,6 +7,7 @@ import type {
   BaselineList,
   BaselineSnapshot,
   CsvImportResult,
+  ExecutionReport,
   GitLog,
   GitPullResult,
   GitPushResult,
@@ -22,6 +23,8 @@ import type {
   RowStyle,
   SetAttributeModulesResult,
   TemplateSummary,
+  TraceabilityReport,
+  VerificationReport,
   VersionInfo,
   View,
 } from './types';
@@ -52,6 +55,17 @@ export const queryKeys = {
   /** Mutation keys of Push / Pull, for pending indicators (`useIsMutating`). */
   gitPush: (projectId: string) => ['gitPush', projectId] as const,
   gitPull: (projectId: string) => ['gitPull', projectId] as const,
+  /**
+   * Reports live under the project key, so live sync (`changed` for the
+   * project) refetches them; they are read-only and never invalidated by a
+   * mutation of this client, but have no stale time (refetched on mount).
+   */
+  traceability: (projectId: string, configIds: string[]) =>
+    ['projects', projectId, 'reports', 'traceability', ...configIds] as const,
+  verificationReport: (projectId: string, moduleId: string) =>
+    ['projects', projectId, 'reports', 'verification', moduleId] as const,
+  executionReport: (projectId: string, moduleId: string) =>
+    ['projects', projectId, 'reports', 'execution', moduleId] as const,
   config: ['config'] as const,
   version: ['version'] as const,
   templates: ['templates'] as const,
@@ -828,4 +842,68 @@ export function useUnlinkRequirements(projectId: string) {
       invalidateProjectRequirements(qc, projectId);
     },
   });
+}
+
+// --- reports (read-only) -----------------------------------------------------------
+
+function configQuery(configIds: string[]): string {
+  return configIds.map((id) => `config=${encodeURIComponent(id)}`).join('&');
+}
+
+/** Traceability matrix over a chain of link configurations (none: disabled). */
+export function useTraceabilityMatrix(
+  projectId: string | undefined,
+  configIds: string[],
+): UseQueryResult<TraceabilityReport> {
+  return useQuery({
+    queryKey: queryKeys.traceability(projectId ?? '', configIds),
+    queryFn: () =>
+      api.get<TraceabilityReport>(
+        `/projects/${encodeURIComponent(projectId ?? '')}/reports/traceability?${configQuery(configIds)}`,
+      ),
+    enabled: !!projectId && configIds.length > 0,
+  });
+}
+
+export function useVerificationReport(
+  projectId: string | undefined,
+  moduleId: string | undefined,
+): UseQueryResult<VerificationReport> {
+  return useQuery({
+    queryKey: queryKeys.verificationReport(projectId ?? '', moduleId ?? ''),
+    queryFn: () =>
+      api.get<VerificationReport>(
+        `/projects/${encodeURIComponent(projectId ?? '')}/modules/${encodeURIComponent(moduleId ?? '')}/reports/verification`,
+      ),
+    enabled: !!projectId && !!moduleId,
+  });
+}
+
+export function useExecutionReport(
+  projectId: string | undefined,
+  moduleId: string | undefined,
+): UseQueryResult<ExecutionReport> {
+  return useQuery({
+    queryKey: queryKeys.executionReport(projectId ?? '', moduleId ?? ''),
+    queryFn: () =>
+      api.get<ExecutionReport>(
+        `/projects/${encodeURIComponent(projectId ?? '')}/modules/${encodeURIComponent(moduleId ?? '')}/reports/execution`,
+      ),
+    enabled: !!projectId && !!moduleId,
+  });
+}
+
+/** Download URL of a traceability matrix export (`csv` | `xlsx`). */
+export function traceabilityExportUrl(projectId: string, configIds: string[], format: 'csv' | 'xlsx'): string {
+  return `${API_BASE_URL}/projects/${encodeURIComponent(projectId)}/reports/traceability/export/${format}?${configQuery(configIds)}`;
+}
+
+/** Download URL of a verification / test execution report export (`docx` | `xlsx`). */
+export function moduleReportExportUrl(
+  projectId: string,
+  moduleId: string,
+  report: 'verification' | 'execution',
+  format: 'docx' | 'xlsx',
+): string {
+  return `${API_BASE_URL}/projects/${encodeURIComponent(projectId)}/modules/${encodeURIComponent(moduleId)}/reports/${report}/export/${format}`;
 }

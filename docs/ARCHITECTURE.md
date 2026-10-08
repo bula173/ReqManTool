@@ -312,6 +312,109 @@ in the Project tab of the sidebar, the module tab bar and the project page.
   value that is not a valid date (hand-edited) is omitted from ReqIF and
   written as text to XLSX.
 
+### Reports
+
+Three read-only reports are computed by `ProjectService` (`service.py`,
+"reports" section) from the stored modules, requirements and link pairs.
+They write nothing and broadcast nothing; REST and WebSocket return the same
+JSON (errors: unknown project/module/configuration 404 / -32001, anything
+else invalid 400 / -32602). The UI shows them as pages (`pages/
+TraceabilityPage.tsx`, `VerificationReportPage.tsx`, `ExecutionReportPage.tsx`)
+reached from the Reports menu of the menu bar and the sidebar's project /
+module context menus (actions `report.traceability`,
+`module.verificationReport`, `module.executionReport`). Their routes use
+`:reportModuleId`, not `:moduleId`, so opening a report does not open the
+module or add a tab. The queries live under `['projects', id, 'reports',
+…]`, so a live-sync `changed` event refetches an open report.
+
+| Report | REST | WebSocket | Export |
+|---|---|---|---|
+| Traceability matrix | `GET /projects/{id}/reports/traceability?config=a&config=b` | `report.traceability {project_id, config_ids}` | `…/traceability/export/{csv,xlsx}?config=…` |
+| Verification report | `GET /projects/{id}/modules/{m}/reports/verification` | `report.verification {project_id, module_id}` | `…/verification/export/{docx,xlsx}` |
+| Test execution report | `GET /projects/{id}/modules/{m}/reports/execution` | `report.execution {project_id, module_id}` | `…/execution/export/{docx,xlsx}` |
+
+Exports are REST downloads only, like the project exports; they are written
+by `reqman/report_export.py` (duck-typed over the report dictionaries, like
+the other exporters). The report CSV prefixes a cell starting with `=`, `+`,
+`-`, `@`, tab or CR with `'` (it is never re-imported, unlike the
+requirements CSV).
+
+- **Reportable objects**: every report leaves out objects whose Object Type
+  is Heading, Information, Definition, Title, Comment or Note
+  (`REPORT_EXCLUDED_OBJECT_TYPES`; the Object Type attribute is found like the
+  roles below, by the name "Object Type"). Their count is returned as
+  `excluded`. Links to or from them are ignored. Items are listed in tree
+  order with their plain ObjectText and nesting `level`.
+- **Attributes by role, not by id**: the reports never hard-code RBC ids. For
+  each role (`REPORT_ATTRIBUTE_ROLES`) they take the first non-system attribute
+  that applies to the module, has one of the role's types and whose name or id
+  — lower-cased, punctuation and spaces collapsed — equals one of the role's
+  names, in priority order: result (`enum`/`string`: Result, Test Result,
+  Execution Result, Verdict, Outcome), execution date (`date`: Execution Date,
+  Executed On, Date Executed, Test Date, Run Date, Date; else the module's
+  only date attribute), executed by (Executed By, Executor, Tester, Tested By,
+  Run By), version (Build/SW Version Under Test, Version Under Test, …, Build,
+  Version; else the first name containing the word "version" or "build"),
+  evidence (Evidence/Log Ref, Evidence, Evidence Ref, Log Ref, Log; else a name
+  containing "evidence"). The verification and execution reports return which
+  attribute they used per role (`attributes`), and the pages show it.
+- **Result values** are compared the same way (`REPORT_RESULT_WORDS`):
+  Passed/Pass/OK/Success → passed, Failed/Fail/Failure/NOK/Error → failed,
+  Blocked → blocked, Not Applicable/N/A → not_applicable; anything else,
+  including no value and Not Run, is not_run.
+- **Latest execution** (`_latest_execution`): among the execution records of
+  a test case (objects of `test_execution` modules linked to it by any link
+  configuration between the two modules), only *executed* records count —
+  result passed, failed or blocked (a Not Run record is a planned run). The
+  latest is the one with the greatest Execution Date (a record without a
+  valid date sorts before every dated one), then the later module in the
+  project's module order, then the later position in the module's tree
+  order. Deterministic for the same data.
+
+**Traceability matrix** (`traceability_matrix`): `config_ids` is one link
+configuration or a chain of up to 10 (`MAX_TRACE_CHAIN`), each after the
+first joining the module the chain has reached. Links point downstream →
+upstream (a test case verifies a requirement), so the chain starts at the
+first configuration's *target* module — unless the second configuration
+joins only its source module, then it starts at the source (both
+"Satisfies StRS, Satisfies SyRS, Verifies SwRS, Executes SwTest" → StRS → SyRS →
+SwRS → SwTest → SwTestExec and "Verifies SyRS, Satisfies StRS" → SysTest →
+SyRS → StRS work). The UI mirrors this to offer only configurations that
+continue the chain and keeps the chain in the URL. Result: the modules with
+their items; per step the grid links (row → column), covered rows ("N of M
+covered", %), uncovered rows and orphan columns (no link from the previous
+module); the trace of every first-module item through the chain (`reached`
+ids per later module, `complete` when it reaches the last one); and the
+unverified items — items of each `requirements` module of the chain that
+reach no item of the next `test_cases` module in the chain. CSV: the trace
+table; XLSX: Summary, Trace, one "Matrix n" grid per step and Gaps
+(uncovered, orphans, unverified). The UI draws grids up to 1000 × 200.
+
+**Verification report** (`verification_report`, `requirements` modules
+only; other types → 400): the covering test cases of a requirement are the
+objects of `test_cases` modules linked to it directly (any configuration
+between the modules, either direction). A test case's result is its latest
+execution; a test case with *no* execution record falls back to its own
+result attribute (e.g. the RBC "Test Result") when that says Passed, Failed
+or Blocked (`source: "test_case"`). Requirement status: `not_covered` (no
+covering test case), else `failed` (any covering test failed), else
+`verified` (all passed), else `not_run` (some test blocked or without an
+execution). Totals and percentages per status; DOCX (summary table +
+requirement table) and XLSX (Summary + one row per requirement/test case).
+
+**Test execution report** (`execution_report`, `test_execution` modules
+only): the test cases in scope are the objects of the `test_cases` modules
+linked to the module. Each one's status is its latest execution among this
+module's records (`not_run` when it has records but none executed,
+`not_planned` when no record links to it). Counts: test cases total /
+planned (with a record) / executed (% of planned) / passed / failed / blocked
+/ not run / not planned, pass rate (% of executed), records per result;
+the failed and blocked test cases with the requirements they verify (objects
+of `requirements` modules linked to the test case); records linked to no test
+case; the distinct builds/versions and executors over all records and the
+first/last execution date of the executed ones. DOCX and XLSX (Summary, Test
+cases, Failed and blocked, Records).
+
 ### Subprojects
 
 `Project.parent_project_id` forms a generic → specific product-line tree

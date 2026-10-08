@@ -92,6 +92,67 @@ LINK_TYPE_PAIRS = (
     ("test_execution", "test_cases"),
 )
 
+# --- reports (traceability matrix, verification and test execution reports) ---
+#
+# The reports find the attributes they read by *role*, not by id, so they work
+# for any project and not just the RBC template: for each role, the first name
+# in ``names`` (priority order) that equals an applicable, non-system
+# attribute's name or id wins -- both compared lower-case with punctuation and
+# spaces collapsed ("Build/SW Version Under Test" -> "build sw version under
+# test"). Failing that, a role with ``contains`` takes the first attribute whose
+# name has one of those words; ``only_of_type`` takes the only attribute of the
+# role's types, whatever its name.
+REPORT_ATTRIBUTE_ROLES: dict[str, dict[str, Any]] = {
+    "result": {
+        "types": ("enum", "string"),
+        "names": ("result", "test result", "execution result", "verdict", "outcome"),
+    },
+    "execution_date": {
+        "types": ("date",),
+        "names": ("execution date", "executed on", "date executed", "test date", "run date", "date"),
+        "only_of_type": True,
+    },
+    "executed_by": {
+        "types": ("string", "enum"),
+        "names": ("executed by", "executor", "tester", "tested by", "run by"),
+    },
+    "version": {
+        "types": ("string", "enum"),
+        "names": (
+            "build sw version under test", "version under test", "sw version under test",
+            "software version under test", "build under test", "build", "version",
+        ),
+        "contains": ("version", "build"),
+    },
+    "evidence": {
+        "types": ("string", "text"),
+        "names": ("evidence log ref", "evidence", "evidence ref", "log ref", "log"),
+        "contains": ("evidence",),
+    },
+    "object_type": {"types": ("enum", "string"), "names": ("object type",)},
+}
+
+# Result values (compared like attribute names) per result category; any other
+# value, and no value, counts as not run.
+REPORT_RESULT_WORDS: dict[str, tuple[str, ...]] = {
+    "passed": ("passed", "pass", "ok", "success", "succeeded"),
+    "failed": ("failed", "fail", "failure", "nok", "not ok", "error"),
+    "blocked": ("blocked",),
+    "not_applicable": ("not applicable", "n a", "na"),
+    "not_run": ("not run", "not executed", "pending", "skipped", ""),
+}
+REPORT_RESULTS = ("passed", "failed", "blocked", "not_run", "not_applicable")
+REPORT_EXECUTED_RESULTS = ("passed", "failed", "blocked")
+VERIFICATION_STATUSES = ("verified", "failed", "not_run", "not_covered")
+EXECUTION_TEST_STATUSES = ("passed", "failed", "blocked", "not_run", "not_planned")
+
+# Object Type values (compared like attribute names) of objects that are
+# neither requirements nor test cases; the reports leave them out.
+REPORT_EXCLUDED_OBJECT_TYPES = frozenset({"heading", "information", "definition", "title", "comment", "note"})
+
+# The most link configurations one traceability chain may have.
+MAX_TRACE_CHAIN = 10
+
 # Shared view column widths (``View.column_widths``): the key of the
 # requirements table's Id column (attribute ids name the other columns) and
 # the accepted width range in CSS pixels.
@@ -2413,6 +2474,624 @@ class ProjectService:
         template.id = make_template_id(USER_SOURCE, local_id)
         self.store.save_user_template(local_id, template.to_dict())
         return self._template_summary(template)
+
+    # --- reports ---------------------------------------------------------------
+    #
+    # Read-only views computed from the stored modules, requirements and link
+    # pairs: the traceability matrix, the verification report and the test
+    # execution report (see docs/ARCHITECTURE.md "Reports"). Nothing is
+    # written and nothing is broadcast.
+
+    @staticmethod
+    def _report_key(text: str) -> str:
+        """``text`` lower-cased with every run of non-alphanumerics as one space."""
+        return " ".join(re.sub(r"[^0-9a-z]+", " ", str(text).lower()).split())
+
+    @classmethod
+    def _report_attribute(
+        cls, project: Project, module: Module, role: str
+    ) -> AttributeDefinition | None:
+        """The attribute playing ``role`` (see ``REPORT_ATTRIBUTE_ROLES``) in ``module``.
+
+        Only non-system attributes that apply to the module and have one of
+        the role's types are considered. The first role name (in priority
+        order) matching an attribute's name or id (both compared by
+        ``_report_key``) wins; a role with ``contains`` words then takes the
+        first attribute (project order) whose name contains one of them.
+        """
+        spec = REPORT_ATTRIBUTE_ROLES[role]
+        candidates = [
+            a for a in project.attributes
+            if not a.system and a.type in spec["types"] and cls._attribute_applies(a, module.id, module.type)
+        ]
+        for wanted in spec["names"]:
+            for attr in candidates:
+                if wanted in (cls._report_key(attr.name), cls._report_key(attr.id)):
+                    return attr
+        for word in spec.get("contains", ()):
+            for attr in candidates:
+                if word in cls._report_key(attr.name).split():
+                    return attr
+        if spec.get("only_of_type"):
+            # e.g. the one date attribute of an execution module, whatever its name
+            if len(candidates) == 1:
+                return candidates[0]
+        return None
+
+    @classmethod
+    def _report_result(cls, value: Any) -> str:
+        """A stored result value as ``passed | failed | blocked | not_run | not_applicable``."""
+        key = cls._report_key(value) if isinstance(value, str) else ""
+        for category, words in REPORT_RESULT_WORDS.items():
+            if key in words:
+                return category
+        return "not_run"
+
+    @staticmethod
+    def _report_text(requirement: Requirement) -> str:
+        value = requirement.attributes.get("object_text")
+        if value is None:
+            return ""
+        text = richtext.to_plain(value) if isinstance(value, str) else str(value)
+        return " ".join(str(text).split())
+
+    def _report_items(self, project: Project, module: Module) -> tuple[list[dict[str, Any]], int]:
+        """The module's reportable objects in tree order, and how many were left out.
+
+        Objects whose Object Type (an enum found like any report attribute)
+        is one of ``REPORT_EXCLUDED_OBJECT_TYPES`` (headings, information,
+        definitions...) are not requirements or test cases and are left out
+        of every report. Each item: ``id``, ``text`` (plain), ``level``
+        (nesting depth) and the requirement itself under ``requirement``.
+        """
+        from .ordering import tree_order
+
+        object_type = self._report_attribute(project, module, "object_type")
+        requirements = self.store.load_all_requirements(project.id, module.id)
+        by_id = {r.id: r for r in requirements}
+        items: list[dict[str, Any]] = []
+        excluded = 0
+        for requirement in tree_order(requirements):
+            if object_type is not None:
+                kind = requirement.attributes.get(object_type.id)
+                if isinstance(kind, str) and self._report_key(kind) in REPORT_EXCLUDED_OBJECT_TYPES:
+                    excluded += 1
+                    continue
+            level, parent, seen = 0, requirement.parent_id, {requirement.id}
+            while parent in by_id and parent not in seen:
+                seen.add(parent)
+                level += 1
+                parent = by_id[parent].parent_id
+            items.append({
+                "id": requirement.id,
+                "text": self._report_text(requirement),
+                "level": level,
+                "requirement": requirement,
+            })
+        return items, excluded
+
+    @staticmethod
+    def _report_module(module: Module) -> dict[str, Any]:
+        return {"id": module.id, "name": module.name, "type": module.type}
+
+    def _report_links(
+        self, project: Project, from_id: str, to_id: str
+    ) -> dict[str, set[str]]:
+        """Requirement id in module ``from_id`` -> linked ids in module ``to_id``.
+
+        Every link configuration joining the two modules counts, in either
+        direction (a configuration from a module to itself counts once).
+        """
+        linked: dict[str, set[str]] = {}
+        for config in project.link_configurations:
+            ends = (config.source_module_id, config.target_module_id)
+            if ends == (from_id, to_id):
+                forward = True
+            elif ends == (to_id, from_id):
+                forward = False
+            else:
+                continue
+            for pair in self.store.load_link_pairs(project.id, config.id):
+                a, b = (pair.source_id, pair.target_id) if forward else (pair.target_id, pair.source_id)
+                linked.setdefault(a, set()).add(b)
+        return linked
+
+    def _report_linked_modules(self, project: Project, module: Module, module_type: str) -> list[Module]:
+        """Modules of ``module_type`` joined to ``module`` by a link configuration (display order)."""
+        joined: set[str] = set()
+        for config in project.link_configurations:
+            if config.source_module_id == module.id:
+                joined.add(config.target_module_id)
+            if config.target_module_id == module.id:
+                joined.add(config.source_module_id)
+        return [
+            m for m in self.list_modules(project.id)
+            if m.id in joined and m.id != module.id and m.type == module_type
+        ]
+
+    def _execution_reader(self, project: Project, module: Module) -> dict[str, Any]:
+        """How the execution records of ``module`` are read: its role attributes."""
+        roles = {
+            role: self._report_attribute(project, module, role)
+            for role in ("result", "execution_date", "executed_by", "version", "evidence")
+        }
+        return {
+            "module": module,
+            "roles": roles,
+            "attributes": {
+                role: ({"id": attr.id, "name": attr.name} if attr else None) for role, attr in roles.items()
+            },
+        }
+
+    def _execution_record(
+        self, reader: dict[str, Any], item: dict[str, Any], module_index: int, item_index: int
+    ) -> dict[str, Any]:
+        """One execution record (an object of a test_execution module) as report data."""
+        values = item["requirement"].attributes
+        roles = reader["roles"]
+
+        def value(role: str) -> Any:
+            attr = roles[role]
+            raw = values.get(attr.id) if attr else None
+            return None if raw is None or raw == "" else raw
+
+        raw_result = value("result")
+        execution_date = value("execution_date")
+        if not self._is_iso_date(execution_date):
+            execution_date = None
+        return {
+            "id": item["id"],
+            "module_id": reader["module"].id,
+            "text": item["text"],
+            "result": self._report_result(raw_result),
+            "result_value": raw_result,
+            "execution_date": execution_date,
+            "executed_by": value("executed_by"),
+            "version": value("version"),
+            "evidence": value("evidence"),
+            # sort key of "latest": date, then module order, then tree order
+            "_key": (execution_date or "", module_index, item_index),
+        }
+
+    @staticmethod
+    def _latest_execution(records: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """The latest *executed* record (Passed, Failed or Blocked), or None.
+
+        Latest = greatest Execution Date (a record without one sorts before
+        every dated record), then the later module in the project's module
+        order, then the later position in that module's tree order. Records
+        still Not Run (or Not Applicable) are planned, not executed, and are
+        never the latest execution.
+        """
+        executed = [r for r in records if r["result"] in REPORT_EXECUTED_RESULTS]
+        return max(executed, key=lambda r: r["_key"]) if executed else None
+
+    @staticmethod
+    def _public_record(record: dict[str, Any] | None) -> dict[str, Any] | None:
+        if record is None:
+            return None
+        return {k: v for k, v in record.items() if not k.startswith("_")}
+
+    @staticmethod
+    def _percent(part: int, whole: int) -> float:
+        return round(100.0 * part / whole, 1) if whole else 0.0
+
+    def traceability_matrix(self, project_id: str, config_ids: Any) -> dict[str, Any]:
+        """A traceability matrix over one link configuration or a chain of them.
+
+        ``config_ids`` lists link configuration ids; each one after the first
+        must share a module with the end of the chain so far (e.g. Satisfies
+        StRS, Satisfies SyRS, Verifies SwRS, Executes SwTest gives StRS ->
+        SyRS -> SwRS -> SwTest -> SwTestExec). The chain starts at the
+        first configuration's *target* module (links point downstream ->
+        upstream: a test case verifies a requirement), unless the second
+        configuration joins that module, in which case it starts at the
+        first configuration's source module.
+
+        Returns the module sequence (each with its reportable items), one
+        step per configuration (grid links row -> column, covered rows,
+        uncovered rows, orphan columns), the trace of every first-module item
+        through the whole chain, totals, and the unverified items: items of a
+        ``requirements`` module of the chain that reach no item of a later
+        ``test_cases`` module.
+        """
+        project = self.store.load_project(project_id)
+        if not isinstance(config_ids, list) or not config_ids or not all(isinstance(c, str) for c in config_ids):
+            raise ValueError("Pick at least one link configuration")
+        if len(config_ids) > MAX_TRACE_CHAIN:
+            raise ValueError(f"A traceability chain has at most {MAX_TRACE_CHAIN} link configurations")
+        if len(set(config_ids)) != len(config_ids):
+            raise ValueError("A link configuration appears twice in the chain")
+        configs = [self._get_link_configuration(project, cid) for cid in config_ids]
+        module_by_id = {m.id: m for m in self.list_modules(project_id)}
+
+        first = configs[0]
+        chain = [first.target_module_id, first.source_module_id]
+        if len(configs) > 1:
+            nxt = configs[1]
+            if chain[1] not in (nxt.source_module_id, nxt.target_module_id) and chain[0] in (
+                nxt.source_module_id, nxt.target_module_id
+            ):
+                chain.reverse()
+        # (config, row side is the config's target?) per step
+        orient: list[bool] = [first.target_module_id == chain[0]]
+        for config in configs[1:]:
+            end = chain[-1]
+            if config.target_module_id == end:
+                chain.append(config.source_module_id)
+                orient.append(True)
+            elif config.source_module_id == end:
+                chain.append(config.target_module_id)
+                orient.append(False)
+            else:
+                raise ValueError(
+                    f"Link configuration '{config.name}' does not continue the chain: "
+                    f"it does not join module '{module_by_id[end].name if end in module_by_id else end}'"
+                )
+
+        for module_id in chain:
+            if module_id not in module_by_id:
+                raise FileNotFoundError(f"Module '{module_id}' not found")
+        modules = [module_by_id[mid] for mid in chain]
+
+        items_of: list[list[dict[str, Any]]] = []
+        excluded_of: list[int] = []
+        for module in modules:
+            items, excluded = self._report_items(project, module)
+            items_of.append(items)
+            excluded_of.append(excluded)
+        ids_of = [[it["id"] for it in items] for items in items_of]
+        id_sets = [set(ids) for ids in ids_of]
+
+        steps: list[dict[str, Any]] = []
+        forward: list[dict[str, set[str]]] = []
+        for index, (config, row_is_target) in enumerate(zip(configs, orient)):
+            rows, columns = ids_of[index], ids_of[index + 1]
+            row_set, column_set = id_sets[index], id_sets[index + 1]
+            links: dict[str, set[str]] = {}
+            for pair in self.store.load_link_pairs(project_id, config.id):
+                row, column = (pair.target_id, pair.source_id) if row_is_target else (pair.source_id, pair.target_id)
+                if row in row_set and column in column_set:
+                    links.setdefault(row, set()).add(column)
+            forward.append(links)
+            column_index = {cid: i for i, cid in enumerate(columns)}
+            linked_columns = {c for targets in links.values() for c in targets}
+            uncovered = [r for r in rows if not links.get(r)]
+            steps.append({
+                "config": config.to_dict(),
+                "from_module_id": chain[index],
+                "to_module_id": chain[index + 1],
+                "links": [
+                    [row, column]
+                    for row in rows
+                    for column in sorted(links.get(row, ()), key=lambda c: column_index[c])
+                ],
+                "total": len(rows),
+                "covered": len(rows) - len(uncovered),
+                "covered_percent": self._percent(len(rows) - len(uncovered), len(rows)),
+                "uncovered": uncovered,
+                "orphans": [c for c in columns if c not in linked_columns],
+            })
+
+        def reach(start: str, from_index: int) -> list[set[str]]:
+            """Items reached from ``start`` (in module ``from_index``) in each later module."""
+            reached: list[set[str]] = []
+            frontier = {start}
+            for links in forward[from_index:]:
+                frontier = {t for s in frontier for t in links.get(s, ())}
+                reached.append(frontier)
+            return reached
+
+        trace = []
+        for item_id in ids_of[0]:
+            reached = reach(item_id, 0)
+            trace.append({
+                "id": item_id,
+                "reached": [[i for i in ids_of[k + 1] if i in ids] for k, ids in enumerate(reached)],
+                "complete": bool(reached[-1]),
+            })
+
+        unverified = []
+        for index, module in enumerate(modules):
+            later_tests = [k for k in range(index + 1, len(modules)) if modules[k].type == "test_cases"]
+            if module.type != "requirements" or not later_tests:
+                continue
+            test_index = later_tests[0]
+            missing = [
+                item_id for item_id in ids_of[index]
+                if not reach(item_id, index)[test_index - index - 1]
+            ]
+            unverified.append({
+                "module_id": module.id,
+                "test_module_id": modules[test_index].id,
+                "total": len(ids_of[index]),
+                "ids": missing,
+            })
+
+        traced = sum(1 for row in trace if row["complete"])
+        return {
+            "project_id": project_id,
+            "modules": [
+                {
+                    **self._report_module(module),
+                    "items": [{k: it[k] for k in ("id", "text", "level")} for it in items_of[i]],
+                    "excluded": excluded_of[i],
+                }
+                for i, module in enumerate(modules)
+            ],
+            "steps": steps,
+            "trace": trace,
+            "summary": {
+                "total": len(ids_of[0]),
+                "covered": steps[0]["covered"],
+                "covered_percent": steps[0]["covered_percent"],
+                "traced": traced,
+                "traced_percent": self._percent(traced, len(ids_of[0])),
+            },
+            "unverified": unverified,
+        }
+
+    def _test_case_results(
+        self, project: Project, test_module: Module, exec_modules: list[Module]
+    ) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
+        """Execution records per test case id of ``test_module``, and the readers used."""
+        records: dict[str, list[dict[str, Any]]] = {}
+        readers = []
+        order = {m.id: i for i, m in enumerate(self.list_modules(project.id))}
+        for exec_module in exec_modules:
+            reader = self._execution_reader(project, exec_module)
+            readers.append(reader)
+            links = self._report_links(project, exec_module.id, test_module.id)
+            items, _ = self._report_items(project, exec_module)
+            for position, item in enumerate(items):
+                targets = links.get(item["id"])
+                if not targets:
+                    continue
+                record = self._execution_record(reader, item, order.get(exec_module.id, 0), position)
+                for test_id in targets:
+                    records.setdefault(test_id, []).append(record)
+        return records, readers
+
+    def verification_report(self, project_id: str, module_id: str) -> dict[str, Any]:
+        """Verification status of every requirement of a ``requirements`` module.
+
+        Covering test cases: objects of ``test_cases`` modules linked to the
+        requirement directly (any link configuration between the modules,
+        either direction). A test case's result is its latest execution
+        (``_latest_execution``) among the objects of ``test_execution``
+        modules linked to it; a test case without any execution record falls
+        back to its own result attribute (e.g. RBC "Test Result"), if it has
+        one and it says Passed, Failed or Blocked.
+
+        Status: ``not_covered`` (no covering test case), ``failed`` (a
+        covering test case's result is Failed), ``not_run`` (otherwise, a
+        covering test case is Blocked or has no execution), ``verified``
+        (every covering test case Passed).
+        """
+        project = self.store.load_project(project_id)
+        module = self.store.load_module(project_id, module_id)
+        if module.type != "requirements":
+            raise ValueError(
+                f"Module '{module.name}' is a {module.type} module; "
+                "the verification report is for a requirements module"
+            )
+        items, excluded = self._report_items(project, module)
+        test_modules = self._report_linked_modules(project, module, "test_cases")
+
+        covering: dict[str, list[dict[str, Any]]] = {}
+        exec_modules_seen: dict[str, dict[str, Any]] = {}
+        for module_position, test_module in enumerate(test_modules):
+            links = self._report_links(project, module.id, test_module.id)
+            exec_modules =self._report_linked_modules(project, test_module, "test_execution")
+            records, readers = self._test_case_results(project, test_module, exec_modules)
+            for reader in readers:
+                exec_modules_seen.setdefault(reader["module"].id, {
+                    **self._report_module(reader["module"]),
+                    "test_module_id": test_module.id,
+                    "attributes": reader["attributes"],
+                })
+            own_result = self._report_attribute(project, test_module, "result")
+            tests, _ = self._report_items(project, test_module)
+            test_by_id = {t["id"]: (position, t) for position, t in enumerate(tests)}
+            for requirement_id, test_ids in links.items():
+                for test_id in test_ids:
+                    if test_id not in test_by_id:
+                        continue
+                    position, test = test_by_id[test_id]
+                    test_records = records.get(test_id, [])
+                    latest = self._latest_execution(test_records)
+                    source = "execution" if latest else None
+                    result = latest["result"] if latest else "not_run"
+                    if not test_records and own_result is not None:
+                        own = self._report_result(test["requirement"].attributes.get(own_result.id))
+                        if own in REPORT_EXECUTED_RESULTS:
+                            result, source = own, "test_case"
+                    covering.setdefault(requirement_id, []).append({
+                        "id": test_id,
+                        "module_id": test_module.id,
+                        "text": test["text"],
+                        "result": result,
+                        "source": source,
+                        "executions": len(test_records),
+                        "latest": self._public_record(latest),
+                        "_order": (module_position, position),
+                    })
+
+        rows = []
+        totals = {status: 0 for status in VERIFICATION_STATUSES}
+        for item in items:
+            tests = sorted(covering.get(item["id"], []), key=lambda t: t["_order"])
+            results = {t["result"] for t in tests}
+            if not tests:
+                status = "not_covered"
+            elif "failed" in results:
+                status = "failed"
+            elif results == {"passed"}:
+                status = "verified"
+            else:
+                status = "not_run"
+            totals[status] += 1
+            rows.append({
+                "id": item["id"],
+                "text": item["text"],
+                "level": item["level"],
+                "status": status,
+                "tests": [{k: v for k, v in t.items() if not k.startswith("_")} for t in tests],
+            })
+        total = len(rows)
+        return {
+            "project_id": project_id,
+            "module": self._report_module(module),
+            "test_modules": [self._report_module(m) for m in test_modules],
+            "execution_modules": list(exec_modules_seen.values()),
+            "requirements": rows,
+            "totals": {"total": total, **totals, "excluded": excluded},
+            "percent": {status: self._percent(totals[status], total) for status in VERIFICATION_STATUSES},
+        }
+
+    def execution_report(self, project_id: str, module_id: str) -> dict[str, Any]:
+        """The test execution report of a ``test_execution`` module (one campaign).
+
+        Planned test cases: the objects of the ``test_cases`` modules linked
+        to this module. Each one's result in this campaign is its latest
+        execution among the module's records linked to it (not_planned when
+        no record links to it, not_run when its records are all still Not
+        Run). Also: record counts per result, the failed and blocked test
+        cases with the requirements they verify (objects of ``requirements``
+        modules linked to the test case), records linked to no test case, and
+        the distinct builds/versions under test, executors and the execution
+        date range of the executed records.
+        """
+        project = self.store.load_project(project_id)
+        module = self.store.load_module(project_id, module_id)
+        if module.type != "test_execution":
+            raise ValueError(
+                f"Module '{module.name}' is a {module.type} module; "
+                "the test execution report is for a test_execution module"
+            )
+        reader = self._execution_reader(project, module)
+        items, excluded = self._report_items(project, module)
+        test_modules = self._report_linked_modules(project, module, "test_cases")
+        links_by_test_module = {tm.id: self._report_links(project, module.id, tm.id) for tm in test_modules}
+
+        records = []
+        by_test: dict[str, list[dict[str, Any]]] = {}
+        for position, item in enumerate(items):
+            record = self._execution_record(reader, item, 0, position)
+            test_ids = []
+            for test_module in test_modules:
+                test_ids.extend(sorted(links_by_test_module[test_module.id].get(item["id"], ())))
+            record["test_case_ids"] = test_ids
+            records.append(record)
+            for test_id in test_ids:
+                by_test.setdefault(test_id, []).append(record)
+
+        record_counts = {r: 0 for r in REPORT_RESULTS}
+        for record in records:
+            record_counts[record["result"]] += 1
+
+        test_cases = []
+        test_counts = {r: 0 for r in EXECUTION_TEST_STATUSES}
+        problems = []
+        for test_module in test_modules:
+            tests, _ = self._report_items(project, test_module)
+            requirement_modules = self._report_linked_modules(project, test_module, "requirements")
+            req_links = [
+                (rm, self._report_links(project, test_module.id, rm.id), {
+                    it["id"]: it["text"] for it in self._report_items(project, rm)[0]
+                })
+                for rm in requirement_modules
+            ]
+            for test in tests:
+                test_records = by_test.get(test["id"], [])
+                latest = self._latest_execution(test_records)
+                if latest:
+                    status = latest["result"]
+                elif test_records:
+                    status = "not_run"
+                else:
+                    status = "not_planned"
+                test_counts[status] += 1
+                entry = {
+                    "id": test["id"],
+                    "module_id": test_module.id,
+                    "text": test["text"],
+                    "status": status,
+                    "records": [r["id"] for r in test_records],
+                    "latest": self._public_record(latest),
+                }
+                test_cases.append(entry)
+                if status in ("failed", "blocked"):
+                    affected = []
+                    for rm, links, texts in req_links:
+                        affected.extend(
+                            {"id": rid, "module_id": rm.id, "text": texts[rid]}
+                            for rid in sorted(links.get(test["id"], ()))
+                            if rid in texts
+                        )
+                    problems.append({**entry, "requirements": affected})
+
+        executed_records = [r for r in records if r["result"] in REPORT_EXECUTED_RESULTS]
+        dates = sorted(r["execution_date"] for r in executed_records if r["execution_date"])
+
+        def distinct(key: str) -> list[str]:
+            return sorted({str(r[key]) for r in records if r[key] is not None})
+
+        planned = len(test_cases) - test_counts["not_planned"]
+        executed = sum(test_counts[s] for s in REPORT_EXECUTED_RESULTS)
+        return {
+            "project_id": project_id,
+            "module": self._report_module(module),
+            "attributes": reader["attributes"],
+            "test_modules": [self._report_module(m) for m in test_modules],
+            "records": [self._public_record(r) for r in records],
+            "record_counts": {"total": len(records), **record_counts, "excluded": excluded},
+            "test_cases": test_cases,
+            "test_counts": {
+                "total": len(test_cases),
+                "planned": planned,
+                "executed": executed,
+                "executed_percent": self._percent(executed, planned),
+                "pass_percent": self._percent(test_counts["passed"], executed),
+                **test_counts,
+            },
+            "problems": problems,
+            "unlinked_records": [r["id"] for r in records if not r["test_case_ids"]],
+            "versions": distinct("version"),
+            "executors": distinct("executed_by"),
+            "date_range": [dates[0], dates[-1]] if dates else None,
+        }
+
+    def export_traceability(self, project_id: str, config_ids: Any, fmt: str) -> bytes | str:
+        from .report_export import traceability_to_csv, traceability_to_xlsx
+
+        report = self.traceability_matrix(project_id, config_ids)
+        project = self.store.load_project(project_id)
+        if fmt == "csv":
+            return traceability_to_csv(report)
+        if fmt == "xlsx":
+            return traceability_to_xlsx(report, project.name)
+        raise ValueError(f"Unknown traceability export format '{fmt}'; expected csv or xlsx")
+
+    def export_verification_report(self, project_id: str, module_id: str, fmt: str) -> bytes:
+        from .report_export import verification_to_docx, verification_to_xlsx
+
+        if fmt not in ("docx", "xlsx"):
+            raise ValueError(f"Unknown report export format '{fmt}'; expected docx or xlsx")
+        report = self.verification_report(project_id, module_id)
+        project = self.store.load_project(project_id)
+        writer = verification_to_docx if fmt == "docx" else verification_to_xlsx
+        return writer(report, project.name)
+
+    def export_execution_report(self, project_id: str, module_id: str, fmt: str) -> bytes:
+        from .report_export import execution_to_docx, execution_to_xlsx
+
+        if fmt not in ("docx", "xlsx"):
+            raise ValueError(f"Unknown report export format '{fmt}'; expected docx or xlsx")
+        report = self.execution_report(project_id, module_id)
+        project = self.store.load_project(project_id)
+        writer = execution_to_docx if fmt == "docx" else execution_to_xlsx
+        return writer(report, project.name)
 
     # --- export ----------------------------------------------------------------
 

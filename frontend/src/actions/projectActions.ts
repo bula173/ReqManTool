@@ -1,6 +1,18 @@
 import { notifications } from '@mantine/notifications';
-import { IconArrowDown, IconArrowUp, IconFileText, IconFolderOpen, IconFolderPlus, IconPlus, IconTemplate } from '@tabler/icons-react';
+import {
+  IconArrowDown,
+  IconArrowUp,
+  IconChecklist,
+  IconFileText,
+  IconFolderOpen,
+  IconFolderPlus,
+  IconGridDots,
+  IconPlus,
+  IconReportAnalytics,
+  IconTemplate,
+} from '@tabler/icons-react';
 import { ApiError } from '../api/client';
+import { moduleTypeOf } from '../api/moduleTypes';
 import { isProjectStub, type Project } from '../api/types';
 import type { Action, ActionContext } from './types';
 
@@ -79,7 +91,24 @@ export const projectActions: Action<'project'>[] = [
       if (project) ctx.commands.openDialog({ kind: 'saveAsTemplate', project });
     },
   },
+  {
+    // Reports ▸ Traceability matrix (read-only report page of the target project).
+    id: 'report.traceability',
+    element: 'project',
+    label: 'Traceability matrix',
+    icon: IconGridDots,
+    isAvailable: (ctx) => loadedProject(ctx) !== null,
+    run: (ctx) => {
+      const project = loadedProject(ctx);
+      if (project) ctx.commands.navigate(`/projects/${encodeURIComponent(project.id)}/reports/traceability`);
+    },
+  },
 ];
+
+/** The path of a module report page (see `App.tsx`). */
+function moduleReportPath(target: NonNullable<ModuleContext['target']>, report: 'verification' | 'execution'): string {
+  return `/projects/${encodeURIComponent(target.projectId)}/reports/${report}/${encodeURIComponent(target.module.id)}`;
+}
 
 export const moduleActions: Action<'module'>[] = [
   {
@@ -115,5 +144,27 @@ export const moduleActions: Action<'module'>[] = [
       return index >= 0 && index < target.moduleIds.length - 1;
     },
     run: (ctx) => reorderModule(ctx, 'down'),
+  },
+  {
+    // Reports ▸ Verification report: only for a requirements module (disabled otherwise).
+    id: 'module.verificationReport',
+    element: 'module',
+    label: 'Verification report',
+    icon: IconReportAnalytics,
+    isAvailable: (ctx) => ctx.target !== null && moduleTypeOf(ctx.target.module) === 'requirements',
+    run: (ctx) => {
+      if (ctx.target) ctx.commands.navigate(moduleReportPath(ctx.target, 'verification'));
+    },
+  },
+  {
+    // Reports ▸ Test execution report: only for a test_execution module.
+    id: 'module.executionReport',
+    element: 'module',
+    label: 'Test execution report',
+    icon: IconChecklist,
+    isAvailable: (ctx) => ctx.target !== null && moduleTypeOf(ctx.target.module) === 'test_execution',
+    run: (ctx) => {
+      if (ctx.target) ctx.commands.navigate(moduleReportPath(ctx.target, 'execution'));
+    },
   },
 ];

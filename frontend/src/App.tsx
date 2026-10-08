@@ -3,9 +3,12 @@ import { AppLayout } from './layout/AppLayout';
 import { DetachedLayout } from './layout/DetachedLayout';
 import { BaselineComparePage } from './pages/BaselineComparePage';
 import { BaselinePage } from './pages/BaselinePage';
+import { ExecutionReportPage } from './pages/ExecutionReportPage';
 import { HomePage } from './pages/HomePage';
 import { ModulePage } from './pages/ModulePage';
 import { ProjectPage } from './pages/ProjectPage';
+import { TraceabilityPage } from './pages/TraceabilityPage';
+import { VerificationReportPage } from './pages/VerificationReportPage';
 
 export function App() {
   return (
@@ -17,6 +20,10 @@ export function App() {
         {/* The static "compare" segment outranks :baselineName; "compare" is a reserved baseline name. */}
         <Route path="/projects/:projectId/baselines/compare" element={<BaselineComparePage />} />
         <Route path="/projects/:projectId/baselines/:baselineName" element={<BaselinePage />} />
+        {/* Reports: the module is `:reportModuleId`, not `:moduleId`, so a report does not open the module (no tab). */}
+        <Route path="/projects/:projectId/reports/traceability" element={<TraceabilityPage />} />
+        <Route path="/projects/:projectId/reports/verification/:reportModuleId" element={<VerificationReportPage />} />
+        <Route path="/projects/:projectId/reports/execution/:reportModuleId" element={<ExecutionReportPage />} />
       </Route>
       {/* A module in its own browser window (minimal chrome); see layout/moduleTabs.ts. */}
       <Route path="/detached" element={<DetachedLayout />}>

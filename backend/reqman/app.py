@@ -665,6 +665,55 @@ def export_docx(project_id: str):
     )
 
 
+# --- reports (read-only: no broadcast) ------------------------------------------
+
+XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+REPORT_MEDIA_TYPES = {"csv": "text/csv", "xlsx": XLSX_MEDIA_TYPE, "docx": DOCX_MEDIA_TYPE}
+
+
+def _report_download(content: bytes | str, fmt: str, filename: str) -> Response:
+    return Response(
+        content=content,
+        media_type=REPORT_MEDIA_TYPES[fmt],
+        headers={"Content-Disposition": f'attachment; filename="{filename}.{fmt}"'},
+    )
+
+
+@app.get("/projects/{project_id}/reports/traceability")
+def traceability_matrix(project_id: str, config: list[str] = Query(default=[])):
+    """Repeat ``config`` for a chain: ``?config=a&config=b``."""
+    return _wrap(service.traceability_matrix, project_id, config)
+
+
+@app.get("/projects/{project_id}/reports/traceability/export/{fmt}")
+def export_traceability(project_id: str, fmt: str, config: list[str] = Query(default=[])):
+    content = _wrap(service.export_traceability, project_id, config, fmt)
+    return _report_download(content, fmt, f"{project_id}-traceability")
+
+
+@app.get("/projects/{project_id}/modules/{module_id}/reports/verification")
+def verification_report(project_id: str, module_id: str):
+    return _wrap(service.verification_report, project_id, module_id)
+
+
+@app.get("/projects/{project_id}/modules/{module_id}/reports/verification/export/{fmt}")
+def export_verification_report(project_id: str, module_id: str, fmt: str):
+    content = _wrap(service.export_verification_report, project_id, module_id, fmt)
+    return _report_download(content, fmt, f"{project_id}-{module_id}-verification")
+
+
+@app.get("/projects/{project_id}/modules/{module_id}/reports/execution")
+def execution_report(project_id: str, module_id: str):
+    return _wrap(service.execution_report, project_id, module_id)
+
+
+@app.get("/projects/{project_id}/modules/{module_id}/reports/execution/export/{fmt}")
+def export_execution_report(project_id: str, module_id: str, fmt: str):
+    content = _wrap(service.export_execution_report, project_id, module_id, fmt)
+    return _report_download(content, fmt, f"{project_id}-{module_id}-execution")
+
+
 # --- modules ----------------------------------------------------------
 
 
@@ -916,6 +965,10 @@ RPC_METHODS = {
     "requirement.link_options": lambda p: service.link_options(
         p["project_id"], p["from_id"], p["to_id"]
     ),
+    # Reports: read-only, never broadcast (not in MUTATING_METHODS).
+    "report.traceability": lambda p: service.traceability_matrix(p["project_id"], p.get("config_ids")),
+    "report.verification": lambda p: service.verification_report(p["project_id"], p["module_id"]),
+    "report.execution": lambda p: service.execution_report(p["project_id"], p["module_id"]),
 }
 
 

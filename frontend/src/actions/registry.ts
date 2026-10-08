@@ -216,6 +216,16 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
     ],
   },
   {
+    // Read-only reports; the module ones apply to the open module.
+    label: 'Reports',
+    entries: [
+      action('report.traceability'),
+      divider,
+      action('module.verificationReport'),
+      action('module.executionReport'),
+    ],
+  },
+  {
     label: 'Help',
     entries: [action('help.shortcuts'), action('help.documentation'), divider, action('help.about')],
   },
@@ -310,6 +320,8 @@ export const PROJECT_NODE_MENU: MenuEntry[] = [
   action('project.newSubproject'),
   action('project.newModule'),
   divider,
+  action('report.traceability'),
+  divider,
   action('file.saveAsTemplate'),
 ];
 
@@ -325,6 +337,9 @@ export const MODULE_NODE_MENU: MenuEntry[] = [
   divider,
   action('module.moveUp'),
   action('module.moveDown'),
+  divider,
+  action('module.verificationReport'),
+  action('module.executionReport'),
   divider,
   action('project.newModule'),
 ];
