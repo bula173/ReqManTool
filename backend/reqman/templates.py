@@ -23,6 +23,7 @@ Format (``format_version`` 1)::
       "description": "...",
       "attributes": [{"id", "name", "type", "required", "default", "choices", "modules"?, "module_types"?}],
       "modules": [{"key", "name", "prefix", "description", "type"?}],
+      "module_tree"?: [{"module": "<key>"} | {"folder": "<key>", "name", "children": [...]}],
       "link_configurations": [{"key", "name", "source_module", "target_module"}],
       "views": [{"name", "attribute_ids"}],
       "row_styles"?: [{"attribute_id", "value", "font_color", "background_color", "bold"}]
@@ -55,6 +56,18 @@ template attribute ``attribute_id``, one of its choices as ``value``,
 ``ProjectService.set_row_styles``). Like ``modules`` it was added without a
 ``format_version`` bump (an older ReqManTool creates the project unstyled)
 and is written only when non-empty.
+
+The optional ``module_tree`` arranges the modules in nested folders, in
+display order: ``{"module": "<module key>"}`` places a module, and
+``{"folder": "<folder key>", "name": "...", "children": [...]}`` a folder
+holding further entries. Folder keys are template-local (a project gets
+server-allocated folder ids slugged from the names); every module key and
+folder key appears at most once, and modules it does not place follow at
+the top level in ``modules`` order. Like ``row_styles`` it was added
+without a ``format_version`` bump (an older ReqManTool creates the modules
+without folders, in ``modules`` order, which "Save as template" writes in
+tree order) and is written only when there is a folder. Folder names,
+depth and sibling uniqueness are checked by ``ProjectService``.
 
 Compatibility rules:
 
@@ -148,6 +161,23 @@ class TemplateModule:
 
 
 @dataclass
+class TemplateFolder:
+    """A folder of a template's ``module_tree``: entries are module keys (``str``) and folders."""
+
+    key: str
+    name: str
+    children: list[str | TemplateFolder] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {"folder": self.key, "name": self.name, "children": tree_to_list(self.children)}
+
+
+def tree_to_list(entries: list) -> list[dict]:
+    """``module_tree`` entries as JSON."""
+    return [e.to_dict() if isinstance(e, TemplateFolder) else {"module": e} for e in entries]
+
+
+@dataclass
 class TemplateLinkConfiguration:
     key: str
     name: Any
@@ -202,6 +232,8 @@ class Template:
     link_configurations: list[TemplateLinkConfiguration] = field(default_factory=list)
     views: list[TemplateView] = field(default_factory=list)
     row_styles: list[TemplateRowStyle] = field(default_factory=list)
+    # Module keys and folders; empty = no folders (modules in ``modules`` order).
+    module_tree: list[str | TemplateFolder] = field(default_factory=list)
 
     @property
     def local_id(self) -> str:
@@ -216,6 +248,10 @@ class Template:
             "description": self.description,
             "attributes": [a.to_dict() for a in self.attributes],
             "modules": [m.to_dict() for m in self.modules],
+        }
+        if any(isinstance(e, TemplateFolder) for e in self.module_tree):
+            data["module_tree"] = tree_to_list(self.module_tree)
+        data |= {
             "link_configurations": [c.to_dict() for c in self.link_configurations],
             "views": [v.to_dict() for v in self.views],
         }
@@ -451,6 +487,8 @@ def parse_template(data: Any, template_id: str) -> Template:
             if key not in module_keys:
                 raise ValueError(f"attributes[{index}]: 'modules' entry {key!r} is not a module key of this template")
 
+    module_tree = _parse_module_tree(data.get("module_tree"), module_keys)
+
     link_configurations: list[TemplateLinkConfiguration] = []
     link_keys: set[str] = set()
     for index, raw in enumerate(_list_of_dicts(data, "link_configurations")):
@@ -526,4 +564,54 @@ def parse_template(data: Any, template_id: str) -> Template:
         link_configurations=link_configurations,
         views=views,
         row_styles=row_styles,
+        module_tree=module_tree,
     )
+
+
+def _parse_module_tree(value: Any, module_keys: set[str]) -> list[str | TemplateFolder]:
+    """Check the optional ``module_tree`` shape; module entries must name module keys, once each."""
+    if value is None:
+        return []
+    placed: set[str] = set()
+    folder_keys: set[str] = set()
+
+    def parse(items: Any, where: str) -> list[str | TemplateFolder]:
+        if not isinstance(items, list):
+            raise ValueError(f"'{where}' must be a list")
+        result: list[str | TemplateFolder] = []
+        for index, item in enumerate(items):
+            at = f"{where}[{index}]"
+            if not isinstance(item, dict):
+                raise ValueError(f"{at} must be an object")
+            if "module" in item:
+                key = item["module"]
+                if not isinstance(key, str) or key not in module_keys:
+                    raise ValueError(f"{at}: 'module' {key!r} is not a module key of this template")
+                if key in placed:
+                    raise ValueError(f"{at}: module key '{key}' is placed more than once")
+                placed.add(key)
+                result.append(key)
+            elif "folder" in item:
+                key = item["folder"]
+                if not _is_nonblank_str(key):
+                    raise ValueError(f"{at}: 'folder' must be a non-empty string")
+                if key in folder_keys:
+                    raise ValueError(f"{at}: duplicate folder key '{key}'")
+                folder_keys.add(key)
+                folder_name = item.get("name")
+                if not _is_nonblank_str(folder_name):
+                    raise ValueError(f"{at}: 'name' must be a non-empty string")
+                children = item.get("children", [])
+                result.append(
+                    TemplateFolder(
+                        key=key,
+                        name=folder_name.strip(),
+                        children=parse([] if children is None else children, f"{at}.children"),
+                    )
+                )
+            else:
+                raise ValueError(f"{at} must have a 'module' or a 'folder' key")
+        return result
+
+    # Nesting is bounded by MAX_TEMPLATE_JSON_DEPTH (checked before parsing), so this recursion is too.
+    return parse(value, "module_tree")

@@ -225,6 +225,33 @@
       "type": "test_execution"
     }
   ],
+  "module_tree": [
+    {
+      "folder": "requirements",
+      "name": "Requirements",
+      "children": [
+        {"module": "strs"},
+        {"module": "syrs"},
+        {"module": "swrs"}
+      ]
+    },
+    {
+      "folder": "tests",
+      "name": "Tests",
+      "children": [
+        {"module": "systest"},
+        {"module": "swtest"}
+      ]
+    },
+    {
+      "folder": "test-execution",
+      "name": "Test Execution",
+      "children": [
+        {"module": "systestexec"},
+        {"module": "swtestexec"}
+      ]
+    }
+  ],
   "link_configurations": [
     {
       "key": "syrs_strs",

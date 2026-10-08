@@ -272,6 +272,8 @@ class CreateModuleBody(BaseModel):
     # "requirements" (default), "test_cases" or "test_execution"; validated
     # by the service so REST and WebSocket reject alike.
     type: Any = None
+    # The module folder to create it in; null/omitted = the top level.
+    folder_id: Any = None
 
 
 class AddRequirementBody(BaseModel):
@@ -296,6 +298,24 @@ class ReorderRequirementBody(BaseModel):
 
 class ReorderModuleBody(BaseModel):
     direction: Literal["up", "down"]
+
+
+class CreateModuleFolderBody(BaseModel):
+    # Name and parent are validated by the service so REST and WebSocket
+    # reject alike; parent_id null/omitted = the top level.
+    name: Any = None
+    parent_id: Any = None
+
+
+class RenameModuleFolderBody(BaseModel):
+    name: Any = None
+
+
+class MoveModuleTreeEntryBody(BaseModel):
+    # The destination folder (null/omitted = the top level) and the optional
+    # 0-based position among its entries; validated by the service.
+    folder_id: Any = None
+    index: Any = None
 
 
 class CopyRequirementBody(BaseModel):
@@ -751,7 +771,9 @@ def export_execution_report(project_id: str, module_id: str, fmt: str):
 
 @app.post("/projects/{project_id}/modules")
 async def create_module(project_id: str, body: CreateModuleBody):
-    module = _wrap(service.create_module, project_id, body.name, body.prefix, body.description, body.type)
+    module = _wrap(
+        service.create_module, project_id, body.name, body.prefix, body.description, body.type, body.folder_id
+    )
     await manager.broadcast(project_id)
     return module.to_dict()
 
@@ -771,6 +793,56 @@ async def reorder_module(project_id: str, module_id: str, body: ReorderModuleBod
     module = _wrap(service.reorder_module, project_id, module_id, body.direction)
     await manager.broadcast(project_id)
     return module.to_dict()
+
+
+@app.post("/projects/{project_id}/modules/{module_id}/move")
+async def move_module(project_id: str, module_id: str, body: MoveModuleTreeEntryBody):
+    module = _wrap(service.move_module, project_id, module_id, body.folder_id, body.index)
+    await manager.broadcast(project_id)
+    return module.to_dict()
+
+
+# --- module folders (purely organisational: ids, requirements, links unaffected) ---
+
+
+@app.get("/projects/{project_id}/module-tree")
+def get_module_tree(project_id: str):
+    return _wrap(service.get_module_tree, project_id)
+
+
+@app.post("/projects/{project_id}/module-folders")
+async def create_module_folder(project_id: str, body: CreateModuleFolderBody):
+    folder = _wrap(service.create_module_folder, project_id, body.name, body.parent_id)
+    await manager.broadcast(project_id)
+    return folder
+
+
+@app.put("/projects/{project_id}/module-folders/{folder_id}/name")
+async def rename_module_folder(project_id: str, folder_id: str, body: RenameModuleFolderBody):
+    folder = _wrap(service.rename_module_folder, project_id, folder_id, body.name)
+    await manager.broadcast(project_id)
+    return folder
+
+
+@app.delete("/projects/{project_id}/module-folders/{folder_id}")
+async def delete_module_folder(project_id: str, folder_id: str):
+    result = _wrap(service.delete_module_folder, project_id, folder_id)
+    await manager.broadcast(project_id)
+    return result
+
+
+@app.post("/projects/{project_id}/module-folders/{folder_id}/move")
+async def move_module_folder(project_id: str, folder_id: str, body: MoveModuleTreeEntryBody):
+    folder = _wrap(service.move_module_folder, project_id, folder_id, body.folder_id, body.index)
+    await manager.broadcast(project_id)
+    return folder
+
+
+@app.post("/projects/{project_id}/module-folders/{folder_id}/reorder")
+async def reorder_module_folder(project_id: str, folder_id: str, body: ReorderModuleBody):
+    folder = _wrap(service.reorder_module_folder, project_id, folder_id, body.direction)
+    await manager.broadcast(project_id)
+    return folder
 
 
 @app.post("/projects/{project_id}/modules/{module_id}/import/csv")
@@ -1013,12 +1085,23 @@ RPC_METHODS = {
         p["project_id"], p["id"], p.get("modules"), p.get("drop_values", False), p.get("module_types")
     ),
     "module.create": lambda p: service.create_module(
-        p["project_id"], p["name"], p["prefix"], p.get("description", ""), p.get("type")
+        p["project_id"], p["name"], p["prefix"], p.get("description", ""), p.get("type"), p.get("folder_id")
     ),
     "module.get": lambda p: service.get_module(p["project_id"], p["id"]),
     "module.list": lambda p: service.list_modules(p["project_id"]),
     "module.purge": lambda p: {"purged": service.purge_module(p["project_id"], p["id"])},
     "module.reorder": lambda p: service.reorder_module(p["project_id"], p["id"], p["direction"]),
+    "module.move": lambda p: service.move_module(p["project_id"], p["id"], p.get("folder_id"), p.get("index")),
+    "module_tree.get": lambda p: service.get_module_tree(p["project_id"]),
+    "module_folder.create": lambda p: service.create_module_folder(
+        p["project_id"], p.get("name"), p.get("parent_id")
+    ),
+    "module_folder.rename": lambda p: service.rename_module_folder(p["project_id"], p["id"], p.get("name")),
+    "module_folder.delete": lambda p: service.delete_module_folder(p["project_id"], p["id"]),
+    "module_folder.move": lambda p: service.move_module_folder(
+        p["project_id"], p["id"], p.get("folder_id"), p.get("index")
+    ),
+    "module_folder.reorder": lambda p: service.reorder_module_folder(p["project_id"], p["id"], p["direction"]),
     "link_configuration.create": lambda p: service.create_link_configuration(
         p["project_id"], p["name"], p["source_module_id"], p["target_module_id"], p.get("target_project_id")
     ),
@@ -1107,7 +1190,9 @@ MUTATING_METHODS = {
     "project.git_set_remote", "project.git_set_auto_push", "project.git_push", "project.git_pull",
     "project.create_from_remote",
     "attribute.add", "attribute.set_modules",
-    "module.create", "module.purge", "module.reorder",
+    "module.create", "module.purge", "module.reorder", "module.move",
+    "module_folder.create", "module_folder.rename", "module_folder.delete", "module_folder.move",
+    "module_folder.reorder",
     "link_configuration.create", "link_configuration.remove",
     "view.create", "view.set_column_widths", "view.remove",
     "requirement.add", "requirement.update", "requirement.remove", "requirement.move",

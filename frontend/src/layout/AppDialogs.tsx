@@ -13,7 +13,9 @@ import { ImportTemplateModal } from '../components/ImportTemplateModal';
 import { ImportTestResultsModal } from '../components/ImportTestResultsModal';
 import { KeyboardShortcutsModal } from '../components/KeyboardShortcutsModal';
 import { LinkModal } from '../components/LinkModal';
+import { ModuleFolderNameModal } from '../components/ModuleFolderNameModal';
 import { MoveRequirementModal } from '../components/MoveRequirementModal';
+import { MoveToFolderModal } from '../components/MoveToFolderModal';
 import { NewModuleModal } from '../components/NewModuleModal';
 import { NewProjectModal } from '../components/NewProjectModal';
 import { ProjectReferencesModal } from '../components/ProjectReferencesModal';
@@ -127,7 +129,19 @@ export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; 
         />
       );
     case 'newModule':
-      return <NewModuleModal projectId={dialog.projectId} onClose={onClose} />;
+      return <NewModuleModal projectId={dialog.projectId} folderId={dialog.folderId ?? null} onClose={onClose} />;
+    case 'newModuleFolder':
+      return <ModuleFolderNameModal projectId={dialog.projectId} parentId={dialog.parentId} onClose={onClose} />;
+    case 'renameModuleFolder':
+      return (
+        <ModuleFolderNameModal
+          projectId={dialog.projectId}
+          rename={{ folderId: dialog.folderId, name: dialog.name }}
+          onClose={onClose}
+        />
+      );
+    case 'moveToFolder':
+      return <MoveToFolderModal projectId={dialog.projectId} item={dialog.item} onClose={onClose} />;
     case 'addRequirement':
       return <AddRequirementDialog request={dialog} onClose={onClose} />;
     case 'linkRequirement':

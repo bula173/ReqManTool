@@ -1,14 +1,41 @@
 import { Center, Loader, NavLink, ScrollArea, Stack, Text } from '@mantine/core';
-import { IconAlertTriangle, IconCornerLeftUp, IconFolderPlus, IconFolders, IconPlus } from '@tabler/icons-react';
-import type { MouseEvent } from 'react';
+import { useLocalStorage } from '@mantine/hooks';
+import { notifications } from '@mantine/notifications';
+import {
+  IconAlertTriangle,
+  IconCornerLeftUp,
+  IconFolder,
+  IconFolderOpen,
+  IconFolderPlus,
+  IconFolders,
+  IconPlus,
+} from '@tabler/icons-react';
+import { useState, type DragEvent, type MouseEvent, type ReactNode } from 'react';
 import { useAppActions } from '../actions/context';
-import { MODULE_NODE_MENU, PROJECT_NODE_MENU } from '../actions/registry';
+import { FOLDER_NODE_MENU, MODULE_NODE_MENU, PROJECT_NODE_MENU } from '../actions/registry';
 import { contextMenuTargetProps } from '../actions/shortcuts';
 import type { ActionTargetOverrides, MenuEntry } from '../actions/types';
-import { useModules, useProjects } from '../api/queries';
-import { isProjectStub } from '../api/types';
+import { ApiError } from '../api/client';
+import { useModules, useModuleTree, useProjects } from '../api/queries';
+import { isProjectStub, type Project } from '../api/types';
 import { buildProjectForest } from './projectTree';
 import { ModuleTypeIcon } from './ModuleTypeIcon';
+import { buildModuleTreeNodes, folderSubtreeIds, type ModuleTreeNode } from './moduleTree';
+
+/** Collapsed module folders (`<projectId>/<folderId>`), remembered per browser. */
+const COLLAPSED_FOLDERS_STORAGE_KEY = 'reqman.moduleFolders.collapsed';
+
+/** A module or folder being dragged in the module tree (HTML5 drag and drop within this window). */
+interface TreeDrag {
+  projectId: string;
+  kind: 'module' | 'folder';
+  id: string;
+  /** For a folder: its id and its subfolders' ids (it cannot be dropped into them). */
+  blocked: Set<string>;
+}
+
+/** Drag data type of module tree nodes (other drop zones ignore it). */
+const TREE_DRAG_TYPE = 'application/x-reqman-module-tree';
 
 interface ProjectTabProps {
   /** The chosen project (from the route, else the last one picked in this browser). */
@@ -29,18 +56,30 @@ function SectionLabel({ children }: { children: string }) {
 /**
  * The Project tab of the left panel: the chosen project's parent (to go up),
  * subprojects (picking one drills down) and modules (picking one opens it in
- * the Module tab), plus "New module" / "New subproject". Right click (or
- * Shift+F10) on the project, a subproject or a module opens its editing menu
- * from the action registry; left click opens it.
+ * the Module tab) arranged in module folders (click a folder to expand or
+ * collapse it), plus "New module" / "New folder" / "New subproject". Right
+ * click (or Shift+F10) on the project, a subproject, a folder or a module
+ * opens its editing menu from the action registry; left click opens it.
+ * Modules and folders can be dragged onto a folder, or onto the project name
+ * for the top level.
  */
 export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenModule }: ProjectTabProps) {
   const projectsQuery = useProjects();
   const { state, run, isAvailable, openMenu } = useAppActions();
+  const [collapsed, setCollapsed] = useLocalStorage<string[]>({
+    key: COLLAPSED_FOLDERS_STORAGE_KEY,
+    defaultValue: [],
+    getInitialValueInEffect: false,
+  });
+  const [drag, setDrag] = useState<TreeDrag | null>(null);
+  // The drop target under the pointer: a folder id, or '' for the top level (project row).
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
 
   const projects = projectsQuery.data ?? [];
   const project = projectId ? projects.find((p) => p.id === projectId) : undefined;
   const readable = project !== undefined && !isProjectStub(project);
   const modulesQuery = useModules(readable ? projectId! : undefined);
+  const treeQuery = useModuleTree(readable ? projectId! : undefined);
 
   if (!projectId) {
     return (
@@ -78,6 +117,8 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
   const subprojects = forest.childrenOf.get(projectId) ?? [];
   const canAddSubproject = isAvailable('project.newSubproject', { project });
   const moduleIds = (modulesQuery.data ?? []).map((m) => m.id);
+  // Modules shown flat (in display order) until the tree has loaded, or if it failed to load.
+  const nodes = buildModuleTreeNodes(treeQuery.data, modulesQuery.data ?? []);
   const menuProps = (label: string, entries: MenuEntry[], targets: ActionTargetOverrides) => ({
     ...contextMenuTargetProps,
     onContextMenu: (event: MouseEvent) => {
@@ -86,10 +127,120 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
     },
   });
 
+  // --- drag and drop: drop a module or folder onto a folder (or the project row: top level) ---
+  const canDrop = (targetFolderId: string | null) =>
+    drag !== null &&
+    drag.projectId === projectId &&
+    (targetFolderId === null || !drag.blocked.has(targetFolderId));
+  const dragProps = (kind: 'module' | 'folder', id: string, blocked: Set<string> = new Set()) =>
+    readable
+      ? {
+          draggable: true,
+          onDragStart: (event: DragEvent) => {
+            event.stopPropagation();
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData(TREE_DRAG_TYPE, JSON.stringify({ projectId, kind, id }));
+            setDrag({ projectId, kind, id, blocked });
+          },
+          onDragEnd: () => {
+            setDrag(null);
+            setDropTarget(null);
+          },
+        }
+      : {};
+  const dropProps = (targetFolderId: string | null) => ({
+    onDragOver: (event: DragEvent) => {
+      if (!canDrop(targetFolderId) || !event.dataTransfer.types.includes(TREE_DRAG_TYPE)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = 'move';
+      setDropTarget(targetFolderId ?? '');
+    },
+    onDragLeave: () => setDropTarget((current) => (current === (targetFolderId ?? '') ? null : current)),
+    onDrop: (event: DragEvent) => {
+      if (!canDrop(targetFolderId) || !drag) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const moved = drag;
+      setDrag(null);
+      setDropTarget(null);
+      const request =
+        moved.kind === 'module'
+          ? state.commands.moduleFolders.moveModule(projectId, moved.id, targetFolderId)
+          : state.commands.moduleFolders.moveFolder(projectId, moved.id, targetFolderId);
+      request.catch((err) =>
+        notifications.show({ message: err instanceof ApiError ? err.message : 'Failed to move', color: 'red' }),
+      );
+    },
+  });
+  const dropHighlight = (targetFolderId: string | null) =>
+    dropTarget === (targetFolderId ?? '') ? { outline: '2px dashed var(--mantine-primary-color-filled)' } : undefined;
+
+  const toggleFolder = (folderId: string) => {
+    const key = `${projectId}/${folderId}`;
+    setCollapsed((current) => (current.includes(key) ? current.filter((k) => k !== key) : [...current, key]));
+  };
+  const renderNode = (node: ModuleTreeNode, loadedProject: Project): ReactNode => {
+    const position = { parentId: node.parentId, index: node.index, siblingCount: node.siblingCount };
+    if (node.kind === 'module') {
+      const { module } = node;
+      return (
+        <NavLink
+          key={`module:${module.id}`}
+          label={module.name}
+          description={module.prefix}
+          leftSection={<ModuleTypeIcon module={module} size={14} />}
+          active={state.projectId === projectId && activeModuleId === module.id}
+          onClick={() => onOpenModule(projectId, module.id)}
+          {...dragProps('module', module.id)}
+          {...menuProps(module.name, MODULE_NODE_MENU, {
+            module: { projectId, module, moduleIds, position },
+            project: loadedProject,
+          })}
+        />
+      );
+    }
+    const opened = !collapsed.includes(`${projectId}/${node.id}`);
+    return (
+      <NavLink
+        key={`folder:${node.id}`}
+        label={node.name}
+        leftSection={opened ? <IconFolderOpen size={14} /> : <IconFolder size={14} />}
+        opened={opened}
+        onChange={() => toggleFolder(node.id)}
+        childrenOffset={14}
+        style={dropHighlight(node.id)}
+        {...dragProps('folder', node.id, folderSubtreeIds(node.entry))}
+        {...dropProps(node.id)}
+        {...menuProps(node.name, FOLDER_NODE_MENU, {
+          folder: { projectId, folder: node.entry, position },
+          project: loadedProject,
+        })}
+      >
+        {node.children.length === 0 ? (
+          <Text c="dimmed" size="xs" px="sm" py={2}>
+            Empty folder
+          </Text>
+        ) : (
+          node.children.map((child) => renderNode(child, loadedProject))
+        )}
+      </NavLink>
+    );
+  };
+
   return (
     <Stack gap={0} h="100%">
       <Stack gap={0} px="xs" pt="xs">
-        <Text fw={600} size="sm" px="sm" truncate="end" {...menuProps(project.name, PROJECT_NODE_MENU, { project })}>
+        <Text
+          fw={600}
+          size="sm"
+          px="sm"
+          truncate="end"
+          style={dropHighlight(null)}
+          title={readable ? 'Drop a module or folder here to move it to the top level' : undefined}
+          {...(readable ? dropProps(null) : {})}
+          {...menuProps(project.name, PROJECT_NODE_MENU, { project })}
+        >
           {project.name}
         </Text>
         {parent && (
@@ -147,24 +298,22 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
                 No modules yet
               </Text>
             )}
-            {modulesQuery.data?.map((module) => (
-              <NavLink
-                key={module.id}
-                label={module.name}
-                description={module.prefix}
-                leftSection={<ModuleTypeIcon module={module} size={14} />}
-                active={state.projectId === projectId && activeModuleId === module.id}
-                onClick={() => onOpenModule(projectId, module.id)}
-                {...menuProps(module.name, MODULE_NODE_MENU, {
-                  module: { projectId, module, moduleIds },
-                  project,
-                })}
-              />
-            ))}
+            {treeQuery.isError && (
+              <Text c="red" size="xs" px="sm" py={2}>
+                Failed to load module folders; modules are listed without them
+              </Text>
+            )}
+            {nodes.map((node) => renderNode(node, project))}
             <NavLink
               label="New module"
               leftSection={<IconPlus size={14} />}
               onClick={() => run('project.newModule', { project })}
+              c="dimmed"
+            />
+            <NavLink
+              label="New folder"
+              leftSection={<IconFolderPlus size={14} />}
+              onClick={() => run('project.newFolder', { project })}
               c="dimmed"
             />
           </>

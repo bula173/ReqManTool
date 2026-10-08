@@ -185,9 +185,7 @@ def _describe_project(old: Any, new: Any) -> list[str]:
         for item_id, item in before.items():
             if item_id not in after and not (skip_system and item.get("system")):
                 entries.append(f"{label} '{item.get('name', item_id)}' removed")
-    old_order, new_order = _list(old.get("module_order")), _list(new.get("module_order"))
-    if old_order != new_order and sorted(map(str, old_order)) == sorted(map(str, new_order)):
-        entries.append("Module order changed")
+    entries.extend(_describe_module_tree(old.get("module_order"), new.get("module_order")))
     if _list(old.get("row_styles")) != _list(new.get("row_styles")):
         entries.append("Row styles changed")
     if not entries:
@@ -197,6 +195,72 @@ def _describe_project(old: Any, new: Any) -> list[str]:
         }:
             entries.append("Project settings changed")
     return entries
+
+
+def _module_tree_entries(value: Any) -> tuple[list[tuple[str, str, str | None]], dict[str, str]]:
+    """A ``module_order`` (format <= 6 id strings, or format 7 module/folder entries) flattened.
+
+    Returns ``(kind, id, parent folder id)`` triples in display order and the
+    folder names by id. Anything unreadable is skipped (hand-edited files).
+    """
+    entries: list[tuple[str, str, str | None]] = []
+    names: dict[str, str] = {}
+
+    def walk(items: Any, parent: str | None, depth: int) -> None:
+        if depth > 64:
+            return
+        for item in _list(items):
+            if isinstance(item, str):
+                entries.append(("module", item, parent))
+            elif isinstance(item, dict) and isinstance(item.get("module"), str):
+                entries.append(("module", item["module"], parent))
+            elif isinstance(item, dict) and isinstance(item.get("folder"), str):
+                folder_id = item["folder"]
+                name = item.get("name")
+                names[folder_id] = name if isinstance(name, str) and name else folder_id
+                entries.append(("folder", folder_id, parent))
+                walk(item.get("children"), folder_id, depth + 1)
+
+    walk(value, None, 1)
+    return entries, names
+
+
+def _describe_module_tree(old: Any, new: Any) -> list[str]:
+    """Commit message lines for a changed module tree: folders added/removed/renamed/moved, modules moved.
+
+    Modules added or removed are described by their module files; a pure
+    reordering (same folders, same places) is "Module order changed".
+    """
+    old_entries, old_names = _module_tree_entries(old)
+    new_entries, new_names = _module_tree_entries(new)
+    if old_entries == new_entries and old_names == new_names:
+        return []
+    old_parent = {(kind, item): parent for kind, item, parent in old_entries}
+    new_parent = {(kind, item): parent for kind, item, parent in new_entries}
+
+    def where(parent: str | None) -> str:
+        return f"folder '{new_names.get(parent, parent)}'" if parent is not None else "the top level"
+
+    lines: list[str] = []
+    for kind, item, parent in new_entries:
+        key = (kind, item)
+        if kind == "folder":
+            if key not in old_parent:
+                lines.append(f"Module folder '{new_names[item]}' added")
+                continue
+            if old_names.get(item) != new_names[item]:
+                lines.append(f"Module folder '{old_names.get(item)}' renamed to '{new_names[item]}'")
+        if key in old_parent and old_parent[key] != parent:
+            label = f"Module folder '{new_names[item]}'" if kind == "folder" else f"Module '{item}'"
+            lines.append(f"{label} moved to {where(parent)}")
+    for kind, item, _ in old_entries:
+        if kind == "folder" and (kind, item) not in new_parent:
+            lines.append(f"Module folder '{old_names.get(item, item)}' removed")
+    if not lines:
+        common = set(old_parent) & set(new_parent)
+        if [e for e in old_entries if e[:2] in common] != [e for e in new_entries if e[:2] in common]:
+            lines.append("Module order changed")
+    return lines
 
 
 def _describe_module(module_id: str, old: Any, new: Any) -> list[str]:

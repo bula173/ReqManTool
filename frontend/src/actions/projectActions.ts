@@ -23,8 +23,8 @@ import type { Action, ActionContext } from './types';
  * menus, the menu bar and the project page. The target is the clicked node,
  * or the open project / module by default. Rename is not offered: there is no
  * rename API for projects or modules yet (add `project.rename` /
- * `module.rename` here once there is). Module folders join these menus with
- * their backlog item; "Open in new tab" / "Open in new window" are in
+ * `module.rename` here once there is). Module folder actions are in
+ * `moduleFolderActions.ts`; "Open in new tab" / "Open in new window" are in
  * `tabActions.ts`.
  */
 
@@ -143,7 +143,7 @@ export const moduleActions: Action<'module'>[] = [
     icon: IconArrowUp,
     isAvailable: (ctx) => {
       const target = ctx.target;
-      return target !== null && target.moduleIds.indexOf(target.module.id) > 0;
+      return target !== null && target.position !== null && target.position.index > 0;
     },
     run: (ctx) => reorderModule(ctx, 'up'),
   },
@@ -155,8 +155,7 @@ export const moduleActions: Action<'module'>[] = [
     isAvailable: (ctx) => {
       const target = ctx.target;
       if (!target) return false;
-      const index = target.moduleIds.indexOf(target.module.id);
-      return index >= 0 && index < target.moduleIds.length - 1;
+      return target.position !== null && target.position.index < target.position.siblingCount - 1;
     },
     run: (ctx) => reorderModule(ctx, 'down'),
   },

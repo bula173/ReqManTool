@@ -1116,6 +1116,56 @@
       "References…", `ProjectReferencesModal`, `LinkConfigurationModal`,
       `RequirementDetailPanel`. Not covered: tests; follow-ups in the
       backlog ("Project references: follow-ups").
+- [x] **Module folders** (2026-10-08; requested 2026-10-04). Modules in a
+      project are organised into nested folders; folders are purely
+      organisational (module ids, requirement ids and links unaffected).
+      `PROJECT_FORMAT` 6 → 7: a lossless migration turns the
+      `module_order` id strings into `{"module": id}` entries; folders are
+      stored as `{"folder", "name", "children"}`; the file is rewritten
+      only on the next real save. `ProjectService` rules: server-allocated
+      folder ids (unique slug of the name); names non-empty, at most 200
+      characters, unique among sibling folders (case-insensitive); only
+      empty folders can be deleted; no move into itself or a descendant;
+      nesting at most 16 levels (64 tolerated when reading hand-edited
+      files); moves take an optional index; no-op moves write nothing;
+      `module.reorder` reorders within the module's folder;
+      `create_module` takes an optional `folder_id`. History messages for
+      every folder operation. Templates: optional `module_tree` key (no
+      template format bump, like `row_styles`); `RBC_Template` has the
+      folders Requirements (StRS, SyRS, SwRS), Tests (SysTest, SwTest) and
+      Test Execution (SysTestExec, SwTestExec); save as template writes
+      `module_tree` when the project has a folder. Endpoints:
+      `GET /projects/{project_id}/module-tree`;
+      `POST /projects/{project_id}/module-folders` (`{name, parent_id?}`);
+      `PUT .../module-folders/{folder_id}/name`;
+      `DELETE .../module-folders/{folder_id}`;
+      `POST .../module-folders/{folder_id}/move` (`{folder_id?, index?}`);
+      `POST .../module-folders/{folder_id}/reorder` (`{direction}`);
+      `POST /projects/{project_id}/modules/{module_id}/move`;
+      `POST /projects/{project_id}/modules` accepts `folder_id`. WS
+      `module_tree.get`, `module_folder.create/rename/delete/move/`
+      `reorder`, `module.move`, `module.create` with `folder_id`; every
+      mutation broadcasts `changed`. Decisions: Test Execution is a
+      separate top-level RBC folder; an empty folder is deleted without
+      confirmation; grouped pickers list unfoldered modules first, then
+      one group per folder path. Backend: `backend/reqman/{models.py,
+      service.py, app.py, formats.py, history.py, templates.py,
+      templates/rbc_template.json, module_tree.py (new)}`; design in
+      `docs/ARCHITECTURE.md` ("Module order and module folders"). UI:
+      sidebar Project tab tree with collapsible folders (collapse state
+      per browser, `reqman.moduleFolders.collapsed`) and HTML5
+      drag-and-drop of modules/folders into folders or onto the project
+      name (top level); registry `folder` element type with
+      `FOLDER_NODE_MENU` (New module here, New subfolder, Rename folder,
+      Move Up/Down, Move to folder…, Delete folder — disabled unless
+      empty); project node "New folder"; module node "Move to folder…";
+      `ModuleFolderNameModal`, `MoveToFolderModal`, Folder select in
+      `NewModuleModal`; link configuration selects (including referenced
+      projects) and the traceability chain picker grouped by folder path;
+      the attribute "Applies to modules" checklist shows folder paths; the
+      project page shows "in <path>" and moves up/down within the folder.
+      Not covered: tests; follow-ups in the backlog ("Module folders:
+      follow-ups").
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -1337,9 +1387,10 @@ to the categories above.
 - [ ] Context menus: follow-ups (2026-10-08). (1) Done 2026-10-08 for
       module tab entries (close, close others, detach), "Open in new
       tab" and "Detach"; done 2026-10-08 for project references (sidebar
-      project menu "References…"); split view and module folder entries
-      still arrive with those items (hooks in `ActionTargets` and the menu
-      layouts).
+      project menu "References…"); done 2026-10-08 for module folder
+      entries (folder node menu, project node "New folder", module node
+      "Move to folder…"); split view entries still arrive with that item
+      (hooks in `ActionTargets` and the menu layouts).
       (2) Project/module Rename needs backend APIs. (3) Column header
       Sort / Filter / Hide / Add to view need their own features.
       (4) Detail-panel link badges and module-outline nodes have no
@@ -1591,18 +1642,16 @@ to the categories above.
       the referencing projects whose link pairs will be deleted. (5)
       Baseline view/compare do not resolve cross-project link ends. (6)
       Tests pending (phase B).
-- [ ] Module folders. Requested 2026-10-04. Modules inside a project can be
-      organised into nested folders (create, rename, delete-empty, move a
-      module or folder into another folder, ordering within a folder),
-      shown as a tree in the sidebar and in module pickers (link
-      configuration dialogs, drag-and-drop, reports). Folders are purely
-      organisational: module ids, requirement ids and links are
-      unaffected. Persisted in `project.json` as an extension of the
-      persisted module order (from the format-version item), with a format
-      migration; templates may declare folders (e.g. `RBC_Template`:
-      Requirements/ StRS SyRS SwRS, Tests/ SysTest SwTest). Needs a
-      PROJECT_FORMAT 1→2 migration turning `module_order` into ordered
-      module/folder entries (see `docs/ARCHITECTURE.md`).
+- [ ] Module folders: follow-ups (2026-10-08). (1) Drag-and-drop only
+      moves a module or folder into a folder (or onto the project name);
+      there is no drop-between-rows reordering. (2) The `GET /templates`
+      summary does not expose a template's folders. (3) The sidebar
+      collapse state (`reqman.moduleFolders.collapsed`) is keyed by
+      project and folder id but not by data folder. (4) Grouped module
+      pickers list unfoldered modules first, then one group per folder
+      path, so they are not strictly in tree order. (5) About 7 existing
+      tests assert the old flat `module_order` and need updating; new
+      tests are pending (phase B).
 - [ ] Distribution package + user-space install. Requested 2026-10-04.
       (1) Packaging: a `pyproject.toml` for the backend with a `reqman`
       console script; the built frontend (`npm run build` → `dist/`) is

@@ -266,6 +266,74 @@ class Module:
         )
 
 
+# Deepest folder nesting read from a hand-edited ``module_order`` (top-level
+# folders are depth 1). A folder nested deeper is ignored on read; its
+# modules are listed as unlisted modules. ``ProjectService`` enforces the
+# (smaller) limit for folders it creates or moves.
+MAX_READ_FOLDER_DEPTH = 64
+
+
+@dataclass
+class ModuleFolder:
+    """A folder of a project's module tree (project format 7).
+
+    Purely organisational: module ids, requirement ids and links do not
+    depend on it. ``children`` are the folder's entries in display order:
+    module ids (``str``) and nested folders. Written as ``{"folder": id,
+    "name": name, "children": [...]}``. Rules (server-allocated ids, names
+    unique among sibling folders, delete only when empty, no cycles, depth)
+    live in ``ProjectService``.
+    """
+
+    id: str
+    name: str
+    children: list[str | ModuleFolder] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "folder": self.id,
+            "name": self.name,
+            "children": module_order_to_list(self.children),
+        }
+
+
+def module_order_to_list(entries: list) -> list[dict]:
+    """``module_order`` entries as JSON: ``{"module": id}`` or a folder object."""
+    return [e.to_dict() if isinstance(e, ModuleFolder) else {"module": e} for e in entries]
+
+
+def module_order_from_list(value: Any, depth: int = 1) -> list:
+    """The usable entries of a hand-editable ``module_order`` list.
+
+    ``{"module": "<id>"}`` (or, tolerantly, a bare id string) is a module;
+    ``{"folder": "<id>", "name": ..., "children": [...]}`` a folder (a
+    missing or non-string name reads as the id, non-list children as none).
+    Anything else, and folders nested deeper than ``MAX_READ_FOLDER_DEPTH``,
+    is skipped.
+    """
+    if not isinstance(value, list):
+        return []
+    result: list = []
+    for item in value:
+        if isinstance(item, str):
+            result.append(item)
+        elif isinstance(item, dict):
+            module_id = item.get("module")
+            folder_id = item.get("folder")
+            if isinstance(module_id, str):
+                result.append(module_id)
+            elif isinstance(folder_id, str) and folder_id and depth <= MAX_READ_FOLDER_DEPTH:
+                name = item.get("name")
+                result.append(
+                    ModuleFolder(
+                        id=folder_id,
+                        name=name if isinstance(name, str) and name.strip() else folder_id,
+                        children=module_order_from_list(item.get("children"), depth + 1),
+                    )
+                )
+    return result
+
+
 @dataclass
 class Project:
     id: str
@@ -286,10 +354,14 @@ class Project:
     id_counters: dict[str, int] = field(default_factory=dict)
     link_configurations: list[LinkConfiguration] = field(default_factory=list)
     views: list[View] = field(default_factory=list)
-    # Module ids in display order. Optional: a project without it (older
-    # data) lists its modules in id order. ``ProjectService`` drops entries
-    # naming missing modules and appends unlisted modules in id order.
-    module_order: list[str] = field(default_factory=list)
+    # The module tree in display order (project format 7): module ids
+    # (``str``, written ``{"module": id}``) and ``ModuleFolder``s. Before
+    # format 7 a flat list of module id strings. Optional: a project without
+    # it (older data) lists its modules in id order. ``ProjectService``
+    # applies it tolerantly (see ``module_tree.effective_tree``): entries
+    # naming missing modules are dropped and unlisted modules follow at the
+    # top level in id order.
+    module_order: list[str | ModuleFolder] = field(default_factory=list)
     # Row styling rules (project format 3), in display order. Written only
     # when non-empty, after every other key, so a project without rules keeps
     # exactly the keys it had before.
@@ -317,7 +389,7 @@ class Project:
             "views": [v.to_dict() for v in self.views],
             # Written only when set, like ``parent_project_id``, so a project
             # without modules (or older data) gains no empty key on save.
-            **({"module_order": list(self.module_order)} if self.module_order else {}),
+            **({"module_order": module_order_to_list(self.module_order)} if self.module_order else {}),
             **({"row_styles": [s.to_dict() for s in self.row_styles]} if self.row_styles else {}),
         }
 
@@ -335,6 +407,6 @@ class Project:
             link_configurations=[
                 LinkConfiguration.from_dict(c) for c in data.get("link_configurations", [])
             ],
-            module_order=_string_list(data.get("module_order")),
+            module_order=module_order_from_list(data.get("module_order")),
             row_styles=_row_styles(data.get("row_styles")),
         )

@@ -126,8 +126,10 @@ persistence" below.
   prefix), `link_configurations: list[LinkConfiguration]`,
   `views: list[View]` (view names are unique per project, compared
   case-insensitively after stripping, like template view names),
-  `module_order: list[str]` (module ids in display order; written only
-  when non-empty — see "Module order" below), `row_styles: list[RowStyle]`
+  `module_order` (the module tree in display order: `{"module": id}` and
+  `{"folder": id, "name", "children": [...]}` entries since project format
+  7, module id strings before; written only when non-empty — see "Module
+  order and module folders" below), `row_styles: list[RowStyle]`
   (written last and only when non-empty — see "Row styles" below).
 - **AttributeDefinition** — `id`, `name`, `type` (`string | text | integer
   | boolean | enum | date`), `required`, `default`, `choices` (enum only),
@@ -699,7 +701,7 @@ domain rules.
 
 `project.json` and the app config file (`.reqman/config.json`) start with
 an integer `format_version` (`reqman/formats.py`: `PROJECT_FORMAT`,
-`CONFIG_FORMAT`; project currently 6, config 1). Module, requirement and
+`CONFIG_FORMAT`; project currently 7, config 1). Module, requirement and
 link-pair files have no version of their own; they are governed by their
 project's version. Templates keep their own, separate `format_version`.
 Project format 2 added `AttributeDefinition.modules` (per-module attribute
@@ -720,6 +722,13 @@ file using them is always in a version 5 project. Project format 6 added
 `Project.references` and `LinkConfiguration.target_project_id` (see
 "Project references and cross-project links"); the 5 → 6 step drops stray
 keys of those names and rewrites no module, requirement or link-pair file.
+Project format 7 added module folders (see "Module order and module
+folders"): the 6 → 7 step turns every `module_order` id string into
+`{"module": id}` in the same position (lossless), drops non-string entries
+(a version 6 reader ignored them) and a non-list `module_order`, and
+rewrites no module, requirement or link-pair file. The bump makes an older
+ReqManTool refuse a version 7 project instead of dropping its folders (and
+every module in one) from the order on save.
 
 Only optional attributes can be scoped to modules: a required attribute
 always applies to every module. `ProjectService._check_required_scope`
@@ -788,7 +797,7 @@ modules, and save-as-template writes no `modules` for it.
   later without a bump. `module_order` was added without a bump only
   because the tools it could be lost through predate versioning and cannot
   be protected anyway; from this release on, new keys bump the version
-  (module folders therefore must). A project migration that changes
+  (module folders did: project format 7). A project migration that changes
   module, requirement or link-pair files must upgrade those files too.
 
 ### Row styles
@@ -818,24 +827,74 @@ backgrounds and lightens font colors to a 4.5:1 contrast; stored colors and
 the DOCX export are unchanged. Edited in View ▸ Row styles or the project
 page's Row styles button.
 
-### Module order
+### Module order and module folders
 
-`project.module_order` stores the module display order. `GET
-/projects/{id}/modules` (and exports, save-as-template) apply it
-tolerantly: entries naming missing modules or repeating one are skipped,
-and modules it does not list follow in id order, so older projects (no
-key) list in id order as before. New modules are appended; a project
-created from a template keeps the template's declared module order.
-`POST /projects/{id}/modules/{module_id}/reorder` (`{"direction": "up" |
-"down"}`, WebSocket `module.reorder`) moves a module one place and stores
-the whole effective order; a move past either end writes nothing.
+`project.module_order` stores the module tree in display order (project
+format 7): a list of entries, each either a module `{"module": "<id>"}` or a
+folder `{"folder": "<id>", "name": "...", "children": [...]}` whose
+children are entries again (`models.ModuleFolder`, written in that key
+order). Folders are purely organisational: module ids, requirement ids,
+links, link configurations and attribute scopes never depend on them.
+Pure tree helpers live in `reqman/module_tree.py`; the rules in
+`ProjectService`.
 
-Planned evolution: module folders (a later backlog item) will turn
-`module_order` into ordered entries that are either modules or folders,
-through a `PROJECT_FORMAT` 1 → 2 migration (for example, each id string
-becomes `{"module": id}`, and folders are `{"folder": ..., "children":
-[...]}`). The migration runs on the raw dict in `formats.upgrade()`,
-before `Project.from_dict`.
+- **Tolerant reading** (`module_tree.effective_tree`, used by
+  `_module_tree`/`_module_order`): module entries naming a missing module or
+  repeating one are skipped, a folder repeating an earlier folder id is
+  dissolved into its place (its entries are kept), empty folders are kept,
+  and modules the tree does not list follow at the top level in id order, so
+  older projects (no key) list in id order as before. Folders nested deeper
+  than 64 levels in a hand-edited file are ignored on read
+  (`MAX_READ_FOLDER_DEPTH`). The flat module order (`GET
+  /projects/{id}/modules`, exports, reports, save-as-template `modules`) is
+  the tree depth-first. Reading never rewrites the file.
+- **Tree** `GET /projects/{id}/module-tree` (WS `module_tree.get`): the
+  effective tree in the `project.json` entry shape, every module once.
+- **Folders**: `POST /projects/{id}/module-folders` `{name, parent_id?}`
+  (WS `module_folder.create`) appends an empty folder to the top level or to
+  folder `parent_id`; the id is server-allocated (a slug of the name,
+  suffixed on collision with any folder of the project). Names are
+  non-empty, at most 200 characters, stripped, and unique among sibling
+  folders (case-insensitive). `PUT /projects/{id}/module-folders/{fid}/name`
+  `{name}` (WS `module_folder.rename`) renames (id unchanged). `DELETE
+  /projects/{id}/module-folders/{fid}` (WS `module_folder.delete`) deletes
+  an empty folder only; a folder holding modules or folders is refused.
+  `POST .../module-folders/{fid}/move` `{folder_id?, index?}` (WS
+  `module_folder.move`) moves a folder with its content into another folder
+  (null: the top level), never into itself or a descendant, keeping sibling
+  names unique; `POST .../module-folders/{fid}/reorder` `{direction}` (WS
+  `module_folder.reorder`) moves it one place among its siblings. Nesting is
+  limited to 16 levels (`MAX_MODULE_FOLDER_DEPTH`).
+- **Modules**: `POST /projects/{id}/modules` takes an optional `folder_id`
+  (new modules are appended to that folder or the top level). `POST
+  /projects/{id}/modules/{module_id}/move` `{folder_id?, index?}` (WS
+  `module.move`) moves a module into a folder (null: the top level) at the
+  0-based `index` among that folder's entries (absent or past the end:
+  appended). `POST /projects/{id}/modules/{module_id}/reorder`
+  (`{"direction": "up" | "down"}`, WS `module.reorder`) moves a module one
+  place among the entries (modules and folders) of its own folder.
+- Every change stores the whole effective tree; a no-op (a move to where the
+  entry already is, a reorder past either end) writes nothing. Invalid
+  input → REST 400 / WS -32602, an unknown folder → 404 / -32001, nothing
+  written. Every mutation broadcasts `changed`. Commit messages
+  (`history._describe_module_tree`) name folder additions, removals,
+  renames and moves and module moves ("Module 'x' moved to folder 'Y'"); a
+  pure reordering is "Module order changed". A format 6 → 7 upgrade alone
+  produces no message.
+- **Templates** may declare an optional `module_tree` (module keys and
+  folders with template-local keys, see `templates.py`); a project created
+  from it gets server-allocated folder ids slugged from the names, and
+  modules the tree does not place follow at the top level. The RBC template
+  declares Requirements (StRS, SyRS, SwRS), Tests (SysTest, SwTest) and Test
+  Execution (SysTestExec, SwTestExec). Save as template writes the
+  project's folders (folder ids as keys) when there is at least one.
+- **Frontend**: the Project tab of the sidebar shows the tree (folders
+  collapsible, collapse state per browser); context menus offer New folder,
+  Rename folder, Delete folder (disabled while not empty), Move to folder
+  and Move up/down for folders and modules, and module and folder rows can
+  be dragged onto a folder row (or the project row for the top level).
+  Module pickers (link configuration, reports, test result import,
+  traceability chain) list modules grouped by folder path.
 
 ### Git-friendly persistence
 

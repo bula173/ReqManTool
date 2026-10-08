@@ -1,6 +1,8 @@
 import { IconFileExport, IconFileImport, IconTemplate } from '@tabler/icons-react';
 import { appActions } from './appActions';
 import { columnActions } from './columnActions';
+import { treePosition } from '../components/moduleTree';
+import { folderActions, moduleFolderActions, projectFolderActions } from './moduleFolderActions';
 import { linkActions } from './linkActions';
 import { tabKey } from '../layout/moduleTabs';
 import { moduleActions, projectActions } from './projectActions';
@@ -34,6 +36,9 @@ export const ACTIONS: Action[] = [
   ...requirementActions,
   ...projectActions,
   ...moduleActions,
+  ...projectFolderActions,
+  ...moduleFolderActions,
+  ...folderActions,
   ...columnActions,
   ...linkActions,
   ...tabActions,
@@ -68,7 +73,12 @@ export function resolveTarget<E extends ElementType>(element: E, state: AppState
     case 'module':
       return (
         state.projectId && state.module
-          ? { projectId: state.projectId, module: state.module, moduleIds: state.modules.map((m) => m.id) }
+          ? {
+              projectId: state.projectId,
+              module: state.module,
+              moduleIds: state.modules.map((m) => m.id),
+              position: treePosition(state.moduleTree, 'module', state.module.id),
+            }
           : null
       ) as ActionTargets[E];
     case 'tab': {
@@ -321,6 +331,7 @@ export const PROJECT_NODE_MENU: MenuEntry[] = [
   divider,
   action('project.newSubproject'),
   action('project.newModule'),
+  action('project.newFolder'),
   divider,
   action('project.references'),
   divider,
@@ -332,7 +343,8 @@ export const PROJECT_NODE_MENU: MenuEntry[] = [
 /**
  * Right-click menu of a module node in the sidebar (left click opens it); the
  * module's project is passed as the `project` target for "New module".
- * Rename and folders join it with their items.
+ * Move Up/Down move it among the entries of its folder. Rename joins it with
+ * its backlog item.
  */
 export const MODULE_NODE_MENU: MenuEntry[] = [
   action('module.open'),
@@ -341,10 +353,28 @@ export const MODULE_NODE_MENU: MenuEntry[] = [
   divider,
   action('module.moveUp'),
   action('module.moveDown'),
+  action('module.moveToFolder'),
   divider,
   action('module.verificationReport'),
   action('module.executionReport'),
   action('module.importTestResults'),
   divider,
   action('project.newModule'),
+];
+
+/**
+ * Right-click menu of a module folder node in the sidebar (left click expands
+ * or collapses it). Folders are purely organisational: none of these change a
+ * module id, a requirement or a link.
+ */
+export const FOLDER_NODE_MENU: MenuEntry[] = [
+  action('folder.newModule'),
+  action('folder.newSubfolder'),
+  divider,
+  action('folder.rename'),
+  action('folder.moveUp'),
+  action('folder.moveDown'),
+  action('folder.moveTo'),
+  divider,
+  action('folder.delete'),
 ];

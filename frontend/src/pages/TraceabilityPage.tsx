@@ -12,12 +12,21 @@ import {
   Text,
   Title,
   Tooltip,
+  type ComboboxItem,
+  type ComboboxItemGroup,
 } from '@mantine/core';
 import { IconArrowRight, IconX } from '@tabler/icons-react';
 import { useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { traceabilityExportUrl, useLinkConfigurations, useModules, useTraceabilityMatrix } from '../api/queries';
+import {
+  traceabilityExportUrl,
+  useLinkConfigurations,
+  useModules,
+  useModuleTree,
+  useTraceabilityMatrix,
+} from '../api/queries';
 import type { LinkConfiguration, Module, TraceabilityReport } from '../api/types';
+import { moduleFolderPaths } from '../components/moduleTree';
 import { ExportMenu, ObjectRef, RefList, ReportCard, ReportError, StatGrid } from '../components/ReportParts';
 
 /** Grids larger than this are not drawn (the XLSX export has them). */
@@ -50,6 +59,32 @@ function chainModules(configs: LinkConfiguration[]): string[] | null {
 function configLabel(config: LinkConfiguration, modules: Map<string, Module>): string {
   const name = (id: string) => modules.get(id)?.name ?? id;
   return `${config.name} (${name(config.source_module_id)} → ${name(config.target_module_id)})`;
+}
+
+/**
+ * Chain picker options: link configurations grouped by their source module's
+ * folder path (configurations from top-level modules ungrouped, first), in
+ * module display order.
+ */
+function groupedConfigOptions(
+  configs: LinkConfiguration[],
+  modules: Map<string, Module>,
+  folderPaths: Map<string, string>,
+  moduleOrder: Module[],
+): (ComboboxItem | ComboboxItemGroup<ComboboxItem>)[] {
+  const rank = new Map(moduleOrder.map((m, index) => [m.id, index]));
+  const sorted = [...configs].sort(
+    (a, b) => (rank.get(a.source_module_id) ?? Infinity) - (rank.get(b.source_module_id) ?? Infinity),
+  );
+  const ungrouped: ComboboxItem[] = [];
+  const groups = new Map<string, ComboboxItem[]>();
+  for (const config of sorted) {
+    const option = { value: config.id, label: configLabel(config, modules) };
+    const path = folderPaths.get(config.source_module_id);
+    if (!path) ungrouped.push(option);
+    else groups.set(path, [...(groups.get(path) ?? []), option]);
+  }
+  return [...ungrouped, ...[...groups].map(([group, items]) => ({ group, items }))];
 }
 
 function MatrixGrid({ report, stepIndex }: { report: TraceabilityReport; stepIndex: number }) {
@@ -171,6 +206,7 @@ export function TraceabilityPage() {
   const configIds = params.getAll('config');
   const configsQuery = useLinkConfigurations(projectId);
   const modulesQuery = useModules(projectId);
+  const moduleTreeQuery = useModuleTree(projectId);
   const reportQuery = useTraceabilityMatrix(projectId, configIds);
   const [stepChoice, setStepChoice] = useState(0);
 
@@ -193,10 +229,12 @@ export function TraceabilityPage() {
   // The configurations that may extend the chain: they must join its last
   // module (with one configuration, either of its modules).
   const ends = chain === null ? [] : chain.length === 2 ? chain : chain.slice(-1);
-  const nextOptions = configs
+  const nextConfigs = configs
     .filter((c) => !configIds.includes(c.id))
-    .filter((c) => configIds.length === 0 || ends.includes(c.source_module_id) || ends.includes(c.target_module_id))
-    .map((c) => ({ value: c.id, label: configLabel(c, modules) }));
+    .filter((c) => configIds.length === 0 || ends.includes(c.source_module_id) || ends.includes(c.target_module_id));
+  // Grouped by the source module's folder (ungrouped first), in module tree order.
+  const folderPaths = moduleFolderPaths(moduleTreeQuery.data);
+  const nextOptions = groupedConfigOptions(nextConfigs, modules, folderPaths, modulesQuery.data ?? []);
 
   const report = reportQuery.data;
   // Only the current chain's report (never a stale one while the URL changes).

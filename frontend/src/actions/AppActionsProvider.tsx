@@ -7,18 +7,23 @@ import {
   subscribeDatasetCleared,
   useConfig,
   useCopyRequirement,
+  useDeleteModuleFolder,
   useEnableHistory,
   useGitPull,
   useGitPush,
   useGitStatus,
   useModule,
   useModules,
+  useModuleTree,
+  useMoveModule,
+  useMoveModuleFolder,
   useMoveRequirement,
   useProject,
   usePurgeModule,
   usePurgeProject,
   useRemoveRequirement,
   useReorderAnyModule,
+  useReorderModuleFolder,
   useReorderRequirement,
   useRequirements,
   useSetViewColumnWidths,
@@ -102,6 +107,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const moduleQuery = useModule(projectId ?? undefined, moduleId ?? undefined);
   const requirementsQuery = useRequirements(projectId ?? undefined, moduleId ?? undefined);
   const modulesQuery = useModules(projectId ?? undefined);
+  const moduleTreeQuery = useModuleTree(projectId ?? undefined);
   const viewsQuery = useViews(projectId ?? undefined);
   // The templates list is fetched lazily: only once a template menu or picker opened.
   const [templatesRequested, setTemplatesRequested] = useState(false);
@@ -122,6 +128,10 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const removeRequirement = useRemoveRequirement(projectId ?? '', moduleId ?? '');
   const unlinkRequirements = useUnlinkRequirements(projectId ?? '');
   const reorderModule = useReorderAnyModule();
+  const moveModule = useMoveModule();
+  const moveModuleFolder = useMoveModuleFolder();
+  const reorderModuleFolder = useReorderModuleFolder();
+  const deleteModuleFolder = useDeleteModuleFolder();
   const purgeModule = usePurgeModule();
   const purgeProject = usePurgeProject();
 
@@ -284,6 +294,15 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
         unlinkRequirements.mutateAsync({ config_id: configId, source_id: sourceId, target_id: targetId }),
       reorderModule: (reorderProjectId, reorderModuleId, direction) =>
         reorderModule.mutateAsync({ projectId: reorderProjectId, moduleId: reorderModuleId, direction }),
+      moduleFolders: {
+        remove: (treeProjectId, folderId) => deleteModuleFolder.mutateAsync({ projectId: treeProjectId, folderId }),
+        reorder: (treeProjectId, folderId, direction) =>
+          reorderModuleFolder.mutateAsync({ projectId: treeProjectId, folderId, direction }),
+        moveFolder: (treeProjectId, folderId, parentId, index) =>
+          moveModuleFolder.mutateAsync({ projectId: treeProjectId, folderId, parentId, index }),
+        moveModule: (treeProjectId, treeModuleId, folderId, index) =>
+          moveModule.mutateAsync({ projectId: treeProjectId, moduleId: treeModuleId, folderId, index }),
+      },
       goToRequirement: async (linkEnd) => {
         if (!projectId) throw new Error('No project is open');
         // A cross-project link end is project-qualified (`rbc-gp:SYRS-0001`).
@@ -377,6 +396,10 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       setViewColumnWidths.mutateAsync,
       unlinkRequirements.mutateAsync,
       reorderModule.mutateAsync,
+      moveModule.mutateAsync,
+      moveModuleFolder.mutateAsync,
+      reorderModuleFolder.mutateAsync,
+      deleteModuleFolder.mutateAsync,
     ],
   );
 
@@ -386,6 +409,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     project: projectQuery.data ?? null,
     module: moduleId ? (moduleQuery.data ?? null) : null,
     modules: projectId ? (modulesQuery.data ?? []) : [],
+    moduleTree: projectId ? (moduleTreeQuery.data ?? []) : [],
     requirements,
     selectedRequirement,
     clipboard,

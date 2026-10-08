@@ -2,11 +2,12 @@ import { Button, Group, Modal, Select, Stack, Text, TextInput } from '@mantine/c
 import { useForm } from '@mantine/form';
 import { useEffect } from 'react';
 import { notifications } from '@mantine/notifications';
-import { useModules, useCreateLinkConfiguration, useProject, useProjects } from '../api/queries';
+import { useModules, useModuleTree, useCreateLinkConfiguration, useProject, useProjects } from '../api/queries';
 import { ApiError } from '../api/client';
 import { LINK_TYPE_PAIRS, linkTypesAllowed, MODULE_TYPE_LABELS, moduleTypeOf } from '../api/moduleTypes';
 import { isProjectStub, type Module } from '../api/types';
 import { ModuleTypeIcon } from './ModuleTypeIcon';
+import { groupedModuleOptions } from './moduleTree';
 
 const ALLOWED_PAIRS_HINT = LINK_TYPE_PAIRS.map(
   ([source, target]) => `${MODULE_TYPE_LABELS[source]} → ${MODULE_TYPE_LABELS[target]}`,
@@ -70,6 +71,10 @@ export function LinkConfigurationModal({ projectId, opened, onClose }: LinkConfi
   ];
   const targetProjectId = form.values.target_project_id;
   const targetModulesQuery = useModules(targetProjectId === THIS_PROJECT ? undefined : targetProjectId);
+  // Module folders group the pickers' options (a missing tree just lists the modules ungrouped).
+  const treeQuery = useModuleTree(projectId);
+  const targetTreeQuery = useModuleTree(targetProjectId === THIS_PROJECT ? undefined : targetProjectId);
+  const targetTree = targetProjectId === THIS_PROJECT ? treeQuery.data : targetTreeQuery.data;
   const targetModules = targetProjectId === THIS_PROJECT ? modules : (targetModulesQuery.data ?? []);
   const targetModulesLoading = targetProjectId === THIS_PROJECT ? modulesQuery.isLoading : targetModulesQuery.isLoading;
   const targetModulesById = new Map(targetModules.map((m) => [m.id, m]));
@@ -82,10 +87,10 @@ export function LinkConfigurationModal({ projectId, opened, onClose }: LinkConfi
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [targetInvalid]);
   // Module types decide which modules may be linked (mirrors the server rule).
-  const sourceOptions = modules.map((m) =>
+  const sourceOptions = groupedModuleOptions(treeQuery.data, modules, (m) =>
     moduleOption(m, !modules.some((t) => linkTypesAllowed(moduleTypeOf(m), moduleTypeOf(t)))),
   );
-  const targetOptions = targetModules.map((m) =>
+  const targetOptions = groupedModuleOptions(targetTree, targetModules, (m) =>
     moduleOption(m, source !== undefined && !linkTypesAllowed(moduleTypeOf(source), moduleTypeOf(m))),
   );
   const renderOption = (byId: Map<string, Module>) =>

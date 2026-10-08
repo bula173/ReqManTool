@@ -16,6 +16,8 @@ import type {
   LinkConfiguration,
   LinkOption,
   Module,
+  ModuleFolder,
+  ModuleTreeEntry,
   ModuleType,
   Project,
   ProjectListEntry,
@@ -40,6 +42,8 @@ export const queryKeys = {
   project: (projectId: string) => ['projects', projectId] as const,
   modules: (projectId: string) => ['projects', projectId, 'modules'] as const,
   module: (projectId: string, moduleId: string) => ['projects', projectId, 'modules', moduleId] as const,
+  /** The module tree (folders); not under `modules`, where a module id could collide with it. */
+  moduleTree: (projectId: string) => ['projects', projectId, 'module-tree'] as const,
   requirements: (projectId: string, moduleId: string) =>
     ['projects', projectId, 'modules', moduleId, 'requirements'] as const,
   /**
@@ -703,11 +707,125 @@ export function useModule(projectId: string | undefined, moduleId: string | unde
 export function useCreateModule(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string; prefix: string; description?: string; type?: ModuleType }) =>
-      api.post<Module>(`/projects/${projectId}/modules`, body),
+    mutationFn: (body: {
+      name: string;
+      prefix: string;
+      description?: string;
+      type?: ModuleType;
+      /** The module folder to create it in; null/omitted: the top level. */
+      folder_id?: string | null;
+    }) => api.post<Module>(`/projects/${projectId}/modules`, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.modules(projectId) });
+      invalidateModuleTree(qc, projectId);
     },
+  });
+}
+
+// --- module folders ----------------------------------------------------
+
+/** The module order and tree of a project (the stored tree lives in project.json). */
+function invalidateModuleTree(qc: QueryClient, projectId: string): void {
+  qc.invalidateQueries({ queryKey: queryKeys.modules(projectId), exact: true });
+  qc.invalidateQueries({ queryKey: queryKeys.moduleTree(projectId) });
+  qc.invalidateQueries({ queryKey: queryKeys.project(projectId), exact: true });
+}
+
+/** The project's module tree as displayed: every module once, folders (empty ones too) in order. */
+export function useModuleTree(projectId: string | undefined): UseQueryResult<ModuleTreeEntry[]> {
+  return useQuery({
+    queryKey: queryKeys.moduleTree(projectId ?? ''),
+    queryFn: () => api.get<ModuleTreeEntry[]>(`/projects/${encodeURIComponent(projectId ?? '')}/module-tree`),
+    enabled: !!projectId,
+  });
+}
+
+const folderPath = (projectId: string, folderId: string) =>
+  `/projects/${encodeURIComponent(projectId)}/module-folders/${encodeURIComponent(folderId)}`;
+
+/**
+ * Module folder operations of any project (the project id is a mutation
+ * variable, like `useReorderAnyModule`): create, rename, delete (empty only),
+ * move (a folder or a module into a folder; `folderId` null = the top level)
+ * and reorder within the parent folder.
+ */
+export function useCreateModuleFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, name, parentId }: { projectId: string; name: string; parentId: string | null }) =>
+      api.post<ModuleFolder>(`/projects/${encodeURIComponent(projectId)}/module-folders`, {
+        name,
+        parent_id: parentId,
+      }),
+    onSuccess: (_folder, { projectId }) => invalidateModuleTree(qc, projectId),
+  });
+}
+
+export function useRenameModuleFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, folderId, name }: { projectId: string; folderId: string; name: string }) =>
+      api.put<ModuleFolder>(`${folderPath(projectId, folderId)}/name`, { name }),
+    onSuccess: (_folder, { projectId }) => invalidateModuleTree(qc, projectId),
+  });
+}
+
+export function useDeleteModuleFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, folderId }: { projectId: string; folderId: string }) =>
+      api.delete<{ id: string; deleted: boolean }>(folderPath(projectId, folderId)),
+    onSuccess: (_result, { projectId }) => invalidateModuleTree(qc, projectId),
+  });
+}
+
+export function useMoveModuleFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      folderId,
+      parentId,
+      index,
+    }: {
+      projectId: string;
+      folderId: string;
+      parentId: string | null;
+      index?: number;
+    }) => api.post<ModuleFolder>(`${folderPath(projectId, folderId)}/move`, { folder_id: parentId, index }),
+    onSuccess: (_folder, { projectId }) => invalidateModuleTree(qc, projectId),
+  });
+}
+
+export function useReorderModuleFolder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, folderId, direction }: { projectId: string; folderId: string; direction: 'up' | 'down' }) =>
+      api.post<ModuleFolder>(`${folderPath(projectId, folderId)}/reorder`, { direction }),
+    onSuccess: (_folder, { projectId }) => invalidateModuleTree(qc, projectId),
+  });
+}
+
+/** Moves a module of any project into a module folder (`folderId` null: the top level). */
+export function useMoveModule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      moduleId,
+      folderId,
+      index,
+    }: {
+      projectId: string;
+      moduleId: string;
+      folderId: string | null;
+      index?: number;
+    }) =>
+      api.post<Module>(`/projects/${encodeURIComponent(projectId)}/modules/${encodeURIComponent(moduleId)}/move`, {
+        folder_id: folderId,
+        index,
+      }),
+    onSuccess: (_module, { projectId }) => invalidateModuleTree(qc, projectId),
   });
 }
 
@@ -718,9 +836,8 @@ export function useReorderModule(projectId: string) {
     mutationFn: ({ id, direction }: { id: string; direction: 'up' | 'down' }) =>
       api.post<Module>(`/projects/${projectId}/modules/${id}/reorder`, { direction }),
     onSuccess: () => {
-      // Only the list order (and the stored order in the project) changed.
-      qc.invalidateQueries({ queryKey: queryKeys.modules(projectId), exact: true });
-      qc.invalidateQueries({ queryKey: queryKeys.project(projectId), exact: true });
+      // Only the list order (and the stored tree in the project) changed.
+      invalidateModuleTree(qc, projectId);
     },
   });
 }
@@ -737,10 +854,7 @@ export function useReorderAnyModule() {
         `/projects/${encodeURIComponent(projectId)}/modules/${encodeURIComponent(moduleId)}/reorder`,
         { direction },
       ),
-    onSuccess: (_module, { projectId }) => {
-      qc.invalidateQueries({ queryKey: queryKeys.modules(projectId), exact: true });
-      qc.invalidateQueries({ queryKey: queryKeys.project(projectId), exact: true });
-    },
+    onSuccess: (_module, { projectId }) => invalidateModuleTree(qc, projectId),
   });
 }
 

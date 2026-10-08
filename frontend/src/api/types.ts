@@ -133,6 +133,32 @@ export interface RowStyle {
   bold: boolean;
 }
 
+/**
+ * An entry of a project's module tree (`GET /projects/{id}/module-tree`, WS
+ * `module_tree.get`), in display order: a module, or a module folder holding
+ * further entries. Folders are purely organisational (module ids,
+ * requirement ids and links do not depend on them); folder ids are
+ * server-allocated.
+ */
+export type ModuleTreeEntry = ModuleTreeModuleEntry | ModuleTreeFolderEntry;
+
+export interface ModuleTreeModuleEntry {
+  module: string;
+}
+
+export interface ModuleTreeFolderEntry {
+  folder: string;
+  name: string;
+  children: ModuleTreeEntry[];
+}
+
+/** A module folder as the folder operations return it (`parent_id` null: top level). */
+export interface ModuleFolder {
+  id: string;
+  name: string;
+  parent_id: string | null;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -154,10 +180,11 @@ export interface Project {
   link_configurations: LinkConfiguration[];
   views: View[];
   /**
-   * Stored module display order. Omitted when never set; use the order of
-   * `GET /projects/{id}/modules`, which applies it tolerantly.
+   * The stored module tree (project format 7: modules and module folders).
+   * Omitted when never set. Use `GET /projects/{id}/module-tree` (or the order
+   * of `GET /projects/{id}/modules`), which apply it tolerantly.
    */
-  module_order?: string[];
+  module_order?: ModuleTreeEntry[];
   /**
    * Row styling rules, in priority order. Omitted when the project has none.
    * Set with `PUT /projects/{id}/row-styles` (WS `project.set_row_styles`).

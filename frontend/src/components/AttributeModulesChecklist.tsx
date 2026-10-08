@@ -1,8 +1,9 @@
 import { Alert, Checkbox, Group, Loader, Stack, Text } from '@mantine/core';
 import { MODULE_TYPE_LABELS, MODULE_TYPES, moduleTypeOf } from '../api/moduleTypes';
-import { useModules } from '../api/queries';
+import { useModules, useModuleTree } from '../api/queries';
 import type { ModuleType } from '../api/types';
 import { ModuleTypeIcon } from './ModuleTypeIcon';
+import { moduleFolderPaths } from './moduleTree';
 
 interface AttributeModulesChecklistProps {
   projectId: string;
@@ -31,6 +32,7 @@ export function AttributeModulesChecklist({
 }: AttributeModulesChecklistProps) {
   const modulesQuery = useModules(projectId);
   const modules = modulesQuery.data ?? [];
+  const folderPaths = moduleFolderPaths(useModuleTree(projectId).data);
   const covered = modules.filter((m) => value.includes(m.id) || types.includes(moduleTypeOf(m))).length;
   const nothingTicked = value.length === 0 && types.length === 0;
 
@@ -89,6 +91,11 @@ export function AttributeModulesChecklist({
                   <Group gap={4} wrap="nowrap">
                     <ModuleTypeIcon module={module} size={14} />
                     {module.name}
+                    {folderPaths.has(module.id) && (
+                      <Text span size="xs" c="dimmed">
+                        {folderPaths.get(module.id)}
+                      </Text>
+                    )}
                   </Group>
                 }
               />

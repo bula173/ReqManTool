@@ -36,6 +36,7 @@ import { useAppActions } from '../actions/context';
 import { ApiError } from '../api/client';
 import {
   useModules,
+  useModuleTree,
   useProject,
   useProjectReferences,
   useProjects,
@@ -50,6 +51,7 @@ import { AttributeModulesModal } from '../components/AttributeModulesModal';
 import { GitStatusPanel } from '../components/GitStatusPanel';
 import { LinkConfigurationModal } from '../components/LinkConfigurationModal';
 import { ModuleTypeIcon } from '../components/ModuleTypeIcon';
+import { moduleFolderPaths, treePosition } from '../components/moduleTree';
 import { ProjectParentModal } from '../components/ProjectParentModal';
 import { richTextToPlain } from '../components/richText';
 import { ViewModal } from '../components/ViewModal';
@@ -176,6 +178,7 @@ export function ProjectPage() {
   const projectQuery = useProject(projectId);
   const projectsQuery = useProjects();
   const modulesQuery = useModules(projectId);
+  const moduleTreeQuery = useModuleTree(projectId);
   const removeLinkConfiguration = useRemoveLinkConfiguration(projectId ?? '');
   const removeView = useRemoveView(projectId ?? '');
   const reorderModule = useReorderModule(projectId ?? '');
@@ -212,6 +215,8 @@ export function ProjectPage() {
   const subprojects = projects.filter((p) => p.parent_project_id === projectId);
   const modulesById = new Map<string, Module>((modulesQuery.data ?? []).map((m) => [m.id, m]));
   const moduleLabel = (moduleId: string) => modulesById.get(moduleId)?.name ?? moduleId;
+  // Modules are listed depth-first through their folders; Move up/down moves within the folder.
+  const folderPaths = moduleFolderPaths(moduleTreeQuery.data);
 
   const handleRemoveLinkConfig = (config: LinkConfiguration) => {
     modals.openConfirmModal({
@@ -540,7 +545,9 @@ export function ProjectPage() {
           </Text>
         )}
         <SimpleGrid cols={{ base: 1, sm: 2, md: 3 }}>
-          {modulesQuery.data?.map((module, index, modules) => (
+          {modulesQuery.data?.map((module) => {
+            const position = treePosition(moduleTreeQuery.data, 'module', module.id);
+            return (
             <Card
               key={module.id}
               withBorder
@@ -557,23 +564,23 @@ export function ProjectPage() {
                   </Badge>
                 </Group>
                 <Group gap={2} wrap="nowrap" onClick={(event) => event.stopPropagation()}>
-                  <Tooltip label="Move up">
+                  <Tooltip label="Move up (within its folder)">
                     <ActionIcon
                       variant="subtle"
                       size="sm"
                       aria-label={`Move ${module.name} up`}
-                      disabled={index === 0 || reorderModule.isPending}
+                      disabled={!position || position.index === 0 || reorderModule.isPending}
                       onClick={() => handleReorderModule(module, 'up')}
                     >
                       <IconArrowUp size={14} />
                     </ActionIcon>
                   </Tooltip>
-                  <Tooltip label="Move down">
+                  <Tooltip label="Move down (within its folder)">
                     <ActionIcon
                       variant="subtle"
                       size="sm"
                       aria-label={`Move ${module.name} down`}
-                      disabled={index === modules.length - 1 || reorderModule.isPending}
+                      disabled={!position || position.index >= position.siblingCount - 1 || reorderModule.isPending}
                       onClick={() => handleReorderModule(module, 'down')}
                     >
                       <IconArrowDown size={14} />
@@ -583,12 +590,14 @@ export function ProjectPage() {
               </Group>
               <Text size="xs" c="dimmed">
                 {MODULE_TYPE_LABELS[moduleTypeOf(module)]}
+                {folderPaths.has(module.id) ? ` · in ${folderPaths.get(module.id)}` : ''}
               </Text>
               <Text size="sm" c="dimmed" lineClamp={2}>
                 {module.description || 'No description'}
               </Text>
             </Card>
-          ))}
+            );
+          })}
         </SimpleGrid>
       </Card>
 

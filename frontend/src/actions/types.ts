@@ -6,6 +6,8 @@ import type {
   GitStatus,
   LinkOption,
   Module,
+  ModuleTreeEntry,
+  ModuleTreeFolderEntry,
   Project,
   ProjectListEntry,
   Requirement,
@@ -53,9 +55,18 @@ export interface ActionTargets {
   link: LinkTarget | null;
   /** A module tab of the tab bar: the right-clicked tab, or the active tab by default. */
   tab: ModuleTabRef | null;
-  // Hook for a later item: module folders (`folder`) become an element type
-  // here; their menus reuse `ActionMenuEntries` and `AppActionsValue.openMenu`
-  // unchanged. Project references are project actions (`project.references`).
+  /** A module folder: a sidebar folder node (no default: only its own menus). */
+  folder: FolderTarget | null;
+  // Project references are project actions (`project.references`).
+}
+
+/** Where a module or folder sits in its project's module tree. */
+export interface TreePosition {
+  /** The folder holding it (null: the top level). */
+  parentId: string | null;
+  /** Its position among the parent's entries (modules and folders), and their count. */
+  index: number;
+  siblingCount: number;
 }
 
 /** A module with the order of its project's modules (for Move Up/Down availability). */
@@ -64,6 +75,16 @@ export interface ModuleTarget {
   module: Module;
   /** The project's module ids in display order. */
   moduleIds: string[];
+  /** Its place in the module tree (Move Up/Down move it among its folder's entries); null when unknown. */
+  position: TreePosition | null;
+}
+
+/** A module folder of a project's module tree. */
+export interface FolderTarget {
+  projectId: string;
+  /** The folder as returned by `GET /projects/{id}/module-tree` (its children decide whether it is empty). */
+  folder: ModuleTreeFolderEntry;
+  position: TreePosition;
 }
 
 /** A requirements table column: the Id column (`attribute` null) or an attribute column. */
@@ -128,7 +149,13 @@ export type DialogRequest =
   | { kind: 'importCsv'; projectId: string; moduleId: string; moduleName: string }
   /** JUnit XML / Robot output.xml results into a test_execution module. */
   | { kind: 'importTestResults'; projectId: string; moduleId: string; moduleName: string }
-  | { kind: 'newModule'; projectId: string }
+  /** `folderId`: the module folder to create it in (null/omitted: the top level). */
+  | { kind: 'newModule'; projectId: string; folderId?: string | null }
+  /** A new module folder in `parentId` (null: the top level). */
+  | { kind: 'newModuleFolder'; projectId: string; parentId: string | null }
+  | { kind: 'renameModuleFolder'; projectId: string; folderId: string; name: string }
+  /** Move a module or a module folder into another folder (or the top level). */
+  | { kind: 'moveToFolder'; projectId: string; item: { kind: 'module' | 'folder'; id: string; name: string } }
   /** New requirement under `parentId` (null: top level); with `insertIndex`, then placed at that sibling position. */
   | { kind: 'addRequirement'; projectId: string; moduleId: string; parentId: string | null; insertIndex?: number }
   | { kind: 'linkRequirement'; projectId: string; moduleId: string; source: Requirement }
@@ -179,8 +206,19 @@ export interface AppCommands {
   };
   /** Remove one link (`DELETE /projects/{id}/links`) of the open project. */
   unlink: (configId: string, sourceId: string, targetId: string) => Promise<unknown>;
-  /** Move a module one place up/down in its project's module order (`module.reorder`). */
+  /** Move a module one place up/down among the entries of its folder (`module.reorder`). */
   reorderModule: (projectId: string, moduleId: string, direction: 'up' | 'down') => Promise<Module>;
+  /**
+   * Module tree operations of any project. `folderId`/`parentId` null is the
+   * top level; `index` is the 0-based position among the destination's
+   * entries (omitted: appended).
+   */
+  moduleFolders: {
+    remove: (projectId: string, folderId: string) => Promise<unknown>;
+    reorder: (projectId: string, folderId: string, direction: 'up' | 'down') => Promise<unknown>;
+    moveFolder: (projectId: string, folderId: string, parentId: string | null, index?: number) => Promise<unknown>;
+    moveModule: (projectId: string, moduleId: string, folderId: string | null, index?: number) => Promise<Module>;
+  };
   /**
    * Open the module holding `requirementId` (any module of the open project,
    * or of another project for a project-qualified link end such as
@@ -218,6 +256,8 @@ export interface AppState {
   module: Module | null;
   /** The open project's modules in display order (empty outside a project route or while loading). */
   modules: Module[];
+  /** The open project's module tree (folders; empty outside a project route or while loading). */
+  moduleTree: ModuleTreeEntry[];
   /** The open module's requirements (empty outside a module route or while loading). */
   requirements: Requirement[];
   selectedRequirement: Requirement | null;

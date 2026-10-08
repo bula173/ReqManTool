@@ -29,7 +29,7 @@ Rules:
   later without a bump. ``Project.module_order`` was added without a bump
   only because the tools it could be lost through predate versioning and
   cannot be protected anyway; from this release on, new keys bump the
-  version (module folders therefore must).
+  version (module folders did: project format 7).
 - A project migration that changes module, requirement or link-pair files
   must upgrade those files as well before the project is saved at the new
   version, because they are read with their project's version.
@@ -167,15 +167,39 @@ def _project_v5_to_v6(data: dict) -> dict:
     return data
 
 
+def _project_v6_to_v7(data: dict) -> dict:
+    """Project format 6 -> 7: module folders.
+
+    Version 7 turns ``Project.module_order`` from a flat list of module id
+    strings into ordered entries that are either a module ``{"module": id}``
+    or a folder ``{"folder": id, "name": ..., "children": [...]}`` (nested,
+    see ``models.ModuleFolder``). The step is lossless: every id string
+    becomes a module entry in the same position. A version 6 reader ignored
+    any non-string entry, so such entries in a hand-edited version 6 file
+    are dropped here and keep meaning nothing; a ``module_order`` that is
+    not a list (ignored by version 6) is dropped too. Module, requirement
+    and link-pair files are unchanged. The bump exists so that an older
+    ReqManTool, which would drop folders (and every module inside one) from
+    the order on save, refuses version 7 projects instead.
+    """
+    order = data.get("module_order")
+    if isinstance(order, list):
+        data["module_order"] = [{"module": entry} for entry in order if isinstance(entry, str)]
+    else:
+        data.pop("module_order", None)
+    return data
+
+
 PROJECT_FORMAT = FileFormat(
     name="project",
-    current=6,
+    current=7,
     migrations={
         1: _project_v1_to_v2,
         2: _project_v2_to_v3,
         3: _project_v3_to_v4,
         4: _project_v4_to_v5,
         5: _project_v5_to_v6,
+        6: _project_v6_to_v7,
     },
 )
 CONFIG_FORMAT = FileFormat(name="config", current=1)

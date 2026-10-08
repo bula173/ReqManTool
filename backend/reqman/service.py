@@ -37,7 +37,7 @@ from .csv_import import RESERVED_COLUMNS
 from .formats import PROJECT_FORMAT, NewerFormatError, upgrade
 from .git_repo import DEFAULT_LOG_LIMIT, LOG_LIMIT, GitError, GitHistory, RepoConflict, local_remote_path
 from .history import FileChange, build_snapshot, compare_snapshots, describe_changes
-from . import richtext
+from . import module_tree, richtext
 from .models import (
     DEFAULT_MODULE_TYPE,
     MODULE_TYPES,
@@ -45,6 +45,7 @@ from .models import (
     LinkConfiguration,
     LinkPair,
     Module,
+    ModuleFolder,
     Project,
     Requirement,
     RowStyle,
@@ -59,6 +60,7 @@ from .templates import (
     USER_SOURCE,
     Template,
     TemplateAttribute,
+    TemplateFolder,
     TemplateLinkConfiguration,
     TemplateModule,
     TemplateRowStyle,
@@ -187,6 +189,12 @@ MAX_COLUMN_WIDTH = 4000
 MAX_ROW_STYLES = 200
 ROW_STYLE_KEYS = ("attribute_id", "value", "font_color", "background_color", "bold")
 _HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+# Module folders (``Project.module_order``, project format 7): the deepest
+# nesting a folder may be created or moved to (top-level folders are depth 1)
+# and the longest folder name.
+MAX_MODULE_FOLDER_DEPTH = 16
+MAX_MODULE_FOLDER_NAME_LENGTH = 200
 
 _SLUG_NON_ALNUM = re.compile(r"[^a-z0-9]+")
 
@@ -611,10 +619,8 @@ class ProjectService:
                 modules[match.group(1)] = Module.from_dict(json.loads(content.decode("utf-8-sig")))
             except (ValueError, TypeError, KeyError, RecursionError):
                 continue  # an unreadable module file is skipped, like an unreadable requirement
-        order = [m for m in project.module_order if m in modules]
-        order += [m for m in sorted(modules) if m not in order]
-        seen: set[str] = set()
-        return [modules[m] for m in order if not (m in seen or seen.add(m))]
+        order = module_tree.module_ids(module_tree.effective_tree(project.module_order, sorted(modules)))
+        return [modules[m] for m in order]
 
     def get_baseline(self, project_id: str, name: str) -> dict[str, Any]:
         """The project and modules as they were at baseline ``name``. Read-only.
@@ -1459,21 +1465,31 @@ class ProjectService:
 
     @_records_history
     def create_module(
-        self, project_id: str, name: str, prefix: str, description: str = "", type: Any = None
+        self,
+        project_id: str,
+        name: str,
+        prefix: str,
+        description: str = "",
+        type: Any = None,
+        folder_id: Any = None,
     ) -> Module:
-        """Create a module, appended at the end of the project's module order.
+        """Create a module, appended at the end of the top level or of folder ``folder_id``.
 
         ``type`` is one of ``MODULE_TYPES`` (``None``: ``requirements``); it
         is chosen at creation and cannot be changed later, so the link
-        configurations checked against it stay valid.
+        configurations checked against it stay valid. ``folder_id`` names a
+        module folder of the project (``None``: the top level); it is
+        checked before anything is written.
 
         The module file is written first, then project.json with the new
-        order. If the second write fails, the module is still listed: an
-        existing module missing from the order is appended in id order.
+        tree. If the second write fails, the module is still listed: an
+        existing module missing from the tree is appended in id order.
         """
         project = self.store.load_project(project_id)
         validate_prefix(prefix)
         module_type = self._checked_module_type(type)
+        tree = self._module_tree(project)
+        container = self._folder_container(project, tree, folder_id)
         module_id = _unique_slug(
             name,
             lambda c: self.store.module_exists(project_id, c),
@@ -1481,34 +1497,31 @@ class ProjectService:
             max_length=self.store.max_name_length(),
         )
         module = Module(id=module_id, name=name, prefix=prefix, description=description, type=module_type)
-        order = self._module_order(project)
         self.store.save_module(project_id, module)
-        project.module_order = [*order, module_id]
+        container.append(module_id)
+        project.module_order = tree
         self.store.save_project(project)
         return module
 
     def get_module(self, project_id: str, module_id: str) -> Module:
         return self.store.load_module(project_id, module_id)
 
-    def _module_order(self, project: Project) -> list[str]:
-        """The project's module ids in display order.
+    def _module_tree(self, project: Project) -> list:
+        """The project's module tree as displayed (``module_tree.effective_tree``).
 
         ``project.module_order`` is applied tolerantly, so hand-edited or
         older data always lists every module exactly once: entries naming a
         module that does not exist (or repeating one) are skipped, and
-        modules the order does not mention follow in id order. A project
-        without a stored order (older data) lists its modules in id order.
-        The stored value is not rewritten here.
+        modules the tree does not mention follow at the top level in id
+        order. A project without a stored tree (older data) lists its
+        modules in id order. The stored value is not rewritten here; the
+        result holds new folder objects, safe to modify.
         """
-        existing = self.store.list_module_ids(project.id)
-        existing_set = set(existing)
-        order: list[str] = []
-        for module_id in project.module_order:
-            if module_id in existing_set and module_id not in order:
-                order.append(module_id)
-        listed = set(order)
-        order.extend(module_id for module_id in existing if module_id not in listed)
-        return order
+        return module_tree.effective_tree(project.module_order, self.store.list_module_ids(project.id))
+
+    def _module_order(self, project: Project) -> list[str]:
+        """The project's module ids in display order: the tree depth-first (see ``_module_tree``)."""
+        return module_tree.module_ids(self._module_tree(project))
 
     def list_modules(self, project_id: str) -> list[Module]:
         """The project's modules in display order (see ``_module_order``)."""
@@ -1517,26 +1530,219 @@ class ProjectService:
         project = self.store.load_project(project_id)
         return [self.store.load_module(project_id, mid) for mid in self._module_order(project)]
 
+    def get_module_tree(self, project_id: str) -> list[dict[str, Any]]:
+        """The project's module tree as displayed, in the ``project.json`` entry shape.
+
+        ``[{"module": id} | {"folder": id, "name": ..., "children": [...]}]``:
+        every module exactly once (see ``_module_tree``).
+        """
+        project = self.store.load_project(project_id)
+        return [e.to_dict() if isinstance(e, ModuleFolder) else {"module": e} for e in self._module_tree(project)]
+
+    def _store_module_tree(self, project: Project, tree: list) -> None:
+        """Save ``tree`` as the project's module tree unless it equals the effective one (no write)."""
+        if tree != self._module_tree(project):
+            project.module_order = tree
+            self.store.save_project(project)
+
+    def _folder_container(self, project: Project, tree: list, folder_id: Any) -> list:
+        """The entry list of folder ``folder_id`` in ``tree`` (``None``: the top level); 404 if unknown."""
+        if folder_id is None:
+            return tree
+        if not isinstance(folder_id, str):
+            raise ValueError("Folder id must be a string or null")
+        folder = module_tree.find_folder(tree, folder_id)
+        if folder is None:
+            raise FileNotFoundError(f"Module folder '{folder_id}' not found in project '{project.id}'")
+        return folder.children
+
+    def _locate_folder(self, project: Project, tree: list, folder_id: Any) -> tuple[list, ModuleFolder, ModuleFolder | None]:
+        """The list holding folder ``folder_id``, the folder and its parent folder (``None``: top level)."""
+        if not isinstance(folder_id, str):
+            raise ValueError("Folder id must be a string")
+        found = module_tree.find_container(tree, "folder", folder_id)
+        if found is None:
+            raise FileNotFoundError(f"Module folder '{folder_id}' not found in project '{project.id}'")
+        container, parent = found
+        folder = container[module_tree.index_of(container, "folder", folder_id)]
+        return container, folder, parent
+
+    @staticmethod
+    def _checked_folder_name(name: Any, siblings: list, folder_id: str | None = None) -> str:
+        """``name`` stripped, if it is a valid name for a folder among ``siblings`` (excluding ``folder_id``).
+
+        Not empty, at most ``MAX_MODULE_FOLDER_NAME_LENGTH`` characters, and
+        not the name of a sibling folder (compared case-insensitively).
+        """
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Folder name must not be empty")
+        name = name.strip()
+        if len(name) > MAX_MODULE_FOLDER_NAME_LENGTH:
+            raise ValueError(f"Folder name is too long: at most {MAX_MODULE_FOLDER_NAME_LENGTH} characters")
+        for entry in siblings:
+            if isinstance(entry, ModuleFolder) and entry.id != folder_id and entry.name.strip().casefold() == name.casefold():
+                raise ValueError(f"A folder named '{entry.name}' already exists here")
+        return name
+
+    @staticmethod
+    def _checked_entry_index(index: Any) -> int | None:
+        if index is not None and (isinstance(index, bool) or not isinstance(index, int) or index < 0):
+            raise ValueError(f"Invalid index {index!r}: must be a non-negative integer")
+        return index
+
+    @staticmethod
+    def _folder_summary(folder: ModuleFolder, parent: ModuleFolder | None) -> dict[str, Any]:
+        """A folder as the folder operations return it."""
+        return {"id": folder.id, "name": folder.name, "parent_id": parent.id if parent else None}
+
+    @_records_history
+    def create_module_folder(self, project_id: str, name: Any, parent_id: Any = None) -> dict[str, Any]:
+        """Create an empty module folder at the end of the top level or of folder ``parent_id``.
+
+        The id is allocated by the server: a slug of the name, suffixed on
+        collision with any folder of the project. The name must be unique
+        among the sibling folders; nesting is limited to
+        ``MAX_MODULE_FOLDER_DEPTH`` levels. Returns ``{id, name, parent_id}``.
+        """
+        project = self.store.load_project(project_id)
+        tree = self._module_tree(project)
+        container = self._folder_container(project, tree, parent_id)
+        name = self._checked_folder_name(name, container)
+        depth = module_tree.depth_of(tree, parent_id) + 1 if parent_id is not None else 1
+        if depth > MAX_MODULE_FOLDER_DEPTH:
+            raise ValueError(f"Module folders can be nested at most {MAX_MODULE_FOLDER_DEPTH} levels deep")
+        taken = {folder.id for folder, _ in module_tree.iter_folders(tree)}
+        folder = ModuleFolder(id=_unique_slug(name, lambda c: c in taken, fallback="folder"), name=name)
+        container.append(folder)
+        project.module_order = tree
+        self.store.save_project(project)
+        parent = module_tree.find_folder(tree, parent_id) if parent_id is not None else None
+        return self._folder_summary(folder, parent)
+
+    @_records_history
+    def rename_module_folder(self, project_id: str, folder_id: Any, name: Any) -> dict[str, Any]:
+        """Rename a module folder (its id stays). The new name must be unique among its sibling folders."""
+        project = self.store.load_project(project_id)
+        tree = self._module_tree(project)
+        container, folder, parent = self._locate_folder(project, tree, folder_id)
+        folder.name = self._checked_folder_name(name, container, folder.id)
+        self._store_module_tree(project, tree)
+        return self._folder_summary(folder, parent)
+
+    @_records_history
+    def delete_module_folder(self, project_id: str, folder_id: Any) -> dict[str, Any]:
+        """Delete an empty module folder. A folder holding modules or folders is refused (400)."""
+        project = self.store.load_project(project_id)
+        tree = self._module_tree(project)
+        container, folder, _ = self._locate_folder(project, tree, folder_id)
+        if folder.children:
+            raise ValueError(
+                f"Module folder '{folder.name}' is not empty: move its modules and folders out first"
+            )
+        container.remove(folder)
+        project.module_order = tree
+        self.store.save_project(project)
+        return {"id": folder.id, "deleted": True}
+
+    @_records_history
+    def move_module(self, project_id: str, module_id: str, folder_id: Any = None, index: Any = None) -> Module:
+        """Move a module into folder ``folder_id`` (``None``: the top level).
+
+        Without ``index`` it is appended after the folder's last entry; with
+        ``index`` (a non-negative int) it is placed at that 0-based position
+        among the folder's entries (modules and folders) after the move; an
+        index past the end appends. Moving within the same folder with an
+        index repositions it. Module ids, requirements and links are
+        unaffected. A move that changes nothing writes nothing.
+        """
+        index = self._checked_entry_index(index)
+        project = self.store.load_project(project_id)
+        module = self.store.load_module(project_id, module_id)
+        tree = self._module_tree(project)
+        target = self._folder_container(project, tree, folder_id)
+        found = module_tree.find_container(tree, "module", module_id)
+        if found is None:  # every existing module is in the effective tree
+            raise FileNotFoundError(f"Module '{module_id}' not found in project '{project_id}'")
+        source, _ = found
+        source.remove(module_id)
+        target.insert(len(target) if index is None else min(index, len(target)), module_id)
+        self._store_module_tree(project, tree)
+        return module
+
+    @_records_history
+    def move_module_folder(
+        self, project_id: str, folder_id: Any, parent_id: Any = None, index: Any = None
+    ) -> dict[str, Any]:
+        """Move a folder (with everything in it) into folder ``parent_id`` (``None``: the top level).
+
+        ``index`` works as for ``move_module``. A folder cannot be moved into
+        itself or one of its subfolders, its name must be unique among the
+        new sibling folders, and the result must not nest deeper than
+        ``MAX_MODULE_FOLDER_DEPTH``. A move that changes nothing writes
+        nothing.
+        """
+        index = self._checked_entry_index(index)
+        project = self.store.load_project(project_id)
+        tree = self._module_tree(project)
+        source, folder, _ = self._locate_folder(project, tree, folder_id)
+        if parent_id is not None:
+            if parent_id == folder.id:
+                raise ValueError("A folder cannot be moved into itself")
+            if module_tree.find_folder(folder.children, parent_id) is not None:
+                raise ValueError("Cannot move a folder into one of its own subfolders")
+        target = self._folder_container(project, tree, parent_id)
+        self._checked_folder_name(folder.name, target, folder.id)
+        parent_depth = module_tree.depth_of(tree, parent_id) if parent_id is not None else 0
+        if parent_depth + module_tree.height(folder) > MAX_MODULE_FOLDER_DEPTH:
+            raise ValueError(f"Module folders can be nested at most {MAX_MODULE_FOLDER_DEPTH} levels deep")
+        source.remove(folder)
+        target.insert(len(target) if index is None else min(index, len(target)), folder)
+        self._store_module_tree(project, tree)
+        parent = module_tree.find_folder(tree, parent_id) if parent_id is not None else None
+        return self._folder_summary(folder, parent)
+
+    @staticmethod
+    def _swap_with_neighbor(container: list, index: int, direction: str) -> bool:
+        neighbor_index = index - 1 if direction == "up" else index + 1
+        if not 0 <= neighbor_index < len(container):
+            return False
+        container[index], container[neighbor_index] = container[neighbor_index], container[index]
+        return True
+
     @_records_history
     def reorder_module(self, project_id: str, module_id: str, direction: str) -> Module:
-        """Move a module one place up or down in the project's module order.
+        """Move a module one place up or down among the entries of its folder (or the top level).
 
-        Moving the first module up or the last one down changes nothing and
-        writes nothing. Otherwise the whole effective order is stored, which
-        also drops entries naming missing modules.
+        Its siblings are the modules and folders of the same folder. Moving
+        the first entry up or the last one down changes nothing and writes
+        nothing. Otherwise the whole effective tree is stored, which also
+        drops entries naming missing modules.
         """
         if direction not in ("up", "down"):
             raise ValueError(f"Invalid direction '{direction}': must be 'up' or 'down'")
         project = self.store.load_project(project_id)
         module = self.store.load_module(project_id, module_id)
-        order = self._module_order(project)
-        index = order.index(module_id)
-        neighbor_index = index - 1 if direction == "up" else index + 1
-        if 0 <= neighbor_index < len(order):
-            order[index], order[neighbor_index] = order[neighbor_index], order[index]
-            project.module_order = order
-            self.store.save_project(project)
+        tree = self._module_tree(project)
+        found = module_tree.find_container(tree, "module", module_id)
+        if found is not None:
+            container, _ = found
+            if self._swap_with_neighbor(container, module_tree.index_of(container, "module", module_id), direction):
+                project.module_order = tree
+                self.store.save_project(project)
         return module
+
+    @_records_history
+    def reorder_module_folder(self, project_id: str, folder_id: Any, direction: str) -> dict[str, Any]:
+        """Move a folder one place up or down among the entries of its parent folder (or the top level)."""
+        if direction not in ("up", "down"):
+            raise ValueError(f"Invalid direction '{direction}': must be 'up' or 'down'")
+        project = self.store.load_project(project_id)
+        tree = self._module_tree(project)
+        container, folder, parent = self._locate_folder(project, tree, folder_id)
+        if self._swap_with_neighbor(container, module_tree.index_of(container, "folder", folder.id), direction):
+            project.module_order = tree
+            self.store.save_project(project)
+        return self._folder_summary(folder, parent)
 
     # --- requirements ----------------------------------------------------------------
 
@@ -2661,8 +2867,8 @@ class ProjectService:
                     type=module_type,
                 )
             )
-        # The template's declared module order, not the modules' id order.
-        project.module_order = [m.id for m in modules]
+        # The template's declared module order (and folders), not the modules' id order.
+        project.module_order = self._tree_from_template(template.module_tree, module_ids, [m.id for m in modules])
         # Attribute scopes name module keys (checked by ``parse_template``);
         # stored as module ids in module order.
         for index, tattr in enumerate(template.attributes):
@@ -2717,6 +2923,42 @@ class ProjectService:
         project.row_styles = self._checked_row_styles(project, [s.to_dict() for s in template.row_styles])
 
         return project, modules
+
+    @classmethod
+    def _tree_from_template(cls, entries: list, module_ids: dict[str, str], order: list[str]) -> list:
+        """A template's ``module_tree`` as a project's module tree; unplaced modules follow in ``order``.
+
+        Folder ids are slugged from the names (unique in the project); names
+        and depth follow the same rules as ``create_module_folder``.
+        """
+        taken: set[str] = set()
+
+        def build(items: list, depth: int, where: str) -> list:
+            result: list = []
+            for index, entry in enumerate(items):
+                if isinstance(entry, TemplateFolder):
+                    at = f"{where}[{index}] ('{entry.name}')"
+                    if depth > MAX_MODULE_FOLDER_DEPTH:
+                        raise ValueError(
+                            f"{at}: module folders can be nested at most {MAX_MODULE_FOLDER_DEPTH} levels deep"
+                        )
+                    try:
+                        name = cls._checked_folder_name(entry.name, result)
+                    except ValueError as exc:
+                        raise ValueError(f"{at}: {exc}") from exc
+                    folder_id = _unique_slug(name, lambda c: c in taken, fallback="folder")
+                    taken.add(folder_id)
+                    folder = ModuleFolder(id=folder_id, name=name)
+                    result.append(folder)
+                    folder.children = build(entry.children, depth + 1, f"{at}.children")
+                else:
+                    result.append(module_ids[entry])
+            return result
+
+        tree = build(entries, 1, "module_tree")
+        placed = set(module_tree.module_ids(tree))
+        tree.extend(module_id for module_id in order if module_id not in placed)
+        return tree
 
     def _validate_template(self, template: Template) -> None:
         self._build_from_template(template, _TEMPLATE_CHECK_PROJECT_ID, template.name, "", None)
@@ -2781,7 +3023,7 @@ class ProjectService:
 
     @staticmethod
     def _template_from_project(
-        project: Project, modules: list[Module], template_id: str, name: str, description: str
+        project: Project, modules: list[Module], template_id: str, name: str, description: str, tree: list | None = None
     ) -> Template:
         """A project's structure as a template; no requirements, no id counters, no parent."""
         builtin_ids = {a.id for a in BUILTIN_ATTRIBUTES}
@@ -2827,6 +3069,8 @@ class ProjectService:
                 TemplateModule(key=m.id, name=m.name, prefix=m.prefix, description=m.description, type=m.type)
                 for m in modules
             ],
+            # Folders keep their ids as keys; written only when there is one.
+            module_tree=ProjectService._template_tree(tree) if module_tree.has_folders(tree) else [],
             link_configurations=[
                 TemplateLinkConfiguration(
                     key=c.id, name=c.name, source_module=c.source_module_id, target_module=c.target_module_id
@@ -2839,6 +3083,16 @@ class ProjectService:
                 TemplateRowStyle(**style.to_dict()) for style in ProjectService._effective_row_styles(project)
             ],
         )
+
+    @staticmethod
+    def _template_tree(entries: list) -> list:
+        """A project's (effective) module tree as template ``module_tree`` entries (module and folder ids as keys)."""
+        return [
+            TemplateFolder(key=e.id, name=e.name, children=ProjectService._template_tree(e.children))
+            if isinstance(e, ModuleFolder)
+            else e
+            for e in entries
+        ]
 
     def save_project_as_template(self, project_id: str, name: Any, description: Any = "") -> dict[str, Any]:
         """Write a project's structure as a new user template (``user:<slug>``).
@@ -2869,7 +3123,7 @@ class ProjectService:
         local_id = _unique_slug(name, self.store.user_template_path_exists, fallback="template")
         template_id = make_template_id(USER_SOURCE, local_id)
         template = self._template_from_project(
-            project, self.list_modules(project_id), template_id, name, description
+            project, self.list_modules(project_id), template_id, name, description, self._module_tree(project)
         )
         data = template.to_dict()
         try:
