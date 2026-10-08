@@ -153,12 +153,9 @@ area by area once phase A is complete.
       review). Browse reads the whole baseline tree into memory per
       request — scope `ls-tree`/`cat-file` to the requested module;
       hand-made nested tags like `baseline/x/y` are listed but not
-      browsable (filter or mark them); done 2026-10-08: a committed data
-      file with a newline in its name silently vanished from
-      browse/compare (`cat-file --batch` line protocol) —
-      `baseline_files` now reads blobs by object id via a shared
-      NUL-safe `_tree_files`; still open: the same issue in 2a's
-      pending-changes specs; a hand commit whose subject contains
+      browsable (filter or mark them); a committed data file with a
+      newline in its name vanishes from 2a's pending-changes specs
+      (`cat-file --batch` line protocol); a hand commit whose subject contains
       `\x1f`/`\x1e` corrupts that git-log entry (handled in the commit
       browser; the existing git-log entry path unchanged); `moduleId`
       is not URL-encoded in the baseline
@@ -166,23 +163,13 @@ area by area once phase A is complete.
       snapshots despite `staleTime: Infinity`; a description whose final
       paragraph looks like `Reqman-*:` trailers is swallowed when
       listing.
-- [ ] Git remotes: review follow-ups (2026-10-06), all nits. (1) Done
-      2026-10-07: the remote-URL validator regexes required a letter
-      first, but git also allows a digit (`1abc::x`, `1foo://x` passed
-      validation and were only blocked by `GIT_ALLOW_PROTOCOL` with git's
-      raw error) — use `^[A-Za-z0-9][A-Za-z0-9+.-]*` and add tests.
-      (2) Done 2026-10-07: a local/`file://` remote set outside the app
-      failed Push/Pull/auto-push with git's raw "transport 'file' not
-      allowed" — map it to a clear message. (3) `GitStatusPanel`
-      RemoteSync keeps its `editing`/`url` local state when live sync
-      changes the remote while the form is open — reset on a `remote.url`
-      change (cosmetic). (4) Auto-push runs synchronously inside the
-      mutation (10 s timeout) — consider pushing in the background so an
-      unreachable remote never stalls edits. (5) Product decisions:
-      local paths / shared-filesystem remotes — resolved 2026-10-07,
-      allowed (see "Local-folder / network-share remotes" in Done);
-      auto-push disabling session squashing — accepted as is.
-      (6) `_is_non_fast_forward` matches "[rejected]" but not "[remote
+- [ ] Git remotes: review follow-ups (2026-10-06), all nits. (1)
+      `GitStatusPanel` RemoteSync keeps its `editing`/`url` local state
+      when live sync changes the remote while the form is open — reset on
+      a `remote.url` change (cosmetic). (2) Auto-push runs synchronously
+      inside the mutation (10 s timeout) — consider pushing in the
+      background so an unreachable remote never stalls edits.
+      (3) `_is_non_fast_forward` matches "[rejected]" but not "[remote
       rejected]", so some remote rejections map to 400 instead of 409.
 - [ ] Rich text slice 2: follow-ups (2026-10-08). (1) Tests for the
       slice 2 exports (DOCX formatting, ReqIF XHTML typing) are pending;
@@ -208,13 +195,9 @@ area by area once phase A is complete.
       prompt on the first listing. (7) Tests pending (phase B); one
       existing assertion in `tests/test_git_remotes.py` was updated for
       the new `review` key.
-- [ ] Context menus: follow-ups (2026-10-08). (1) Done 2026-10-08 for
-      module tab entries (close, close others, detach), "Open in new
-      tab" and "Detach"; done 2026-10-08 for project references (sidebar
-      project menu "References…"); done 2026-10-08 for module folder
-      entries (folder node menu, project node "New folder", module node
-      "Move to folder…"); split view entries still arrive with that item
-      (hooks in `ActionTargets` and the menu layouts).
+- [ ] Context menus: follow-ups (2026-10-08). (1) Split view
+      entries still arrive with that item (hooks in `ActionTargets` and
+      the menu layouts).
       (2) Project/module Rename needs backend APIs. (3) Column header
       Sort / Filter / Hide / Add to view need their own features.
       (4) Detail-panel link badges and module-outline nodes have no
@@ -229,11 +212,9 @@ area by area once phase A is complete.
       in one window is not built; it needs per-pane module, selection and
       view state (`AppActionsProvider` and `ModulePage` take ids from the
       route). (2) Multi-selection drag: the payload is ready, bulk
-      selection is missing. (3) Done 2026-10-08: cross-project drops work
-      with project references (`link_options` takes `from_project_id`).
-      (4) Tab icons by module type (with the module types
-      item). (5) No Close-tab shortcut (the browser owns Ctrl/Cmd+W).
-      (6) Not browser-verified: tabs, `window.open`/`postMessage`,
+      selection is missing. (3) Tab icons by module type (with the module
+      types item). (4) No Close-tab shortcut (the browser owns
+      Ctrl/Cmd+W). (5) Not browser-verified: tabs, `window.open`/`postMessage`,
       cross-window drag-and-drop; backend tests for `link_options` are
       pending (phase B).
 - [ ] AI prompt library: follow-ups (2026-10-08). (1) Render from an
@@ -313,32 +294,23 @@ area by area once phase A is complete.
       (4) `--mantine-color-body` is overridden on the whole baseline
       Card. Fix: scope it to the table scroll container. (5) Safari/
       Firefox nested flex/overflow behaviour is unverified.
-- [ ] Resizable columns: review follow-ups (2026-10-07). (1) Done
-      2026-10-07: the inline `position: relative` in
-      `ResizableHeaderCell.tsx` overrides Mantine's per-`th` `position:
-      sticky`, so the header relies on the sticky `thead` only and may
-      not stick in some browsers (Safari). Fix: remove the override.
-      (2) Done 2026-10-07: `document.body` cursor/user-select are not
-      reset if a header cell unmounts mid-drag, so text selection stays
-      disabled until reload. Fix: add an unmount cleanup. (3) Done
-      2026-10-07: the last baseline column's resize handle (`right:
-      -4px`) causes a 4px horizontal scroll. (4) "Save column
+- [ ] Resizable columns: review follow-ups (2026-10-07). (1) "Save column
       widths to view" flickers to the defaults for one refetch. Fix:
-      await the invalidation or use setQueryData. (5) "Save as template"
-      drops view column widths (`TemplateView` has no field). (6) A
+      await the invalidation or use setQueryData. (2) "Save as template"
+      drops view column widths (`TemplateView` has no field). (3) A
       "reset this column only" entry, and a "save widths" option in the
-      view dialog. Row height resizing (added 2026-10-07): (7) The
+      view dialog. Row height resizing (added 2026-10-07): (4) The
       overflow-fade effect runs after every render and forces a layout;
       it also misses layout changes without a render (window resize,
       live column drag). Fix: ResizeObserver plus rAF, write only on
-      change. (8) Every cell has one stateful `RowResizeHandle`, costly
+      change. (5) Every cell has one stateful `RowResizeHandle`, costly
       for big modules. Fix: stateless handles with events delegated on
-      the tbody. (9) `rowHeights` entries of deleted or moved
+      the tbody. (6) `rowHeights` entries of deleted or moved
       requirements are never pruned, and they keep "Reset row heights"
-      enabled. (10) The row separator's `aria-valuenow` is missing for
-      auto-height rows, and its `aria-valuemin` is wrong. (11) A
+      enabled. (7) The row separator's `aria-valuenow` is missing for
+      auto-height rows, and its `aria-valuemin` is wrong. (8) A
       two-line wrap cell at the minimum height shows a sliver of its
-      second line without a fade. (12) Frontend unit tests for
+      second line without a fade. (9) Frontend unit tests for
       `parseLayout` with old entries and the reset helpers.
 - [ ] Attribute applicability: follow-ups (2026-10-07). (1) Moving or
       copying a requirement to another module must drop its
@@ -595,7 +567,7 @@ Feature-scout suggestions and older ideas, ordered roughly by value.
       `backend/tests/`. Depends on the version footer and distribution
       items. Suggested 2026-10-04 (feature scout, seen in no tool; EN 50128
       §6.7 practice). Not yet requested.
-- [ ] Import ReqIF (the CSV slice is done, see Done). Reuse the CSV
+- [ ] Import ReqIF (the CSV slice is in docs/DONE.md). Reuse the CSV
       import's all-or-nothing validation (collect every error, write
       nothing on failure) and its server-allocated-id approach (the file's
       identifiers are only keys for resolving parents within the file).
