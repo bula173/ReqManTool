@@ -48,6 +48,7 @@ import { GitStatusPanel } from '../components/GitStatusPanel';
 import { LinkConfigurationModal } from '../components/LinkConfigurationModal';
 import { NewModuleModal } from '../components/NewModuleModal';
 import { ProjectParentModal } from '../components/ProjectParentModal';
+import { richTextToPlain } from '../components/richText';
 import { ViewModal } from '../components/ViewModal';
 import {
   isProjectStub,
@@ -267,7 +268,7 @@ export function ProjectPage() {
                   <Badge variant="light">{attr.type}</Badge>
                 </Table.Td>
                 <Table.Td>{attr.required ? 'Yes' : 'No'}</Table.Td>
-                <Table.Td>{attr.default === null || attr.default === undefined ? '—' : String(attr.default)}</Table.Td>
+                <Table.Td>{attr.default === null || attr.default === undefined ? '—' : richTextToPlain(attr.default)}</Table.Td>
                 <Table.Td>{attr.choices ? attr.choices.join(', ') : '—'}</Table.Td>
                 <Table.Td>
                   {!attr.required && attr.modules && attr.modules.length > 0

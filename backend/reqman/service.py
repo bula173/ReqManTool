@@ -35,6 +35,7 @@ from .csv_import import RESERVED_COLUMNS
 from .formats import PROJECT_FORMAT, NewerFormatError, upgrade
 from .git_repo import DEFAULT_LOG_LIMIT, LOG_LIMIT, GitError, GitHistory, RepoConflict, local_remote_path
 from .history import FileChange, build_snapshot, compare_snapshots, describe_changes
+from . import richtext
 from .models import AttributeDefinition, LinkConfiguration, LinkPair, Module, Project, Requirement, RowStyle, View
 from .store import PROJECT_SLUG_PATTERN, ProjectStore, validate_prefix
 from .templates import (
@@ -969,6 +970,8 @@ class ProjectService:
         name = self._checked_attribute_name(project, name)
         if type not in ATTRIBUTE_TYPES:
             raise ValueError(f"Unknown attribute type '{type}'; expected one of {', '.join(ATTRIBUTE_TYPES)}")
+        if type == "text" and isinstance(default, str):
+            default = richtext.sanitize(default)
         definition = AttributeDefinition(
             id=attr_id, name=name, type=type, required=required, default=default, choices=choices
         )
@@ -1270,8 +1273,27 @@ class ProjectService:
 
     @staticmethod
     def _is_blank(value: Any) -> bool:
-        """``None``, ``""`` and whitespace-only strings count as no value."""
-        return value is None or (isinstance(value, str) and not value.strip())
+        """``None``, ``""`` and whitespace-only strings (rich text: its plain projection) count as no value."""
+        return value is None or (isinstance(value, str) and not richtext.to_plain(value).strip())
+
+    @staticmethod
+    def _sanitized_text_values(project: Project, attributes: Any) -> Any:
+        """``attributes`` with every string value of a ``text`` attribute sanitised.
+
+        Rich text values (see ``richtext.py``) are reduced to the allowed
+        XHTML subset (disallowed parts are stripped, never rejected); plain
+        values are unchanged. Every write path that stores requirement values
+        given by a client or copied from disk goes through this: add, update,
+        copy (and the CSV import via ``richtext.from_plain``). Anything that
+        is not a dict, unknown keys, system attributes and non-string values
+        are returned unchanged for validation to judge.
+        """
+        if not isinstance(attributes, dict):
+            return attributes
+        text_ids = {a.id for a in project.attributes if a.type == "text" and not a.system}
+        return {
+            k: richtext.sanitize(v) if k in text_ids and isinstance(v, str) else v for k, v in attributes.items()
+        }
 
     def _validate_attributes(
         self, project: Project, attributes: dict[str, Any], *, is_create: bool, module_id: str
@@ -1290,16 +1312,28 @@ class ProjectService:
         never get a default. A stored default that is not
         valid for its attribute (legacy data written before defaults were
         checked) is skipped rather than rewritten, so it cannot block or
-        corrupt new requirements.
+        corrupt new requirements. A ``text`` default is sanitised like a
+        given value (a hand-edited project.json may hold unsanitised markup);
+        one ``sanitize`` rejects (over the size limits) is skipped the same
+        way. A default the client overrides is not looked at.
         """
-        merged = {
-            a.id: a.default
-            for a in project.attributes
-            if a.default is not None
-            and not a.system
-            and cls._attribute_applies(a, module_id)
-            and cls._value_problem(a, a.default) is None
-        }
+        merged: dict[str, Any] = {}
+        for a in project.attributes:
+            if (
+                a.id in attributes
+                or a.default is None
+                or a.system
+                or not cls._attribute_applies(a, module_id)
+                or cls._value_problem(a, a.default) is not None
+            ):
+                continue
+            default = a.default
+            if a.type == "text" and isinstance(default, str):
+                try:
+                    default = richtext.sanitize(default)
+                except ValueError:
+                    continue
+            merged[a.id] = default
         merged.update(attributes)
         return merged
 
@@ -1360,6 +1394,7 @@ class ProjectService:
         if parent_id is not None and not self.store.requirement_exists(project_id, module_id, parent_id):
             raise FileNotFoundError(f"Requirement '{parent_id}' not found in module '{module_id}'")
 
+        attributes = self._sanitized_text_values(project, attributes)
         self._validate_attributes(project, attributes, is_create=True, module_id=module_id)
         merged = self._merged_attributes(project, attributes, module_id)
 
@@ -1491,7 +1526,9 @@ class ProjectService:
         created: list[Requirement] = []
 
         def duplicate(original: Requirement, new_parent_id: str | None) -> Requirement:
-            attributes = {k: v for k, v in original.attributes.items() if k not in system_ids}
+            attributes = self._sanitized_text_values(
+                project, {k: v for k, v in original.attributes.items() if k not in system_ids}
+            )
             new_id = self._allocate_requirement_id(project, module)
             order = self._next_sibling_order(requirements, new_parent_id)
             copy = Requirement(id=new_id, attributes=attributes, parent_id=new_parent_id, order=order)
@@ -1512,11 +1549,29 @@ class ProjectService:
         self, project_id: str, module_id: str, requirement_id: str, attributes: dict[str, Any]
     ) -> Requirement:
         project = self.store.load_project(project_id)
+        attributes = self._sanitized_text_values(project, attributes)
         self._validate_attributes(project, attributes, is_create=False, module_id=module_id)
         requirement = self.store.load_requirement(project_id, module_id, requirement_id)
+        self._mark_rich_text_format(project, attributes)
         requirement.attributes.update(attributes)
         self.store.save_requirement(project_id, module_id, requirement)
         return requirement
+
+    def _mark_rich_text_format(self, project: Project, values: dict[str, Any]) -> None:
+        """Rewrite project.json at the current format if ``values`` store rich text in an older-format project.
+
+        Rich text needs project format 4 (an older ReqManTool would show it as
+        raw markup), but loading upgrades only in memory. Add, copy and
+        import always save the project (its id counters); a write that
+        does not, such as an update, calls this before writing the values,
+        within the same history commit. A plain value leaves the stored
+        version as it is.
+        """
+        text_ids = {a.id for a in project.attributes if a.type == "text" and not a.system}
+        if not any(k in text_ids and richtext.is_rich(v) for k, v in values.items()):
+            return
+        if self.store.stored_project_format_version(project.id) < PROJECT_FORMAT.current:
+            self.store.save_project(project)
 
     def get_requirement(self, project_id: str, module_id: str, requirement_id: str) -> Requirement:
         return self.store.load_requirement(project_id, module_id, requirement_id)
@@ -2173,13 +2228,19 @@ class ProjectService:
 
         A requirement shows only the values of attributes that apply to its
         module (a value left over from hand-edited data is not exported).
+        Rich text values are exported as their plain-text projection
+        (``richtext.to_plain``), so no export writes markup.
         """
+        text_ids = {a.id for a in project.attributes if a.type == "text"}
         result: list[tuple[Module, list[Requirement]]] = []
         for module in self.list_modules(project.id):
             requirements = []
             for requirement in self.store.load_all_requirements(project.id, module.id):
                 kept, dropped = self._applicable_values(project, module.id, requirement.attributes)
-                requirements.append(replace(requirement, attributes=kept) if dropped else requirement)
+                rich = [k for k in text_ids if richtext.is_rich(kept.get(k))]
+                if rich:
+                    kept = {k: richtext.to_plain(v) if k in rich else v for k, v in kept.items()}
+                requirements.append(replace(requirement, attributes=kept) if dropped or rich else requirement)
             result.append((module, requirements))
         return result
 
@@ -2252,6 +2313,7 @@ class ProjectService:
         existing = self.store.load_all_requirements(project_id, module_id)
         next_order: dict[str | None, int] = {None: self._next_sibling_order(existing, None)}
 
+        text_ids = {a.id for a in project.attributes if a.type == "text"}
         new_ids: dict[int, str] = {}
         key_to_id: dict[str, str] = {}
         created: list[Requirement] = []
@@ -2263,7 +2325,13 @@ class ProjectService:
             parent_id = key_to_id[row.parent_key] if row.parent_key is not None else None
             order = next_order.get(parent_id, 0)
             next_order[parent_id] = order + 1
-            attributes = self._merged_attributes(project, row.attributes, module_id)
+            # CSV cells are plain text: one that looks like rich text is kept
+            # as the literal text (``richtext.from_plain``), never as markup.
+            values = {
+                k: richtext.from_plain(v) if k in text_ids and isinstance(v, str) else v
+                for k, v in row.attributes.items()
+            }
+            attributes = self._merged_attributes(project, values, module_id)
             created.append(Requirement(id=requirement_id, attributes=attributes, parent_id=parent_id, order=order))
 
         self._write_new_requirements(project, module_id, created)

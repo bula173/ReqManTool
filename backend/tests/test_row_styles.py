@@ -74,7 +74,7 @@ def test_set_row_styles_round_trips_and_is_written_only_when_present(service):
     text = path.read_text()
     data = json.loads(text)
     assert text.endswith("}\n") and text == json.dumps(data, indent=2) + "\n"
-    assert data["format_version"] == PROJECT_FORMAT.current == 3
+    assert data["format_version"] == PROJECT_FORMAT.current >= 3
     assert list(data)[-1] == "row_styles"
     assert data["row_styles"][0] == {
         "attribute_id": "kind", "value": "Heading", "font_color": "#2f9e44", "background_color": None, "bold": True,
@@ -136,7 +136,7 @@ def test_stale_hand_edited_rules_are_ignored_but_kept(service):
 # --- migration --------------------------------------------------------------------
 
 
-def test_v2_project_migrates_without_row_styles_and_saves_as_v3(service):
+def test_v2_project_migrates_without_row_styles_and_saves_at_the_current_version(service):
     project_id = _project(service)
     path = _project_file(service, project_id)
     data = json.loads(path.read_text())
@@ -153,7 +153,7 @@ def test_v2_project_migrates_without_row_styles_and_saves_as_v3(service):
 
     service.create_module(project_id, "M", "M")
     saved = json.loads(path.read_text())
-    assert saved["format_version"] == 3
+    assert saved["format_version"] == PROJECT_FORMAT.current
     assert "row_styles" not in saved
 
 

@@ -24,6 +24,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from .richtext import is_rich, to_plain
+
 SESSION_TRAILER = "ReqMan-Session"
 
 # Subject line budget: entries are added while the subject stays this short.
@@ -74,7 +76,13 @@ def _parse(data: bytes | None) -> Any:
 
 
 def format_value(value: Any) -> str:
-    """A short, single-line rendering of an attribute value for a commit message."""
+    """A short, single-line rendering of an attribute value for a commit message.
+
+    Rich text is shown as its plain-text projection; a value whose projection
+    is empty reads as "(formatted text)".
+    """
+    if is_rich(value):
+        value = to_plain(value) or "(formatted text)"
     if value is None or value == "":
         return "(empty)"
     if isinstance(value, bool):

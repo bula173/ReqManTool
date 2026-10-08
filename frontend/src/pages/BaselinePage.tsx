@@ -8,6 +8,8 @@ import { useBaseline, useBaselineRequirements } from '../api/queries';
 import type { Requirement } from '../api/types';
 import { ResizableHeaderCell } from '../components/ResizableHeaderCell';
 import { RowResizeHandle } from '../components/RowResizeHandle';
+import { isRichText } from '../components/richText';
+import { RichTextView } from '../components/RichTextView';
 import { useRowAppearance } from '../components/rowStyles';
 import {
   DEFAULT_ID_COLUMN_WIDTH,
@@ -236,11 +238,14 @@ export function BaselinePage() {
                         <RowResizeHandle rowId={requirement.id} rows={rowSizes} focusable />
                       </Table.Td>
                       {attributes.map((attr) => {
-                        const text = formatValue(requirement.attributes[attr.id]);
+                        const raw = requirement.attributes[attr.id];
+                        const text = formatValue(raw);
                         return (
                           <Table.Td key={attr.id} data-column-key={attr.id}>
                             <div className="reqman-cell-clip" data-fade={columns.isSingleLine(attr.id) ? undefined : ''}>
-                              {columns.isSingleLine(attr.id) ? (
+                              {attr.type === 'text' && isRichText(raw) ? (
+                                <RichTextView value={raw} wrap={!columns.isSingleLine(attr.id)} />
+                              ) : columns.isSingleLine(attr.id) ? (
                                 <Text size="sm" truncate="end" title={text}>
                                   {text}
                                 </Text>

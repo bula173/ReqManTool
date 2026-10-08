@@ -99,8 +99,27 @@ def _project_v2_to_v3(data: dict) -> dict:
     return data
 
 
+def _project_v3_to_v4(data: dict) -> dict:
+    """Project format 3 -> 4: ``text`` attribute values may be rich text.
+
+    Version 4 lets the values of ``text`` attributes (requirement files)
+    hold rich text: a sanitised XHTML subset string starting with
+    ``richtext.RICH_TEXT_PREFIX`` (see ``richtext.py``). Every version 3
+    value is a valid version 4 value with the same meaning, so nothing is
+    rewritten: plain text stays plain text, ``<`` and markup-like text
+    included. The one theoretical exception, a version 3 plain value
+    starting with that exact ``<div xmlns="http://www.w3.org/1999/xhtml">``
+    prefix, reads as rich text from now on (and is displayed sanitised).
+    The bump exists so that an older ReqManTool, which would show rich
+    values as raw markup, refuses version 4 projects instead.
+    """
+    return data
+
+
 PROJECT_FORMAT = FileFormat(
-    name="project", current=3, migrations={1: _project_v1_to_v2, 2: _project_v2_to_v3}
+    name="project",
+    current=4,
+    migrations={1: _project_v1_to_v2, 2: _project_v2_to_v3, 3: _project_v3_to_v4},
 )
 CONFIG_FORMAT = FileFormat(name="config", current=1)
 

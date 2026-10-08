@@ -42,7 +42,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from .formats import PROJECT_FORMAT, upgrade, with_format_version
+from .formats import PROJECT_FORMAT, stored_format_version, upgrade, with_format_version
 from .models import LinkPair, Module, Project, Requirement
 
 try:
@@ -337,6 +337,11 @@ class ProjectStore:
         if not self._is_project_id(project_id) or not self._project_file_present(project_id):
             raise FileNotFoundError(f"Project '{project_id}' not found")
         return self._project_from_data(project_id, self._read_project_data(project_id))
+
+    def stored_project_format_version(self, project_id: str) -> int:
+        """The ``format_version`` recorded in project.json (before any in-memory upgrade)."""
+        self._check_project_format(project_id)
+        return stored_format_version(self._read_project_data(project_id), f"Project '{project_id}'")
 
     def _project_file_present(self, project_id: str) -> bool:
         """True if project.json exists, or may exist but cannot be reached.

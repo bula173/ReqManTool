@@ -1,9 +1,12 @@
-import { Badge, Checkbox, Group, NumberInput, Select, Text, Textarea, TextInput, Tooltip } from '@mantine/core';
+import { Badge, Checkbox, Group, NumberInput, Select, Text, TextInput, Tooltip } from '@mantine/core';
 import { IconCheck } from '@tabler/icons-react';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, Ref } from 'react';
 import { useFindRequirement } from '../api/queries';
 import type { AttributeDefinition } from '../api/types';
+import { LazyRichTextField } from './LazyRichTextField';
+import { isRichText, richTextToPlain } from './richText';
+import { RichTextView } from './RichTextView';
 
 interface EditableAttributeCellProps {
   attr: AttributeDefinition;
@@ -34,7 +37,7 @@ function LinkBadge({
   const targetId = entry.slice(1).trim();
   const findQuery = useFindRequirement(projectId, targetId, hovered);
   const tooltipLabel = findQuery.data
-    ? String(findQuery.data.requirement.attributes.object_text ?? targetId)
+    ? richTextToPlain(findQuery.data.requirement.attributes.object_text ?? targetId)
     : findQuery.isFetching
       ? 'Loading…'
       : targetId;
@@ -109,6 +112,9 @@ function DisplayValue({
   if (attr.type === 'enum') {
     return <Badge variant="light">{String(value)}</Badge>;
   }
+  if (attr.type === 'text' && isRichText(value)) {
+    return <RichTextView value={value} wrap={wrap} />;
+  }
   if (wrap === false) {
     return (
       <Text size="sm" truncate="end" title={String(value)}>
@@ -154,7 +160,7 @@ export function EditableAttributeCell({
 }: EditableAttributeCellProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<unknown>(value);
-  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (editing) setDraft(value ?? (attr.type === 'boolean' ? false : ''));
@@ -196,18 +202,15 @@ export function EditableAttributeCell({
   const renderEditor = () => {
     switch (attr.type) {
       case 'text':
+        // Rich text (TipTap): Esc cancels, Ctrl/Cmd+Enter or a click/Tab outside saves.
         return (
-          <Textarea
-            ref={inputRef as Ref<HTMLTextAreaElement>}
-            autosize
-            minRows={2}
-            value={String(draft ?? '')}
-            onChange={(e) => setDraft(e.currentTarget.value)}
-            onBlur={commit}
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') cancel();
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) commit();
-            }}
+          <LazyRichTextField
+            value={value}
+            onChange={setDraft}
+            autoFocus
+            onCommit={commit}
+            onCancel={cancel}
+            aria-label={attr.name}
           />
         );
       case 'integer':

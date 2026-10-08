@@ -1,4 +1,5 @@
 import type { AttributeDefinition, Requirement } from '../api/types';
+import { richTextToPlain } from './richText';
 
 /**
  * Pure helpers of the Module tab's requirement outline (left panel): the
@@ -67,7 +68,7 @@ export function parentIds(requirements: Requirement[]): Set<string> {
 export function objectTextSnippet(requirement: Requirement, maxLength = 80): string {
   const value = requirement.attributes[OBJECT_TEXT_ATTRIBUTE_ID];
   if (value === null || value === undefined) return '';
-  const text = String(value).replace(/\s+/g, ' ').trim();
+  const text = richTextToPlain(value).replace(/\s+/g, ' ').trim();
   return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
 }
 
@@ -97,7 +98,7 @@ export function buildOutlineRows(requirements: Requirement[], collapsed: Set<str
   if (query) {
     visible = new Set<string>();
     for (const req of requirements) {
-      const text = String(req.attributes[OBJECT_TEXT_ATTRIBUTE_ID] ?? '').toLowerCase();
+      const text = richTextToPlain(req.attributes[OBJECT_TEXT_ATTRIBUTE_ID]).toLowerCase();
       if (req.id.toLowerCase().includes(query) || text.includes(query)) {
         visible.add(req.id);
         for (const ancestorId of ancestorIdsOf(requirements, req.id)) visible.add(ancestorId);

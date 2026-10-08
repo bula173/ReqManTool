@@ -789,6 +789,56 @@
       Backend tests 1120 → 1183. Not covered: no frontend tests; not
       tried in a browser; no styling in CSV/XLSX/ReqIF (not requested);
       review follow-ups (see backlog).
+- [x] **Rich text in requirement text, slice 1: storage, sanitiser,
+      editor** (requested 2026-10-07; exports are slice 2, see backlog).
+      Storage and detection: `text` attributes (incl. ObjectText) may hold
+      a sanitised XHTML subset. A value is rich only if it starts with the
+      exact ReqIF wrapper `<div xmlns="http://www.w3.org/1999/xhtml">`;
+      anything else is plain. Unformatted rich text is stored as plain
+      text, so plain values stay plain. `from_plain` keeps plain text that
+      literally starts with the wrapper. Sanitiser: new
+      `backend/reqman/richtext.py`, Python stdlib only. Strip-only
+      allow-list: p, br, strong/b, em/i, u, s/strike/del, ul, ol, li, and
+      span with `color` (`#rrggbb`; `#rgb`/`rgb()` normalised) and
+      `font-size` 10/12/14/16/20/24px. script/style/iframe/svg/math are
+      dropped with their content; other tags are unwrapped; all other
+      attributes are dropped. HTML implied end tags (`p`/`li`) and
+      reopening of formatting elements, so it matches the browser.
+      Deterministic and idempotent. Bounded: 2,000,000 characters and
+      300,000 nodes on input and result, a clone budget, depth caps, O(1)
+      scope checks. Over-limit values are rejected as 400/-32602 "Rich
+      text is too large". Lenient reads never raise. A parser failure
+      falls back to literal text. Plain-text projection `to_plain`, used
+      for search, the outline, history messages, the required/blank check
+      and exports. `ProjectService` sanitises on add, update and copy, and
+      for text defaults (including at merge time; stored over-limit or
+      invalid defaults are skipped). CSV import keeps cells literal
+      (`from_plain`). PROJECT_FORMAT 3 → 4 (no-op migration); a rich
+      update also rewrites `project.json` to v4 in the same commit. For
+      now every export (CSV/XLSX/DOCX/ReqIF) writes the plain projection.
+      Frontend: TipTap editor via @mantine/tiptap 9.6.1 + @tiptap/* 3.31.4
+      (new dependencies), lazy-loaded in its own chunk. Toolbar: bold,
+      italic, underline, strikethrough, bullet/numbered lists, colour,
+      font size. Used in the inline cell editor, detail panel and add
+      form. Esc cancels, Ctrl/Cmd+Enter saves, outside click saves,
+      whitespace preserved. `RichTextView` renders through a client mirror
+      sanitiser (`richText.ts`, DOMParser-based) in table cells, detail
+      panel, baseline view; plain projection in the outline, compare and
+      history. Files: `backend/reqman/{richtext.py (new), service.py,
+      store.py, formats.py, history.py}`, `backend/tests/{test_rich_text.py
+      (new), test_rich_text_edge_cases.py (new), test_rich_text_limits.py
+      (new), test_row_styles.py}`, `frontend/src/components/
+      {RichTextField.tsx (new), LazyRichTextField.tsx (new),
+      RichTextView.tsx (new), richText.ts (new), EditableAttributeCell.tsx,
+      RequirementFormModal.tsx, RequirementDetailPanel.tsx,
+      requirementOutline.ts}`, `pages/{BaselinePage.tsx,
+      BaselineComparePage.tsx, ProjectPage.tsx}`, `index.css`,
+      `package.json`, `package-lock.json`. Backend tests 1183 → 1308.
+      Review: 3 fix rounds (implied end tags / format-version write /
+      editor whitespace; a DoS blowup in formatting reopen; output-size
+      limits). Not covered: no frontend tests (the client sanitiser
+      mirror is untested); smoke-tested headless only; review follow-ups
+      (see backlog).
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -917,20 +967,12 @@ to the categories above.
       auto-push disabling session squashing — accepted as is.
       (6) `_is_non_fast_forward` matches "[rejected]" but not "[remote
       rejected]", so some remote rejections map to 400 instead of 409.
-- [ ] Rich text in requirement text (bold, italic, underline, lists,
-      font color, font size). Requested 2026-10-07. Text attributes
-      (`text` type, incl. ObjectText) gain rich formatting: bold, italic,
-      underline, strikethrough, bullet/numbered lists, font color, font
-      size (small set of sizes), and later tables/images. Storage: a
-      sanitised XHTML subset string (same model as ReqIF XHTML), with a
-      plain-text projection kept for search, CSV and tooltips; existing
-      plain values stay valid. Server validates/sanitises (allow-list of
-      tags and styles, no scripts/links to javascript:). Editor: rich-text
-      toolbar in the inline cell editor, detail panel and add form
-      (TipTap via @mantine/tiptap — new dependency). Exports: DOCX keeps
-      formatting, ReqIF exports XHTML datatype, CSV/XLSX plain text (CSV
-      import stays plain). Project format bump + migration. Builds on row
-      styling (shared color handling).
+- [ ] Rich text, slice 2: exports. Requested 2026-10-07 (slice 1 —
+      storage, sanitiser, editor — is done, see Done). DOCX keeps the
+      formatting (bold/italic/underline/strike, lists, colour, size).
+      ReqIF exports the XHTML datatype for rich values (the stored
+      wrapper already matches ReqIF XHTML). CSV/XLSX stay plain text
+      (already done). Later: tables/images.
 - [ ] Commit browser for project, module and requirement. Requested
       2026-10-07. Builds on git history (done: requirement History tab,
       `GET /projects/{id}/git/log`, recent commits in the Git panel).
@@ -1199,6 +1241,23 @@ to the categories above.
       of doing it per row. (8) `set_row_styles` saves (and commits) even
       when nothing changed. (9) Frontend unit tests for `rowStyles.ts`
       once a test runner exists.
+- [ ] Rich text slice 1: review follow-ups (2026-10-08). (1) CSV import
+      stores `from_plain` output without a size check. A crafted cell
+      starting with the wrapper can exceed the limits, so later
+      reads/exports silently drop the tail and copy fails. Report it as a
+      row error instead. (2) Parser parity gaps with the browser: no
+      adoption agency (`<b><p>x</b>y</p>` gives an extra empty p), table
+      insertion modes, VOID self-closing `<br/>`/`<hr/>` without the
+      implied p-close. (3) `EditableAttributeCell`: a live-sync update
+      while editing resets `draft`, so the user's unchanged-since-sync
+      edit can be lost silently. Track a dirty flag. (4) Python
+      `\d`/`strip()` vs JS differences (Unicode digits in `rgb()`,
+      `\x85`); use ASCII classes. (5) The lazy editor chunk ignores
+      outside click/Esc while loading; preload it on hover. (6) Font
+      sizes duplicated in `richtext.py` and `richText.ts`. Add a shared
+      fixture file checked by both sides once a frontend test runner
+      exists. (7) A whitespace-only value becomes "" after a real edit;
+      `\r\n` becomes `\n` on edit.
 - [ ] Module templates + heading skeletons in project and module templates.
       Requested 2026-10-04 (extends the delivered project templates).
       (1) Module templates: JSON files (built-in + user, like project

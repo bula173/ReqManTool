@@ -222,3 +222,24 @@ th:hover > div > .reqman-col-menu-button,
 [data-row-bold] a {
   font-weight: 700;
 }
+
+/*
+ * Rich text values (components/richText.ts): the sanitised HTML in table
+ * cells, the detail panel and baselines, and the TipTap editor's content.
+ * Spacing stays as compact as plain text; inline span colors override a row
+ * style's font color (they are more specific than the inherited color).
+ */
+.reqman-rich-text p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.reqman-rich-text ul,
+.reqman-rich-text ol {
+  margin: 0;
+  padding-left: 1.4em;
+}
+
+.reqman-rich-text li > p {
+  margin: 0;
+}

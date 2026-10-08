@@ -5,6 +5,7 @@ import { ApiError } from '../api/client';
 import { useRequirementHistory } from '../api/queries';
 import type { AttributeDefinition, HistoryCommit, HistoryDiff, HistoryEntry, Requirement } from '../api/types';
 import { EditableAttributeCell } from './EditableAttributeCell';
+import { richTextToPlain } from './richText';
 
 interface RequirementDetailPanelProps {
   projectId: string;
@@ -21,7 +22,8 @@ const MAX_VALUE_LENGTH = 120;
 
 function formatValue(value: unknown): string {
   if (value === null || value === undefined || value === '') return '(empty)';
-  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  // Rich text is shown as its plain projection.
+  const text = typeof value === 'string' ? richTextToPlain(value).replace(/\s*\n\s*/g, ' ') : JSON.stringify(value);
   return text.length > MAX_VALUE_LENGTH ? `${text.slice(0, MAX_VALUE_LENGTH - 1)}…` : text;
 }
 

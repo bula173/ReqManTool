@@ -1,10 +1,12 @@
-import { Button, Checkbox, Group, Modal, NumberInput, Select, Stack, Textarea, TextInput } from '@mantine/core';
+import { Button, Checkbox, Group, Input, Modal, NumberInput, Select, Stack, TextInput } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useAddRequirement } from '../api/queries';
 import { ApiError } from '../api/client';
 import type { AttributeDefinition } from '../api/types';
+import { LazyRichTextField } from './LazyRichTextField';
+import { richTextToPlain } from './richText';
 
 interface RequirementFormModalProps {
   projectId: string;
@@ -36,7 +38,7 @@ function hasUsableDefault(attr: AttributeDefinition): boolean {
     case 'enum':
       return typeof value === 'string' && (attr.choices ?? []).includes(value);
     default:
-      return typeof value === 'string' && value.trim() !== '';
+      return typeof value === 'string' && richTextToPlain(value).trim() !== '';
   }
 }
 
@@ -46,8 +48,9 @@ function defaultValueFor(attr: AttributeDefinition): unknown {
   return '';
 }
 
+/** Blank as the server judges it: rich text by its plain projection. */
 function isBlank(value: unknown): boolean {
-  return value === null || value === undefined || (typeof value === 'string' && value.trim() === '');
+  return value === null || value === undefined || (typeof value === 'string' && richTextToPlain(value).trim() === '');
 }
 
 /**
@@ -124,11 +127,15 @@ export function RequirementFormModal({
     },
   });
 
+  // Bumped on every re-seed: the rich text editors read their value once, so they are re-created.
+  const [seed, setSeed] = useState(0);
+
   // Re-seed the form whenever the modal is opened.
   useEffect(() => {
     if (opened) {
       form.setValues(buildInitialValues(editableAttributes));
       form.resetDirty(buildInitialValues(editableAttributes));
+      setSeed((n) => n + 1);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opened, attributes]);
@@ -165,8 +172,18 @@ export function RequirementFormModal({
             const path = `attrs.${attr.id}`;
             const label = attr.required ? `${attr.name} *` : attr.name;
             switch (attr.type) {
-              case 'text':
-                return <Textarea key={attr.id} label={label} autosize minRows={2} {...form.getInputProps(path)} />;
+              case 'text': {
+                const input = form.getInputProps(path);
+                return (
+                  <Input.Wrapper key={`${attr.id}-${seed}`} label={label} error={input.error}>
+                    <LazyRichTextField
+                      value={input.value}
+                      onChange={(next) => form.setFieldValue(path, next)}
+                      aria-label={attr.name}
+                    />
+                  </Input.Wrapper>
+                );
+              }
               case 'integer':
                 return (
                   <NumberInput key={attr.id} label={label} allowDecimal={false} {...form.getInputProps(path)} />

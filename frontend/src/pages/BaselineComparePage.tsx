@@ -17,6 +17,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { useBaselineCompare, useBaselines, useProject } from '../api/queries';
 import type { BaselineModuleDiff, HistoryDiff } from '../api/types';
+import { richTextToPlain } from '../components/richText';
 import { useRowStyleCss } from '../components/rowStyles';
 
 const CURRENT = 'current';
@@ -24,7 +25,8 @@ const CURRENT = 'current';
 function formatValue(value: unknown): string {
   if (value === null || value === undefined || value === '') return '(empty)';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
-  return typeof value === 'string' ? value : JSON.stringify(value);
+  // Rich text is shown as its plain projection.
+  return typeof value === 'string' ? richTextToPlain(value).replace(/\s*\n\s*/g, ' ') : JSON.stringify(value);
 }
 
 function diffLabel(diff: HistoryDiff, attributeName: (id: string) => string): string {
