@@ -19,6 +19,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from reqman.git_repo import GitHistory, GitSettings
+from reqman.formats import PROJECT_FORMAT
 from reqman.history import format_value
 from reqman.richtext import RICH_TEXT_PREFIX as P, from_plain, is_rich, sanitize, to_plain
 from reqman.service import ProjectService
@@ -403,11 +404,29 @@ def test_format_value_projects_rich_values():
 # --- 6. project format follows stored rich text --------------------------------------------------
 
 
-def _set_project_version(service, project_id, version):
-    path = service.store.root / project_id / "project.json"
+def _as_v3(data: dict) -> dict:
+    """``data`` (a current-format project.json) as a genuine version 3 file would hold it.
+
+    Version 7 turned ``module_order`` id strings into ``{"module": id}``
+    entries; keys added after version 3 (``locked``, ``references``...) are
+    absent from a version 3 file.
+    """
+    v3 = {k: v for k, v in data.items() if k not in ("locked", "references")}
+    v3["format_version"] = 3
+    if "module_order" in v3:
+        v3["module_order"] = [e["module"] for e in v3["module_order"] if "module" in e]
+    return v3
+
+
+def _downgrade_to_v3(path: Path) -> None:
     data = json.loads(path.read_text(encoding="utf-8"))
-    data["format_version"] = version
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(_as_v3(data), indent=2) + "\n", encoding="utf-8")
+
+
+def _set_project_version(service, project_id, version):
+    assert version == 3, "only a version 3 downgrade is modelled"
+    path = service.store.root / project_id / "project.json"
+    _downgrade_to_v3(path)
     return path
 
 
@@ -418,7 +437,9 @@ def _project_version(path: Path) -> int:
 def test_rich_update_rewrites_a_v3_project_as_current_format(service, module):
     project_id, module_id = module
     req = service.add_requirement(project_id, module_id, {"object_text": "plain"})
-    path = _set_project_version(service, project_id, 3)
+    path = service.store.root / project_id / "project.json"
+    current = json.loads(path.read_text(encoding="utf-8"))
+    _set_project_version(service, project_id, 3)
 
     # A plain update needs no newer format: project.json is left untouched.
     before = path.read_text(encoding="utf-8")
@@ -427,8 +448,12 @@ def test_rich_update_rewrites_a_v3_project_as_current_format(service, module):
 
     service.update_requirement(project_id, module_id, req.id, {"note": rich("<p><b>x</b></p>")})
     text = path.read_text(encoding="utf-8")
-    assert _project_version(path) == 4 and text.endswith("}\n") and text.startswith('{\n  "format_version": 4,')
-    assert json.loads(text) | {"format_version": 3} == json.loads(before)
+    version = PROJECT_FORMAT.current
+    assert _project_version(path) == version
+    assert text.endswith("}\n") and text.startswith('{\n  "format_version": %d,\n  "id": ' % version)
+    # Rewritten through the migrations: the same project, at the current format, two-space indented.
+    assert json.loads(text) == current
+    assert text == json.dumps(current, indent=2, ensure_ascii=False) + "\n"
 
 
 def test_rich_update_rewrites_the_project_in_the_same_commit(git_service, clock):
@@ -442,7 +467,7 @@ def test_rich_update_rewrites_the_project_in_the_same_commit(git_service, clock)
     clock.offset = 3600
 
     service.update_requirement(project.id, module.id, req.id, {"object_text": rich("<p><em>x</em></p>")})
-    assert _project_version(path) == 4
+    assert _project_version(path) == PROJECT_FORMAT.current
     changed = git(service.store.root / project.id, "show", "--name-only", "--format=", "HEAD").split()
     assert sorted(changed) == sorted(["project.json", f"modules/{module.id}/requirements/{req.id}.json"])
     assert git(service.store.root / project.id, "status", "--porcelain") == ""
@@ -471,14 +496,13 @@ def test_rich_update_over_rest_and_websocket_rewrites_a_v3_project(client, tmp_p
     path = tmp_path / "data" / project_id / "project.json"
 
     def downgrade():
-        data = json.loads(path.read_text(encoding="utf-8"))
-        data["format_version"] = 3
-        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        _downgrade_to_v3(path)
+        assert _project_version(path) == 3
 
     downgrade()
     resp = client.put(f"{base}/{rest_id}", json={"attributes": {"object_text": rich("<p><u>r</u></p>")}})
     assert resp.status_code == 200, resp.text
-    assert _project_version(path) == 4
+    assert _project_version(path) == PROJECT_FORMAT.current
 
     downgrade()
     with client.websocket_connect("/ws") as ws:
@@ -491,7 +515,7 @@ def test_rich_update_over_rest_and_websocket_rewrites_a_v3_project(client, tmp_p
         while "id" not in reply:
             reply = json.loads(ws.receive_text())
         assert reply["result"]["attributes"]["object_text"] == rich("<p><s>w</s></p>")
-    assert _project_version(path) == 4
+    assert _project_version(path) == PROJECT_FORMAT.current
 
 
 # --- 7. plain values keep their exact whitespace -------------------------------------------------

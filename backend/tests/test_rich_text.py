@@ -1,4 +1,4 @@
-"""Rich text values of ``text`` attributes: sanitiser, projection, service write paths, format 4."""
+"""Rich text values of ``text`` attributes: sanitiser, projection, service write paths, project format."""
 
 import importlib
 import io
@@ -220,40 +220,57 @@ def test_csv_import_keeps_markup_like_cells_literal(service, module):
     assert to_plain(req.attributes["object_text"]) == literal
 
 
-def test_exports_write_the_plain_projection(service, module):
+def test_table_exports_write_the_plain_projection(service, module):
+    """CSV and XLSX stay plain; DOCX and ReqIF keep formatting (``test_rich_text_exports.py``)."""
     from docx import Document
     from openpyxl import load_workbook
 
     project_id, module_id = module
     service.add_requirement(project_id, module_id, {"object_text": rich("<p><em>Shall</em> run</p><ol><li>a</li></ol>")})
-    for text in (service.export_csv(project_id), service.export_reqif(project_id)):
-        assert "Shall run" in text and "1. a" in text and "<em>" not in text and "&lt;em" not in text
+    text = service.export_csv(project_id)
+    assert "Shall run" in text and "1. a" in text and "<em>" not in text and "&lt;em" not in text
     cells = [c for row in load_workbook(io.BytesIO(service.export_xlsx(project_id))).active.iter_rows(values_only=True) for c in row]
     assert "Shall run\n1. a" in cells
     paragraphs = "\n".join(p.text for p in Document(io.BytesIO(service.export_docx(project_id))).paragraphs)
     assert "Shall run" in paragraphs and "<em>" not in paragraphs
+    # ReqIF writes the formatting as XHTML elements, not escaped markup.
+    reqif = service.export_reqif(project_id)
+    assert "<xhtml:p><xhtml:em>Shall</xhtml:em> run</xhtml:p><xhtml:ol><xhtml:li><xhtml:p>a</xhtml:p></xhtml:li></xhtml:ol>" in reqif
+    assert "&lt;em" not in reqif
 
 
-# --- project format 4 ----------------------------------------------------------------
+# --- project format: rich text needs format 4 or newer -----------------------------------
 
 
-def test_v3_project_loads_unchanged_and_saves_as_v4(service, module):
+def test_v3_to_v4_migration_keeps_every_value():
+    # Plain values, markup-like text included, mean the same in format 4: nothing is rewritten.
+    data = {"id": "p", "attributes": [{"id": "object_text", "type": "text", "default": "a < b <p>x</p>"}]}
+    assert PROJECT_FORMAT.migrations[3](json.loads(json.dumps(data))) == data
+    assert PROJECT_FORMAT.current >= 4
+
+
+def test_v3_project_loads_unchanged_and_saves_at_the_current_format(service, module):
     project_id, module_id = module
     req = service.add_requirement(project_id, module_id, {"object_text": "a < b <p>x</p>"})
     path = service.store.root / project_id / "project.json"
-    data = json.loads(path.read_text())
-    data["format_version"] = 3
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    current = json.loads(path.read_text())
+    # The same project as a genuine version 3 file holds it (module_order as id strings, format 7).
+    v3 = {k: v for k, v in current.items() if k not in ("locked", "references")}
+    v3["format_version"] = 3
+    v3["module_order"] = [e["module"] for e in current["module_order"]]
+    path.write_text(json.dumps(v3, indent=2) + "\n")
 
-    upgraded = upgrade(data, PROJECT_FORMAT, "Project 'p'")
-    assert upgraded == {k: v for k, v in data.items() if k != "format_version"}
-    assert PROJECT_FORMAT.current == 4
+    upgraded = upgrade(v3, PROJECT_FORMAT, "Project 'p'")
+    assert upgraded == {k: v for k, v in current.items() if k != "format_version"}
     assert service.get_requirement(project_id, module_id, req.id).attributes["object_text"] == "a < b <p>x</p>"
 
     service.update_requirement(project_id, module_id, req.id, {"note": rich("<p><b>x</b></p>")})
-    service.create_module(project_id, "N", "N")
     text = path.read_text()
-    assert json.loads(text)["format_version"] == 4 and text.endswith("}\n")
+    assert json.loads(text)["format_version"] == PROJECT_FORMAT.current and text.endswith("}\n")
+    assert json.loads(text) == current
+    # A fresh service reads the rich value back.
+    fresh = ProjectService(ProjectStore(service.store.root))
+    assert fresh.get_requirement(project_id, module_id, req.id).attributes["note"] == rich("<p><strong>x</strong></p>")
 
 
 # --- REST / WebSocket parity -----------------------------------------------------------

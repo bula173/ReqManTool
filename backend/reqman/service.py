@@ -5933,8 +5933,9 @@ class ProjectService:
         Rich text values of ``text`` attributes are exported as their
         plain-text projection (``richtext.to_plain``) by the table exports
         (CSV, XLSX). The formatted exports (DOCX, ReqIF) pass ``keep_rich``
-        and get rich values as stored, except one with no visible text,
-        which is projected like before (so it reads as empty, not as markup).
+        and get rich values as stored. A rich value with no visible text is
+        exported as ``""`` by every export (not as markup, nor as a projection
+        such as ``"- "`` of a blank list item).
         A rich-looking value of any other attribute type is plain text and
         is never touched.
         """
@@ -5944,12 +5945,14 @@ class ProjectService:
             requirements = []
             for requirement in self.store.load_all_requirements(project.id, module.id):
                 kept, dropped = self._applicable_values(project, module, requirement.attributes)
-                rich = [
-                    k for k in text_ids
-                    if richtext.is_rich(kept.get(k)) and not (keep_rich and richtext.blocks(kept[k]))
-                ]
+                rich = {k: richtext.blocks(kept[k]) for k in text_ids if richtext.is_rich(kept.get(k))}
+                rich = {
+                    k: (richtext.to_plain(kept[k]) if visible else "")
+                    for k, visible in rich.items()
+                    if not (keep_rich and visible)
+                }
                 if rich:
-                    kept = {k: richtext.to_plain(v) if k in rich else v for k, v in kept.items()}
+                    kept = {k: rich.get(k, v) for k, v in kept.items()}
                 requirements.append(replace(requirement, attributes=kept) if dropped or rich else requirement)
             result.append((module, requirements))
         return result

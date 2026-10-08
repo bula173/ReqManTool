@@ -42,8 +42,9 @@ Mapping decisions (see also the docstring of ``export_project_to_reqif``):
       its spacing stays visible although XHTML collapses white space: on
       each line, leading and trailing spaces become ``&#160;``, every second
       space of a run inside the line becomes ``&#160;``, and a tab becomes
-      four ``&#160;``. (Rich values keep their text nodes as stored: the
-      editor already writes visible runs of spaces as non-breaking spaces.)
+      four ``&#160;``. A rich value's spacing is kept visible the same way
+      (the editor stores spaces and tabs as typed), on each line of a
+      paragraph (split at ``br``) taken as one text across its inline marks.
     - a value with no text (``""``, a rich value of blanks) is an empty div.
   Text is escaped and characters XML 1.0 cannot hold are dropped, so the
   document is always well-formed; "string" and "enum" values are filtered
@@ -65,7 +66,7 @@ from __future__ import annotations
 
 import re
 from datetime import date as _date
-from typing import Any, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 from reqif.models.reqif_core_content import ReqIFCoreContent
 from reqif.models.reqif_data_type import (
@@ -140,30 +141,56 @@ def _spec_hierarchy_id(module_id: str, requirement_id: str) -> str:
 _MARK_SPANS = {"u": "text-decoration: underline", "s": "text-decoration: line-through"}
 
 
-def _xhtml_escape(text: str) -> str:
-    return richtext.xml_text(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-def _xhtml_inline(nodes: Iterable[Any]) -> str:
+def _xhtml_inline(nodes: Iterable[Any], texts: Iterator[str]) -> str:
+    """Inline nodes as XHTML; ``texts`` yields each text node already rendered (``_paragraph_texts``)."""
     out = []
     for node in nodes:
         if isinstance(node, str):
-            out.append(_xhtml_escape(node))
+            out.append(next(texts))
         elif isinstance(node, richtext.LineBreak):
             out.append("<xhtml:br/>")
         elif node.tag in ("strong", "em"):
-            out.append(f"<xhtml:{node.tag}>{_xhtml_inline(node.children)}</xhtml:{node.tag}>")
+            out.append(f"<xhtml:{node.tag}>{_xhtml_inline(node.children, texts)}</xhtml:{node.tag}>")
         else:
             style = _MARK_SPANS.get(node.tag, node.style)
-            out.append(f'<xhtml:span style="{style}">{_xhtml_inline(node.children)}</xhtml:span>')
+            out.append(f'<xhtml:span style="{style}">{_xhtml_inline(node.children, texts)}</xhtml:span>')
     return "".join(out)
+
+
+def _paragraph_texts(children: Iterable[Any]) -> List[str]:
+    """Each text node of a paragraph (document order), escaped, its spacing kept visible.
+
+    Spacing is decided per line (split at ``br``) over the line's whole text,
+    so a run of spaces split across inline marks is handled like in a plain line.
+    """
+    lines: List[List[str]] = [[]]
+
+    def walk(nodes: Iterable[Any]) -> None:
+        for node in nodes:
+            if isinstance(node, str):
+                lines[-1].append(richtext.xml_text(node))
+            elif isinstance(node, richtext.LineBreak):
+                lines.append([])
+            else:
+                walk(node.children)
+
+    walk(children)
+    rendered = []
+    for line in lines:
+        chars = _visible_chars("".join(line))
+        start = 0
+        for text in line:
+            rendered.append("".join(chars[start:start + len(text)]))
+            start += len(text)
+    return rendered
 
 
 def _xhtml_blocks(blocks: Iterable[Any]) -> str:
     out = []
     for block in blocks:
         if isinstance(block, richtext.Paragraph):
-            out.append(f"<xhtml:p>{_xhtml_inline(block.children)}</xhtml:p>")
+            texts = iter(_paragraph_texts(block.children))
+            out.append(f"<xhtml:p>{_xhtml_inline(block.children, texts)}</xhtml:p>")
         else:
             items = "".join(f"<xhtml:li>{_xhtml_blocks(item)}</xhtml:li>" for item in block.items)
             out.append(f"<xhtml:{block.tag}>{items}</xhtml:{block.tag}>")
@@ -172,19 +199,27 @@ def _xhtml_blocks(blocks: Iterable[Any]) -> str:
 
 _NBSP = "&#160;"
 _SPACE_RUNS = re.compile(r"^ +| +$| {2,}")
+_ESCAPES = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "\t": _NBSP * 4}
 
 
-def _spaced(match: "re.Match[str]") -> str:
-    """A run of spaces of a plain line, kept visible (see the module docstring)."""
-    count = len(match.group())
-    if match.start() == 0 or match.end() == len(match.string):
-        return _NBSP * count
-    return "".join(" " if i % 2 == 0 else _NBSP for i in range(count))
+def _visible_chars(line: str) -> List[str]:
+    """Each character of one line (already ``xml_text``-filtered) as XHTML, its spacing kept visible.
+
+    See the module docstring: edge spaces and every second space of a run
+    inside the line become ``&#160;``, a tab four ``&#160;``.
+    """
+    chars = [_ESCAPES.get(c, c) for c in line]
+    for match in _SPACE_RUNS.finditer(line):
+        edge = match.start() == 0 or match.end() == len(line)
+        for i in range(match.start(), match.end()):
+            if edge or (i - match.start()) % 2 == 1:
+                chars[i] = _NBSP
+    return chars
 
 
 def _xhtml_plain_line(line: str) -> str:
     """One line of a plain value: escaped, with its spaces and tabs kept visible."""
-    return _SPACE_RUNS.sub(_spaced, _xhtml_escape(line)).replace("\t", _NBSP * 4)
+    return "".join(_visible_chars(richtext.xml_text(line)))
 
 
 def _xhtml_value(value: Any) -> str:
