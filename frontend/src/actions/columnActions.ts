@@ -1,4 +1,4 @@
-import { IconAdjustments, IconArrowsHorizontal } from '@tabler/icons-react';
+import { IconAdjustments, IconArrowLeft, IconArrowRight, IconArrowsHorizontal } from '@tabler/icons-react';
 import type { Action, ActionContext } from './types';
 
 /**
@@ -9,6 +9,18 @@ import type { Action, ActionContext } from './types';
  */
 
 type ColumnContext = ActionContext<'column'>;
+
+/** The column's position among the table's reorderable columns; -1 when it cannot move (Id, Verification). */
+function orderIndex(ctx: ColumnContext): number {
+  const target = ctx.target;
+  return target?.order ? target.order.keys.indexOf(target.columnKey) : -1;
+}
+
+function moveColumn(ctx: ColumnContext, delta: number): void {
+  const target = ctx.target;
+  const index = orderIndex(ctx);
+  if (target?.order && index >= 0) target.order.move(target.columnKey, index + delta);
+}
 
 export const columnActions: Action<'column'>[] = [
   {
@@ -26,6 +38,28 @@ export const columnActions: Action<'column'>[] = [
     icon: IconArrowsHorizontal,
     isAvailable: (ctx) => ctx.target !== null,
     run: (ctx) => ctx.target?.columns.autoFit(ctx.target.columnKey),
+  },
+  {
+    // The keyboard alternative to dragging the header (per-browser order, like the widths).
+    id: 'column.moveLeft',
+    element: 'column',
+    label: 'Move column left',
+    icon: IconArrowLeft,
+    isSupported: (ctx) => orderIndex(ctx) >= 0,
+    isAvailable: (ctx) => orderIndex(ctx) > 0,
+    run: (ctx) => moveColumn(ctx, -1),
+  },
+  {
+    id: 'column.moveRight',
+    element: 'column',
+    label: 'Move column right',
+    icon: IconArrowRight,
+    isSupported: (ctx) => orderIndex(ctx) >= 0,
+    isAvailable: (ctx) => {
+      const index = orderIndex(ctx);
+      return index >= 0 && index < (ctx.target?.order?.keys.length ?? 0) - 1;
+    },
+    run: (ctx) => moveColumn(ctx, 1),
   },
   {
     // "Attribute properties": which modules the attribute applies to (the

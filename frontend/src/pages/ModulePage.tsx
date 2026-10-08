@@ -232,9 +232,12 @@ export function ModulePage() {
   const views = viewsQuery.data ?? [];
   const activeViewId = appState.activeViewId;
   const activeView = views.find((v) => v.id === activeViewId) ?? null;
-  const visibleAttributes = activeView
-    ? attributes.filter((a) => activeView.attribute_ids.includes(a.id))
-    : attributes;
+  // The attribute columns in this browser's order (dragged headers, Move column left/right); Id stays first.
+  const visibleAttributes = columns.ordered(
+    activeView ? attributes.filter((a) => activeView.attribute_ids.includes(a.id)) : attributes,
+    (a) => a.id,
+  );
+  const columnOrder = columns.orderOf(visibleAttributes.map((a) => a.id));
   const columnWidth = (key: string, fallback: number) => columns.widthOf(key, fallback);
   const showVerification = isRequirementsModule && appState.verificationColumn;
   const statuses = verificationQuery.data?.statuses;
@@ -260,7 +263,7 @@ export function ModulePage() {
       ...position,
       label,
       entries: kind === 'edit' ? COLUMN_HEADER_EDIT_MENU : COLUMN_HEADER_VIEW_MENU,
-      targets: { column: { columnKey, label, attribute, columns } },
+      targets: { column: { columnKey, label, attribute, columns, order: columnOrder } },
     });
   // Link badges: left click = go to, right click = go to / remove link.
   const openLinkMenu = (
@@ -402,6 +405,7 @@ export function ModulePage() {
                   label={attr.name}
                   defaultWidth={defaultColumnWidth(attr)}
                   columns={columns}
+                  order={columnOrder}
                   onOpenMenu={(kind, position) => openColumnMenu(attr.id, attr.name, attr, kind, position)}
                 />
               ))}

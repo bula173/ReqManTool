@@ -93,6 +93,28 @@ body {
   white-space: nowrap;
 }
 
+/* A header label that can be dragged to reorder its column (ResizableHeaderCell). */
+.reqman-col-label[data-reorderable] {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+/* The header being dragged, and where it will land (a fixed overlay line, not part of the table). */
+th[data-column-dragging] {
+  opacity: 0.5;
+}
+
+.reqman-col-drop-indicator {
+  position: fixed;
+  width: 3px;
+  margin-left: -1px;
+  z-index: 1000;
+  pointer-events: none;
+  border-radius: 1px;
+  background: var(--mantine-color-blue-filled);
+}
+
 /* The column menu button shows on header hover or focus (right-click the header opens the menu too). */
 .reqman-col-menu-button {
   flex-shrink: 0;

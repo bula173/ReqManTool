@@ -106,7 +106,12 @@ export function BaselinePage() {
   }
 
   const module = snapshot.modules.find((m) => m.id === moduleId);
-  const attributes = applicableAttributes(snapshot.project.attributes, module ?? (moduleId ? { id: moduleId } : null));
+  // The attribute columns in this browser's order of the module's table; Id stays first.
+  const attributes = columns.ordered(
+    applicableAttributes(snapshot.project.attributes, module ?? (moduleId ? { id: moduleId } : null)),
+    (a) => a.id,
+  );
+  const columnOrder = columns.orderOf(attributes.map((a) => a.id));
   const rows = treeOrder(requirementsQuery.data ?? []);
   const tableWidth =
     columns.widthOf(ID_COLUMN, DEFAULT_ID_COLUMN_WIDTH) +
@@ -115,6 +120,9 @@ export function BaselinePage() {
     <>
       <Menu.Item disabled={!columns.hasWidthOverrides} onClick={columns.resetWidths}>
         Reset column widths
+      </Menu.Item>
+      <Menu.Item disabled={!columns.hasOrderOverride} onClick={columns.resetOrder}>
+        Reset column order
       </Menu.Item>
       <Menu.Item disabled={!rowSizes.hasHeightOverrides} onClick={rowSizes.resetHeights}>
         Reset row heights
@@ -244,6 +252,7 @@ export function BaselinePage() {
                       label={attr.name}
                       defaultWidth={defaultColumnWidth(attr)}
                       columns={columns}
+                      order={columnOrder}
                       menuExtra={columnMenu}
                     />
                   ))}

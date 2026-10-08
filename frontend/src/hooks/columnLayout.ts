@@ -9,7 +9,8 @@ import type { AttributeDefinition, View } from '../api/types';
  * widths apply on top of them.
  *
  * One layout per table key: project + module + view (or `default` for "All
- * attributes"). The baseline page shares its module's `default` layout.
+ * attributes"). It also holds this browser's order of the attribute
+ * columns. The baseline page shares its module's `default` layout.
  */
 
 /** Column key of the Id column (the backend's `VIEW_ID_COLUMN`). Attribute ids name the other columns. */
@@ -50,10 +51,16 @@ export interface ColumnLayout {
   singleLine: string[];
   /** Requirement id → fixed row height in pixels (only the rows this browser resized); other rows fit their content. */
   rowHeights: Record<string, number>;
+  /**
+   * Attribute column keys in the order this browser shows them (dragged
+   * headers, Move column left/right); empty: the natural order. Columns not
+   * listed (e.g. attributes added later) follow the listed ones.
+   */
+  order: string[];
 }
 
 const STORAGE_PREFIX = 'reqman.columns:';
-const EMPTY_LAYOUT: ColumnLayout = { widths: {}, singleLine: [], rowHeights: {} };
+const EMPTY_LAYOUT: ColumnLayout = { widths: {}, singleLine: [], rowHeights: {}, order: [] };
 
 export function clampColumnWidth(width: number): number {
   return Math.min(MAX_COLUMN_WIDTH, Math.max(MIN_COLUMN_WIDTH, Math.round(width)));
@@ -94,6 +101,7 @@ function parseLayout(raw: string | null): ColumnLayout {
       widths: rawWidths,
       singleLine: rawSingleLine,
       rowHeights: rawRowHeights,
+      order: rawOrder,
     } = data as Record<string, unknown>;
     const widths: Record<string, number> = {};
     if (rawWidths && typeof rawWidths === 'object') {
@@ -111,7 +119,9 @@ function parseLayout(raw: string | null): ColumnLayout {
         if (typeof value === 'number' && Number.isFinite(value)) rowHeights[key] = clampRowHeight(value);
       }
     }
-    return { widths, singleLine, rowHeights };
+    // Older entries have no `order`: the natural column order.
+    const order = Array.isArray(rawOrder) ? rawOrder.filter((key): key is string => typeof key === 'string') : [];
+    return { widths, singleLine, rowHeights, order };
   } catch {
     return EMPTY_LAYOUT;
   }
@@ -142,7 +152,8 @@ function writeColumnLayout(key: string, layout: ColumnLayout): void {
   const empty =
     Object.keys(layout.widths).length === 0 &&
     layout.singleLine.length === 0 &&
-    Object.keys(layout.rowHeights).length === 0;
+    Object.keys(layout.rowHeights).length === 0 &&
+    layout.order.length === 0;
   cache.set(key, empty ? EMPTY_LAYOUT : layout);
   try {
     if (empty) browserStorage()?.removeItem(key);
@@ -164,6 +175,40 @@ export function resetColumnWidths(key: string): void {
 
 export function hasColumnWidthOverrides(key: string): boolean {
   return Object.keys(readColumnLayout(key).widths).length > 0;
+}
+
+/** Drops this browser's column order for a table: the natural order applies again. */
+export function resetColumnOrder(key: string): void {
+  updateColumnLayout(key, (layout) => ({ ...layout, order: [] }));
+}
+
+export function hasColumnOrderOverride(key: string): boolean {
+  return readColumnLayout(key).order.length > 0;
+}
+
+/**
+ * `items` in a stored column order: the listed keys first, in that order,
+ * then the unlisted ones in their natural order.
+ */
+export function applyColumnOrder<T>(items: T[], keyOf: (item: T) => string, order: string[]): T[] {
+  if (order.length === 0) return items;
+  const rank = new Map(order.map((key, index) => [key, index]));
+  return items
+    .map((item, index) => ({ item, index, rank: rank.get(keyOf(item)) }))
+    .sort((a, b) => {
+      if (a.rank !== undefined && b.rank !== undefined) return a.rank - b.rank;
+      if (a.rank !== undefined) return -1;
+      if (b.rank !== undefined) return 1;
+      return a.index - b.index;
+    })
+    .map(({ item }) => item);
+}
+
+/** The reorderable columns of a table as shown (`keys`) and a way to move one of them. */
+export interface ColumnOrder {
+  keys: string[];
+  /** Moves `key` to position `toIndex` of `keys` (clamped); stores the new order. */
+  move: (key: string, toIndex: number) => void;
 }
 
 /** Drops this browser's row heights for a table: every row fits its content again. */
@@ -316,6 +361,27 @@ export function useResizableColumns(storageKey: string, viewWidths?: Record<stri
 
   const isSingleLine = (key: string) => layout.singleLine.includes(key);
 
+  /** `items` (the reorderable columns, in their natural order) in this browser's column order. */
+  const ordered = <T,>(items: T[], keyOf: (item: T) => string): T[] => applyColumnOrder(items, keyOf, layout.order);
+
+  /** The order controls of the reorderable columns shown as `keys` (already ordered by `ordered`). */
+  const orderOf = (keys: string[]): ColumnOrder => ({
+    keys,
+    move: (key, toIndex) => {
+      const from = keys.indexOf(key);
+      if (from < 0) return;
+      const rest = keys.filter((k) => k !== key);
+      const to = Math.min(rest.length, Math.max(0, toIndex));
+      if (to === from) return;
+      rest.splice(to, 0, key);
+      // Keep the positions of stored keys that are not shown now (e.g. another view's columns) after these.
+      updateColumnLayout(storageKey, (current) => ({
+        ...current,
+        order: [...rest, ...current.order.filter((k) => !rest.includes(k))],
+      }));
+    },
+  });
+
   const toggleSingleLine = (key: string) =>
     updateColumnLayout(storageKey, (current) => ({
       ...current,
@@ -335,17 +401,21 @@ export function useResizableColumns(storageKey: string, viewWidths?: Record<stri
     toggleSingleLine,
     resetWidths: () => resetColumnWidths(storageKey),
     hasWidthOverrides: Object.keys(layout.widths).length > 0,
+    ordered,
+    orderOf,
+    resetOrder: () => resetColumnOrder(storageKey),
+    hasOrderOverride: layout.order.length > 0,
   };
 }
 
 export type ResizableColumns = ReturnType<typeof useResizableColumns>;
 
 /**
- * While a resize handle is dragged, the body keeps the resize cursor and text
- * selection is off (the pointer may leave the handle). Every drag must call
+ * While a resize handle (or a column header, to reorder it) is dragged, the
+ * body keeps the drag cursor and text selection is off (the pointer may leave the handle). Every drag must call
  * `endBodyDrag` when it ends, including when its handle unmounts mid-drag.
  */
-export function beginBodyDrag(cursor: 'col-resize' | 'row-resize'): void {
+export function beginBodyDrag(cursor: 'col-resize' | 'row-resize' | 'grabbing'): void {
   document.body.style.cursor = cursor;
   document.body.style.userSelect = 'none';
 }

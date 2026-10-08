@@ -27,9 +27,11 @@ import { notifications } from '@mantine/notifications';
 import { API_BASE_URL, ApiError } from '../api/client';
 import { moduleTypeOf } from '../api/moduleTypes';
 import {
+  hasColumnOrderOverride,
   hasColumnWidthOverrides,
   hasRowHeightOverrides,
   moduleTableKey,
+  resetColumnOrder,
   resetColumnWidths,
   resetRowHeights,
   viewColumnWidths,
@@ -328,6 +330,21 @@ export const appActions: Action<'app'>[] = [
     run: (ctx) => {
       const key = openTableKey(ctx);
       if (key) resetColumnWidths(key);
+    },
+  },
+  {
+    // This browser's attribute column order of the open table (module + view): the natural order again.
+    id: 'view.resetColumnOrder',
+    element: 'app',
+    label: 'Reset column order',
+    icon: IconColumns,
+    isAvailable: (ctx) => {
+      const key = openTableKey(ctx);
+      return key !== null && hasColumnOrderOverride(key);
+    },
+    run: (ctx) => {
+      const key = openTableKey(ctx);
+      if (key) resetColumnOrder(key);
     },
   },
   {

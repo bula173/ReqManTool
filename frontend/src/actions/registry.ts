@@ -302,6 +302,7 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
       action('tab.detach'),
       divider,
       action('view.resetColumnWidths'),
+      action('view.resetColumnOrder'),
       action('view.saveColumnWidths'),
       action('view.removeViewColumnWidths'),
       action('view.resetRowHeights'),
@@ -349,6 +350,7 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
 /** The table-wide part of a requirements table column header menu. */
 const TABLE_LAYOUT_ENTRIES: MenuEntry[] = [
   action('view.resetColumnWidths'),
+  action('view.resetColumnOrder'),
   action('view.saveColumnWidths'),
   action('view.removeViewColumnWidths'),
   action('view.resetRowHeights'),
@@ -358,6 +360,8 @@ const TABLE_LAYOUT_ENTRIES: MenuEntry[] = [
 export const COLUMN_HEADER_VIEW_MENU: MenuEntry[] = [
   action('column.wrapText'),
   action('column.autoFit'),
+  action('column.moveLeft'),
+  action('column.moveRight'),
   divider,
   action('view.verificationColumn'),
   divider,

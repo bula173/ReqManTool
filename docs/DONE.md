@@ -1516,3 +1516,14 @@ Newest entries are appended at the end.
       expandable texts, opened from About), `hooks/useSourceCode.ts`
       (new). Not covered: tests, CLA text; follow-ups in the backlog
       ("AGPL compliance: follow-ups").
+- [x] **Reorder table columns by dragging their headers.** Attribute
+      column headers of the module table and the baseline/commit table can
+      be dragged left/right by their label (pointer events; a vertical drop
+      indicator shows the landing spot, Esc cancels, the table scrolls near
+      its edges); the right-edge resize handle keeps resizing and the Id
+      column stays first. Keyboard alternative: "Move column left/right" in
+      the column header menus. The order is per browser, per project +
+      module + view, stored with the column widths
+      (`hooks/columnLayout.ts`, `order`); "Reset column order" sits next
+      to "Reset column widths". Not covered: saving the order to a named
+      view (no update-view endpoint for `View.attribute_ids` yet).

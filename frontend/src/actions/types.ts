@@ -15,7 +15,7 @@ import type {
   TemplateSummary,
   View,
 } from '../api/types';
-import type { ResizableColumns } from '../hooks/columnLayout';
+import type { ColumnOrder, ResizableColumns } from '../hooks/columnLayout';
 import type { ModuleTabRef } from '../layout/moduleTabs';
 import type { PendingLinkSource } from './pendingLink';
 
@@ -96,6 +96,8 @@ export interface ColumnTarget {
   attribute: AttributeDefinition | null;
   /** The table's column layout controls (width, wrap). */
   columns: ResizableColumns;
+  /** The table's reorderable (attribute) columns as shown; absent or not listing `columnKey`: the column cannot move. */
+  order?: ColumnOrder;
 }
 
 /**
