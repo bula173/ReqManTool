@@ -41,6 +41,19 @@ export function ContextMenuHost({ request, onClose }: { request: MenuRequest | n
       shadow="md"
       position="bottom-start"
       returnFocus={false}
+      // Keep long menus inside the window: open upwards when there is more
+      // room above, slide along the edges, and cap the height to the space
+      // that is left (the rest scrolls).
+      middlewares={{
+        flip: true,
+        shift: { padding: 8 },
+        size: {
+          padding: 8,
+          apply({ availableHeight, elements }) {
+            elements.floating.style.maxHeight = `${Math.max(availableHeight, 120)}px`;
+          },
+        },
+      }}
     >
       <Menu.Target>
         <div
@@ -48,7 +61,7 @@ export function ContextMenuHost({ request, onClose }: { request: MenuRequest | n
           style={{ position: 'fixed', top: request?.y ?? 0, left: request?.x ?? 0, width: 1, height: 1 }}
         />
       </Menu.Target>
-      <Menu.Dropdown miw={220}>
+      <Menu.Dropdown miw={220} mah="calc(100dvh - 16px)" style={{ overflowY: 'auto' }}>
         {request?.label && <Menu.Label>{request.label}</Menu.Label>}
         {request && <ActionMenuEntries entries={request.entries} targets={request.targets} />}
       </Menu.Dropdown>
