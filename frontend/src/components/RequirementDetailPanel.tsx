@@ -2,7 +2,7 @@ import { ActionIcon, Alert, Badge, Card, Center, Group, Loader, Stack, Tabs, Tex
 import { IconGitCommit, IconHistory, IconX } from '@tabler/icons-react';
 import { useState } from 'react';
 import { ApiError } from '../api/client';
-import { useRequirementHistory } from '../api/queries';
+import { useIncomingLinks, useRequirementHistory } from '../api/queries';
 import type {
   AttributeDefinition,
   HistoryCommit,
@@ -33,6 +33,68 @@ interface RequirementDetailPanelProps {
 }
 
 const MAX_VALUE_LENGTH = 120;
+
+/**
+ * Links into this requirement from referencing projects. They are stored
+ * only in the source project (no mirror attribute here), so the server
+ * computes them on read (`GET /projects/{id}/incoming-links`). Shown only
+ * when there are some; a badge double-click opens the source requirement.
+ */
+function IncomingCrossProjectLinks({
+  projectId,
+  moduleId,
+  requirementId,
+  onNavigate,
+}: {
+  projectId: string;
+  moduleId: string;
+  requirementId: string;
+  onNavigate: (linkEnd: string) => void;
+}) {
+  const incomingQuery = useIncomingLinks(projectId, moduleId);
+  if (incomingQuery.isError) {
+    return (
+      <Text size="xs" c="red">
+        Links from other projects could not be loaded
+      </Text>
+    );
+  }
+  const links = (incomingQuery.data ?? []).filter((link) => link.target_id === requirementId);
+  if (links.length === 0) return null;
+  const groups = new Map<string, typeof links>();
+  for (const link of links) {
+    const key = `${link.project_name} – ${link.config_name}`;
+    groups.set(key, [...(groups.get(key) ?? []), link]);
+  }
+  return (
+    <>
+      {[...groups.entries()].map(([label, group]) => (
+        <div key={label}>
+          <Text size="xs" c="dimmed">
+            {label} (from another project)
+          </Text>
+          <Group gap={4}>
+            {group.map((link) => {
+              const end = `${link.project_id}:${link.source_id}`;
+              return (
+                <Tooltip key={end} label={`Double-click to open ${end}`} openDelay={300}>
+                  <Badge
+                    variant="light"
+                    color="blue"
+                    style={{ cursor: 'pointer' }}
+                    onDoubleClick={() => onNavigate(end)}
+                  >
+                    {'<'} {end}
+                  </Badge>
+                </Tooltip>
+              );
+            })}
+          </Group>
+        </div>
+      ))}
+    </>
+  );
+}
 
 function formatValue(value: unknown): string {
   if (value === null || value === undefined || value === '') return '(empty)';
@@ -191,6 +253,12 @@ export function RequirementDetailPanel({
                   </div>
                 );
               })}
+              <IncomingCrossProjectLinks
+                projectId={projectId}
+                moduleId={moduleId}
+                requirementId={requirement.id}
+                onNavigate={onNavigateToLinked}
+              />
             </Stack>
           </Tabs.Panel>
 

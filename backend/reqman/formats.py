@@ -141,10 +141,42 @@ def _project_v4_to_v5(data: dict) -> dict:
     return data
 
 
+def _project_v5_to_v6(data: dict) -> dict:
+    """Project format 5 -> 6: project references and cross-project link configurations.
+
+    Version 6 adds ``Project.references`` (ids of other projects whose
+    modules link configurations may target; absent or empty = none besides
+    the implicit parent) and ``LinkConfiguration.target_project_id`` (the
+    project of a cross-project configuration's target module; absent = the
+    configuration's own project). Version 5 had neither: stray keys of
+    those names in a hand-edited version 5 file were ignored then and are
+    dropped here so they keep meaning nothing. Module, requirement and
+    link-pair files are unchanged (the pairs of a cross-project
+    configuration hold plain requirement ids; the configuration names the
+    target project). The bump exists so that an older ReqManTool, which
+    would drop both keys on save and turn cross-project configurations
+    into configurations to a local module of the same id, refuses version
+    6 projects instead.
+    """
+    data.pop("references", None)
+    configs = data.get("link_configurations")
+    if isinstance(configs, list):
+        for config in configs:
+            if isinstance(config, dict):
+                config.pop("target_project_id", None)
+    return data
+
+
 PROJECT_FORMAT = FileFormat(
     name="project",
-    current=5,
-    migrations={1: _project_v1_to_v2, 2: _project_v2_to_v3, 3: _project_v3_to_v4, 4: _project_v4_to_v5},
+    current=6,
+    migrations={
+        1: _project_v1_to_v2,
+        2: _project_v2_to_v3,
+        3: _project_v3_to_v4,
+        4: _project_v4_to_v5,
+        5: _project_v5_to_v6,
+    },
 )
 CONFIG_FORMAT = FileFormat(name="config", current=1)
 

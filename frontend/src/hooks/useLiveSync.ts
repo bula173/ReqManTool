@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { WS_URL } from '../api/client';
-import { clearDatasetCache, queryKeys } from '../api/queries';
+import { clearDatasetCache, invalidateCrossProject, queryKeys } from '../api/queries';
 
 interface ChangedEvent {
   event: 'changed';
@@ -70,6 +70,8 @@ export function useLiveSync(): void {
             qc.invalidateQueries({
               predicate: (query) => query.queryKey[0] === 'projects' && query.queryKey[1] === projectId,
             });
+            // References and incoming cross-project links of every project may depend on it.
+            invalidateCrossProject(qc);
           } else if (data.event === 'root_changed') {
             clearDatasetCache(qc);
           } else if (data.event === 'templates_changed') {

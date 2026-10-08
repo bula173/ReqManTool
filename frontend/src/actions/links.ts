@@ -39,3 +39,14 @@ export function linksOf(requirement: Requirement, attributes: AttributeDefinitio
       })),
     );
 }
+
+/**
+ * A link end as the server writes it: `SYRS-0001` (same project) or
+ * `rbc-gp:SYRS-0001` (a requirement of another project: cross-project links,
+ * whose ids are only unique per project). Requirement ids never contain `:`.
+ */
+export function splitLinkEnd(otherId: string): { projectId: string | null; requirementId: string } {
+  const index = otherId.indexOf(':');
+  if (index <= 0) return { projectId: null, requirementId: otherId };
+  return { projectId: otherId.slice(0, index), requirementId: otherId.slice(index + 1) };
+}

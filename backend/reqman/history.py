@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from .richtext import is_rich, to_plain
@@ -104,6 +104,9 @@ class _Naming:
     system_attribute_ids: set[str]
     link_names: dict[str, str]
     module_names: dict[str, str]
+    # Link configuration id -> its target project, for cross-project links
+    # (their target ends are named ``<project>:<id>``).
+    link_target_projects: dict[str, str] = field(default_factory=dict)
 
 
 def _list(value: Any) -> list:
@@ -128,6 +131,8 @@ def _naming(projects: Iterable[Any]) -> _Naming:
         for config in _list(project.get("link_configurations")):
             if isinstance(config, dict) and isinstance(config.get("id"), str):
                 naming.link_names[config["id"]] = str(config.get("name") or config["id"])
+                if isinstance(config.get("target_project_id"), str):
+                    naming.link_target_projects[config["id"]] = config["target_project_id"]
                 naming.system_attribute_ids.add(config["id"])
     return naming
 
@@ -158,6 +163,11 @@ def _describe_project(old: Any, new: Any) -> list[str]:
         entries.append(
             f"Parent project {format_value(old.get('parent_project_id'))} → "
             f"{format_value(new.get('parent_project_id'))}"
+        )
+    if old.get("references") != new.get("references"):
+        entries.append(
+            f"Project references {', '.join(map(str, _list(old.get('references')))) or '(none)'} → "
+            f"{', '.join(map(str, _list(new.get('references')))) or '(none)'}"
         )
     for key, label, skip_system in (
         ("attributes", "Attribute", True),
@@ -249,9 +259,11 @@ def _describe_links(config_id: str, old: Any, new: Any, naming: _Naming) -> list
     if new is None:
         return []  # the link configuration was removed: the project entry says so
     name = naming.link_names.get(config_id, config_id)
+    target_project = naming.link_target_projects.get(config_id)
+    prefix = f"{target_project}:" if target_project else ""
     before, after = _pairs(old), _pairs(new)
-    entries = [f"Link {s} → {t} added ({name})" for s, t in sorted(after - before)]
-    entries += [f"Link {s} → {t} removed ({name})" for s, t in sorted(before - after)]
+    entries = [f"Link {s} → {prefix}{t} added ({name})" for s, t in sorted(after - before)]
+    entries += [f"Link {s} → {prefix}{t} removed ({name})" for s, t in sorted(before - after)]
     return entries
 
 

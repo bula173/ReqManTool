@@ -175,7 +175,8 @@ export function TraceabilityPage() {
   const [stepChoice, setStepChoice] = useState(0);
 
   const modules = useMemo(() => new Map((modulesQuery.data ?? []).map((m) => [m.id, m])), [modulesQuery.data]);
-  const configs = useMemo(() => configsQuery.data ?? [], [configsQuery.data]);
+  // Cross-project configurations cannot be part of a chain yet (the server refuses them).
+  const configs = useMemo(() => (configsQuery.data ?? []).filter((c) => !c.target_project_id), [configsQuery.data]);
   const byId = useMemo(() => new Map(configs.map((c) => [c.id, c])), [configs]);
 
   if (!projectId) return null;

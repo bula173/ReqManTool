@@ -44,6 +44,11 @@ export interface LinkConfiguration {
   name: string;
   source_module_id: string;
   target_module_id: string;
+  /**
+   * Cross-project configuration: the (referenced) project holding
+   * `target_module_id`. Omitted for a module of the configuration's own project.
+   */
+  target_project_id?: string;
 }
 
 /**
@@ -53,11 +58,53 @@ export interface LinkConfiguration {
  */
 export interface LinkOption {
   config: LinkConfiguration;
+  /** The project holding the configuration: the link is created there (`POST /projects/{project_id}/links`). */
+  project_id: string;
   source_id: string;
   target_id: string;
+  source_project_id: string;
+  target_project_id: string;
   source_module_id: string;
   target_module_id: string;
   exists: boolean;
+}
+
+/**
+ * A link into a project from a referencing project (`GET
+ * /projects/{id}/incoming-links`, WS `link.incoming`). Cross-project links
+ * are stored only in the source project, so the target's requirements carry
+ * no mirror attribute for them; these are computed on read.
+ */
+export interface IncomingLink {
+  project_id: string;
+  project_name: string;
+  config_id: string;
+  config_name: string;
+  source_module_id: string;
+  source_id: string;
+  target_module_id: string;
+  target_id: string;
+}
+
+/** `GET /projects/{id}/references` (WS `project.references`). */
+export interface ProjectReferences {
+  project_id: string;
+  /** The effective references: the parent first (`implicit` unless also listed), then `references`. */
+  references: {
+    id: string;
+    name: string;
+    implicit: boolean;
+    /** Link configurations of this project that target it. */
+    link_configurations: number;
+    /** Set when the referenced project is missing or cannot be loaded. */
+    error?: string;
+  }[];
+  /** Projects whose (effective) references include this one, with their configurations targeting it. */
+  referenced_by: {
+    id: string;
+    name: string;
+    link_configurations: { id: string; name: string; links: number }[];
+  }[];
 }
 
 export interface View {
@@ -96,6 +143,13 @@ export interface Project {
    * cyclic stored parent is reported as top level.
    */
   parent_project_id?: string | null;
+  /**
+   * Other projects this one references explicitly (project format 6); the
+   * parent is referenced implicitly. Omitted when empty. Link configurations
+   * may target modules of referenced projects. Set with `PUT
+   * /projects/{id}/references` (WS `project.set_references`).
+   */
+  references?: string[];
   attributes: AttributeDefinition[];
   link_configurations: LinkConfiguration[];
   views: View[];

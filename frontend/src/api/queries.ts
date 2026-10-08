@@ -12,12 +12,14 @@ import type {
   GitPullResult,
   GitPushResult,
   GitStatus,
+  IncomingLink,
   LinkConfiguration,
   LinkOption,
   Module,
   ModuleType,
   Project,
   ProjectListEntry,
+  ProjectReferences,
   Requirement,
   RequirementHistory,
   RowStyle,
@@ -73,6 +75,13 @@ export const queryKeys = {
   /** The computed Verification status column / detail field of a requirements module. */
   verificationStatuses: (projectId: string, moduleId: string) =>
     ['projects', projectId, 'reports', 'verification-status', moduleId] as const,
+  /**
+   * Project references and incoming cross-project links depend on other
+   * projects too: every successful mutation of this client and every live-sync
+   * `changed` event (any project) refetches them (see `invalidateCrossProject`).
+   */
+  projectReferences: (projectId: string) => ['projects', projectId, 'references'] as const,
+  incomingLinks: (projectId: string, moduleId: string) => ['projects', projectId, 'incoming-links', moduleId] as const,
   config: ['config'] as const,
   version: ['version'] as const,
   templates: ['templates'] as const,
@@ -205,6 +214,62 @@ export function useSetProjectParent(projectId: string) {
   });
 }
 
+/** The projects a project references (parent implicitly) and the projects referencing it. */
+export function useProjectReferences(projectId: string | undefined): UseQueryResult<ProjectReferences> {
+  return useQuery({
+    queryKey: queryKeys.projectReferences(projectId ?? ''),
+    queryFn: () => api.get<ProjectReferences>(`/projects/${encodeURIComponent(projectId ?? '')}/references`),
+    enabled: !!projectId,
+  });
+}
+
+/**
+ * Replaces the projects a project references explicitly (`[]`: none; the
+ * parent stays referenced implicitly). 404 for an unknown id, 400 for itself
+ * or when a dropped reference is still the target of a link configuration.
+ */
+export function useSetProjectReferences(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (references: string[]) =>
+      api.put<Project>(`/projects/${encodeURIComponent(projectId)}/references`, { references }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.projects, exact: true });
+      qc.invalidateQueries({ queryKey: queryKeys.project(projectId), exact: true });
+    },
+  });
+}
+
+/**
+ * Refetches the queries that depend on other projects' data: project
+ * references (`referenced_by`) and incoming cross-project links. Called after
+ * every successful mutation (via `invalidateGitStatus`) and by live sync for a
+ * change of any project.
+ */
+export function invalidateCrossProject(qc: QueryClient): void {
+  qc.invalidateQueries({
+    predicate: (query) =>
+      query.queryKey[0] === 'projects' &&
+      (query.queryKey[2] === 'references' || query.queryKey[2] === 'incoming-links'),
+  });
+}
+
+/** Links into a module from referencing projects (computed on read by the server). */
+export function useIncomingLinks(
+  projectId: string | undefined,
+  moduleId: string | undefined,
+  enabled = true,
+): UseQueryResult<IncomingLink[]> {
+  return useQuery({
+    queryKey: queryKeys.incomingLinks(projectId ?? '', moduleId ?? ''),
+    queryFn: () =>
+      api.get<IncomingLink[]>(
+        `/projects/${encodeURIComponent(projectId ?? '')}/incoming-links?module_id=${encodeURIComponent(moduleId ?? '')}`,
+      ),
+    enabled: enabled && !!projectId && !!moduleId,
+  });
+}
+
 // --- templates -----------------------------------------------------------
 
 export function useTemplates(enabled = true): UseQueryResult<TemplateSummary[]> {
@@ -310,6 +375,7 @@ export function useSetRowStyles(projectId: string) {
  * through live sync, which invalidates the whole project prefix.
  */
 export function invalidateGitStatus(qc: QueryClient): void {
+  invalidateCrossProject(qc);
   qc.invalidateQueries({
     predicate: (query) =>
       query.queryKey[0] === 'projects' &&
@@ -521,7 +587,13 @@ export function useLinkConfigurations(projectId: string | undefined): UseQueryRe
 export function useCreateLinkConfiguration(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string; source_module_id: string; target_module_id: string }) =>
+    mutationFn: (body: {
+      name: string;
+      source_module_id: string;
+      target_module_id: string;
+      /** A referenced project holding the target module; omit for this project. */
+      target_project_id?: string | null;
+    }) =>
       api.post<LinkConfiguration>(`/projects/${projectId}/link-configurations`, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.project(projectId) });
@@ -860,7 +932,8 @@ export function useRemoveRequirement(projectId: string, moduleId: string) {
 
 interface LinkResult {
   source: Requirement;
-  target: Requirement;
+  /** Null after unlinking a cross-project link whose target no longer exists. */
+  target: Requirement | null;
 }
 
 function invalidateProjectRequirements(qc: ReturnType<typeof useQueryClient>, projectId: string) {
@@ -889,9 +962,35 @@ export function useLinkRequirements(projectId: string) {
  * target), in either direction, each oriented the configured way. Fetched on
  * demand (drag-and-drop linking), not cached as a query.
  */
-export function fetchLinkOptions(projectId: string, fromId: string, toId: string): Promise<LinkOption[]> {
+export function fetchLinkOptions(
+  projectId: string,
+  fromId: string,
+  toId: string,
+  fromProjectId?: string,
+): Promise<LinkOption[]> {
   const query = new URLSearchParams({ from_id: fromId, to_id: toId });
+  if (fromProjectId && fromProjectId !== projectId) query.set('from_project_id', fromProjectId);
   return api.get<LinkOption[]>(`/projects/${encodeURIComponent(projectId)}/links/options?${query}`);
+}
+
+/**
+ * Creates a link in any project (drag-and-drop linking across projects: the
+ * link belongs to the project holding the link configuration, `option.project_id`).
+ */
+export function useLinkInProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      projectId,
+      body,
+    }: {
+      projectId: string;
+      body: { config_id: string; source_id: string; target_id: string };
+    }) => api.post<LinkResult>(`/projects/${encodeURIComponent(projectId)}/links`, body),
+    onSuccess: (_result, { projectId }) => {
+      invalidateProjectRequirements(qc, projectId);
+    },
+  });
 }
 
 export function useUnlinkRequirements(projectId: string) {

@@ -1079,6 +1079,43 @@
       `EditableAttributeCell`, `RequirementFormModal`. The `user` type is
       not delivered (remaining item in the backlog); "Attribute schema
       evolution + multi-valued enum" stays as is.
+- [x] **Project references + cross-project traceability** (2026-10-08;
+      requested 2026-10-04). `Project.references`: explicit project ids,
+      the parent project is referenced implicitly; dangling id → 404,
+      self → 400, unloadable → 409/400, duplicates collapse, at most 100.
+      Cross-project link configurations:
+      `LinkConfiguration.target_project_id` must be a referenced project;
+      module type pairs still apply; the configuration, link pairs and
+      mirror attribute stay in the source project; mirror values are
+      project-qualified by project id (`> rbc-gp:SYRS-0001`); link/unlink
+      accept plain or qualified target ids. The target side is computed
+      on read (mirrors are not written into the target project) and shown
+      in the detail panel as incoming "(from another project)" badges.
+      Navigation, tooltips and drag-and-drop resolve qualified ends across
+      projects (`link_options` gains `from_project_id`; the options name
+      the project holding the configuration). Decisions: "structure is
+      refused, data cascades" — dropping a reference (or reparenting away
+      from an implicit parent) is refused (400) while a link
+      configuration targets that project; removing a requirement, purging
+      a module or purging a project deletes other projects' link pairs to
+      it and refreshes their mirrors, auto-committed in their own repos,
+      with a sync-conflict pre-check (409) on every affected project;
+      every written project gets its own `changed` broadcast. Exports:
+      CSV/XLSX/DOCX write the qualified mirror text; ReqIF writes the
+      mirror attribute but no SPEC-RELATION for cross-project links.
+      History messages qualify cross-project targets and record reference
+      changes. `PROJECT_FORMAT` 5 → 6 (the migration rewrites nothing).
+      Endpoints: `GET/PUT /projects/{project_id}/references`,
+      `GET /projects/{project_id}/incoming-links?module_id=`; WS
+      `project.references`, `project.set_references` (mutating,
+      broadcast), `link.incoming`. Backend: `backend/reqman/{models.py,
+      service.py, app.py, formats.py, history.py}`; design in
+      `docs/ARCHITECTURE.md` ("Project references and cross-project
+      links"). UI: References card on the project page ("Referenced by"
+      with link counts), References button, sidebar project menu
+      "References…", `ProjectReferencesModal`, `LinkConfigurationModal`,
+      `RequirementDetailPanel`. Not covered: tests; follow-ups in the
+      backlog ("Project references: follow-ups").
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -1299,9 +1336,10 @@ to the categories above.
       generated at build time; `CONTRIBUTING.md` with the CLA requirement.
 - [ ] Context menus: follow-ups (2026-10-08). (1) Done 2026-10-08 for
       module tab entries (close, close others, detach), "Open in new
-      tab" and "Detach"; split view, module folder and project reference
-      entries still arrive with those items (hooks in `ActionTargets` and
-      the menu layouts).
+      tab" and "Detach"; done 2026-10-08 for project references (sidebar
+      project menu "References…"); split view and module folder entries
+      still arrive with those items (hooks in `ActionTargets` and the menu
+      layouts).
       (2) Project/module Rename needs backend APIs. (3) Column header
       Sort / Filter / Hide / Add to view need their own features.
       (4) Detail-panel link badges and module-outline nodes have no
@@ -1316,8 +1354,9 @@ to the categories above.
       in one window is not built; it needs per-pane module, selection and
       view state (`AppActionsProvider` and `ModulePage` take ids from the
       route). (2) Multi-selection drag: the payload is ready, bulk
-      selection is missing. (3) Cross-project drops await project
-      references. (4) Tab icons by module type (with the module types
+      selection is missing. (3) Done 2026-10-08: cross-project drops work
+      with project references (`link_options` takes `from_project_id`).
+      (4) Tab icons by module type (with the module types
       item). (5) No Close-tab shortcut (the browser owns Ctrl/Cmd+W).
       (6) Not browser-verified: tabs, `window.open`/`postMessage`,
       cross-window drag-and-drop; backend tests for `link_options` are
@@ -1542,25 +1581,16 @@ to the categories above.
       cannot be changed after creation. (10) `RBC_Template` keeps the old
       "Test Result" on test cases next to the execution "Result"
       (duplication; consider removing it).
-- [ ] Project references + cross-project traceability. Requested
-      2026-10-04 (chosen over a links-free tree; widened the same day from
-      "ancestors only" to explicit references). (1) Project references: a
-      project declares which other projects it references
-      (`Project.references`, list of project ids; the parent project is
-      referenced implicitly), managed from the project page, REST +
-      WebSocket; self-references and dangling ids rejected; a referenced
-      project can be anything — an ancestor, a sibling, or a shared
-      project such as a UNISIG subset library. (2) Cross-project links: a
-      link configuration's target module may live in any referenced
-      project (e.g. RBC_SA_NCBIR SyRS → RBC_GA_NCBIR SyRS, or SyRS → a
-      shared SUBSET-026 project), direction still enforced server-side.
-      Requirement ids are only unique per project, so cross-project link
-      ends are shown project-qualified (`RBC_GP:SYRS-0001`); link pairs stay
-      in the source (referencing) project; removing a requirement or
-      dropping a reference cleans up dependent link pairs and mirrors (or
-      is refused while links exist — to be decided at implementation);
-      navigation, tooltip, drag-and-drop linking and exports
-      (ReqIF/CSV/XLSX/DOCX) handle qualified ends.
+- [ ] Project references: follow-ups (2026-10-08). (1) Cross-project
+      traceability chains in the matrix (currently 400) and cross-project
+      coverage in the verification and test execution reports. (2) ReqIF
+      SPEC-RELATIONs for cross-project links (e.g. as external
+      references); today only the mirror attribute is written. (3)
+      Incoming cross-project links as a table column; badges show project
+      ids, not project names. (4) The purge confirmation does not list
+      the referencing projects whose link pairs will be deleted. (5)
+      Baseline view/compare do not resolve cross-project link ends. (6)
+      Tests pending (phase B).
 - [ ] Module folders. Requested 2026-10-04. Modules inside a project can be
       organised into nested folders (create, rename, delete-empty, move a
       module or folder into another folder, ordering within a folder),

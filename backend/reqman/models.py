@@ -79,17 +79,29 @@ class LinkConfiguration:
     name: str
     source_module_id: str
     target_module_id: str
+    # The project holding ``target_module_id`` for a cross-project link
+    # configuration (project format 6), or None for a module of the
+    # configuration's own project. Written only when set, so a configuration
+    # within one project keeps exactly the keys it had before. Rules (the
+    # target project is referenced, direction, cleanup) live in
+    # ``ProjectService``.
+    target_project_id: str | None = None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        if self.target_project_id is None:
+            del data["target_project_id"]
+        return data
 
     @staticmethod
     def from_dict(data: dict) -> "LinkConfiguration":
+        target_project_id = data.get("target_project_id")
         return LinkConfiguration(
             id=data["id"],
             name=data["name"],
             source_module_id=data["source_module_id"],
             target_module_id=data["target_module_id"],
+            target_project_id=target_project_id if isinstance(target_project_id, str) and target_project_id else None,
         )
 
 
@@ -263,6 +275,13 @@ class Project:
     # for a top-level project. Rules (parent exists, no cycles) live in
     # ``ProjectService``.
     parent_project_id: str | None = None
+    # Ids of the other projects this one references (project format 6): link
+    # configurations may target their modules. The parent is referenced
+    # implicitly and need not be listed. Written only when non-empty, right
+    # after ``parent_project_id``. Rules (existing project, not itself, no
+    # duplicates, not dropped while a link configuration targets it) live in
+    # ``ProjectService``.
+    references: list[str] = field(default_factory=list)
     attributes: list[AttributeDefinition] = field(default_factory=list)
     id_counters: dict[str, int] = field(default_factory=dict)
     link_configurations: list[LinkConfiguration] = field(default_factory=list)
@@ -288,6 +307,8 @@ class Project:
         # data when an old project is next saved).
         if self.parent_project_id is not None:
             data["parent_project_id"] = self.parent_project_id
+        if self.references:
+            data["references"] = list(self.references)
         return {
             **data,
             "attributes": [a.to_dict() for a in self.attributes],
@@ -307,6 +328,7 @@ class Project:
             name=data["name"],
             description=data.get("description", ""),
             parent_project_id=data.get("parent_project_id"),
+            references=_string_list(data.get("references")),
             attributes=[AttributeDefinition.from_dict(a) for a in data.get("attributes", [])],
             id_counters=data.get("id_counters", {}),
             views=[View.from_dict(v) for v in data.get("views", [])],

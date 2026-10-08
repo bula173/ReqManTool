@@ -2,8 +2,9 @@
  * The HTML5 drag-and-drop payload of requirement rows (drag-and-drop
  * linking). It works between module tabs, and between browser windows of the
  * app (detached module windows), since the payload travels in the
- * `DataTransfer`, not in app state. It is project-qualified so cross-project
- * links can use it once project references exist.
+ * `DataTransfer`, not in app state. It is project-qualified, so a row of one
+ * project dropped on a row of another links through a cross-project link
+ * configuration (`useDropLink`).
  */
 
 /** The payload's MIME type: dragover handlers only see the type, the data is readable on drop. */

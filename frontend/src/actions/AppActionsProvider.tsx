@@ -49,6 +49,7 @@ import {
 } from '../layout/sidePanels';
 import { AppActionsContext, type AppActionsValue } from './context';
 import { ContextMenuHost } from './ContextMenuHost';
+import { splitLinkEnd } from './links';
 import { contextFor, getAction, isSupported, shortcutAction } from './registry';
 import { CONTEXT_MENU_TARGET_ATTRIBUTE, hasTextSelection, isShortcutBlockedTarget } from './shortcuts';
 import type {
@@ -283,16 +284,21 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
         unlinkRequirements.mutateAsync({ config_id: configId, source_id: sourceId, target_id: targetId }),
       reorderModule: (reorderProjectId, reorderModuleId, direction) =>
         reorderModule.mutateAsync({ projectId: reorderProjectId, moduleId: reorderModuleId, direction }),
-      goToRequirement: async (requirementId) => {
+      goToRequirement: async (linkEnd) => {
         if (!projectId) throw new Error('No project is open');
+        // A cross-project link end is project-qualified (`rbc-gp:SYRS-0001`).
+        const end = splitLinkEnd(linkEnd);
+        const targetProjectId = end.projectId ?? projectId;
+        const requirementId = end.requirementId;
         const result = await api.get<FindRequirementResult>(
-          `/projects/${encodeURIComponent(projectId)}/requirements/${encodeURIComponent(requirementId)}`,
+          `/projects/${encodeURIComponent(targetProjectId)}/requirements/${encodeURIComponent(requirementId)}`,
         );
         // The module page opens the row's ancestors, selects it, scrolls to it and drops `highlight`.
         // A detached window stays detached (it then shows the other module).
-        navigate(`${modulePath(projectId, result.module_id, detached)}?highlight=${encodeURIComponent(requirementId)}`, {
-          replace: result.module_id === moduleId,
-        });
+        navigate(
+          `${modulePath(targetProjectId, result.module_id, detached)}?highlight=${encodeURIComponent(requirementId)}`,
+          { replace: targetProjectId === projectId && result.module_id === moduleId },
+        );
       },
       showInTree: (requirementId) => {
         setSelection({ moduleKey, id: requirementId });

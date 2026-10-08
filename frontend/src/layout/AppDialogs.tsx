@@ -16,6 +16,7 @@ import { LinkModal } from '../components/LinkModal';
 import { MoveRequirementModal } from '../components/MoveRequirementModal';
 import { NewModuleModal } from '../components/NewModuleModal';
 import { NewProjectModal } from '../components/NewProjectModal';
+import { ProjectReferencesModal } from '../components/ProjectReferencesModal';
 import { RequirementFormModal } from '../components/RequirementFormModal';
 import { RowStylesModal } from '../components/RowStylesModal';
 import { SaveAsTemplateModal } from '../components/SaveAsTemplateModal';
@@ -154,6 +155,8 @@ export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; 
           onClose={onClose}
         />
       );
+    case 'projectReferences':
+      return <ProjectReferencesModal project={dialog.project} onClose={onClose} />;
     case 'shortcuts':
       return <KeyboardShortcutsModal opened onClose={onClose} />;
     case 'about':

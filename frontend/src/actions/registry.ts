@@ -314,14 +314,15 @@ export const LINK_CONTEXT_MENU: MenuEntry[] = [action('link.goTo'), divider, act
 
 /**
  * Right-click menu of a project / subproject node in the sidebar (left click
- * opens it). Rename and project references join it with their
- * backlog items.
+ * opens it). Rename joins it with its backlog item.
  */
 export const PROJECT_NODE_MENU: MenuEntry[] = [
   action('project.open'),
   divider,
   action('project.newSubproject'),
   action('project.newModule'),
+  divider,
+  action('project.references'),
   divider,
   action('report.traceability'),
   divider,

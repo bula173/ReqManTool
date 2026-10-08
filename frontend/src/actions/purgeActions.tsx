@@ -38,7 +38,8 @@ export const purgeActions: Action<'app'>[] = [
         title: 'Purge module',
         children: (
           <Text size="sm">
-            Are you sure you want to delete ALL requirements in "{module.name}"? This cannot be undone.
+            Are you sure you want to delete ALL requirements in "{module.name}"? Their links are deleted too,
+            including links to them from other projects that reference this one. This cannot be undone.
           </Text>
         ),
         labels: { confirm: 'Purge', cancel: 'Cancel' },
@@ -67,8 +68,9 @@ export const purgeActions: Action<'app'>[] = [
         title: 'Purge project',
         children: (
           <Text size="sm">
-            Are you sure you want to delete ALL requirements in every module of "{project.name}"? This cannot be
-            undone.
+            Are you sure you want to delete ALL requirements in every module of "{project.name}"? Their links
+            are deleted too, including links to them from other projects that reference this one. This cannot
+            be undone.
           </Text>
         ),
         labels: { confirm: 'Purge', cancel: 'Cancel' },

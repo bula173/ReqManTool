@@ -89,7 +89,15 @@ class ConnectionManager:
         self.connections.discard(websocket)
 
     async def broadcast(self, project_id: str, exclude: WebSocket | None = None) -> None:
-        await self._send_all({"event": "changed", "project_id": project_id}, exclude)
+        """``changed`` for the project, then for every other project the last mutation wrote.
+
+        A mutation may write into other projects too (removing a requirement
+        deletes the links to it from referencing projects), so each of them
+        gets its own event (``ProjectService.take_touched_projects``).
+        """
+        others = sorted(service.take_touched_projects() - {project_id})
+        for changed_id in [project_id, *others]:
+            await self._send_all({"event": "changed", "project_id": changed_id}, exclude)
 
     async def broadcast_root_changed(self) -> None:
         await self._send_all({"event": "root_changed"})
@@ -200,6 +208,12 @@ class SetProjectParentBody(BaseModel):
     parent_project_id: str | None = None
 
 
+class SetProjectReferencesBody(BaseModel):
+    # Project ids (null or [] = none). Typed loosely so the service validates
+    # it and REST/WebSocket reject alike.
+    references: Any = None
+
+
 class SetRowStylesBody(BaseModel):
     # The full list of rules (null or [] clears them). Typed loosely so the
     # service validates it and REST/WebSocket reject alike.
@@ -298,6 +312,9 @@ class CreateLinkConfigurationBody(BaseModel):
     name: str
     source_module_id: str
     target_module_id: str
+    # The project of the target module for a cross-project configuration
+    # (must be referenced); null/omitted = this project.
+    target_project_id: Any = None
 
 
 class CreateViewBody(BaseModel):
@@ -363,6 +380,19 @@ async def create_project(body: CreateProjectBody):
 @app.put("/projects/{project_id}/parent")
 async def set_project_parent(project_id: str, body: SetProjectParentBody):
     project = _wrap(service.set_project_parent, project_id, body.parent_project_id)
+    await manager.broadcast(project_id)
+    return project.to_dict()
+
+
+@app.get("/projects/{project_id}/references")
+def get_project_references(project_id: str):
+    """The projects this one references and the projects referencing it (read-only)."""
+    return _wrap(service.project_references, project_id)
+
+
+@app.put("/projects/{project_id}/references")
+async def set_project_references(project_id: str, body: SetProjectReferencesBody):
+    project = _wrap(service.set_project_references, project_id, body.references)
     await manager.broadcast(project_id)
     return project.to_dict()
 
@@ -570,6 +600,7 @@ async def create_link_configuration(project_id: str, body: CreateLinkConfigurati
         body.name,
         body.source_module_id,
         body.target_module_id,
+        body.target_project_id,
     )
     await manager.broadcast(project_id)
     return config.to_dict()
@@ -906,9 +937,21 @@ async def link_requirements(project_id: str, body: LinkBody):
 
 
 @app.get("/projects/{project_id}/links/options")
-def link_options(project_id: str, from_id: str = Query(), to_id: str = Query()):
-    """Link configurations that can join two requirements (drag-and-drop linking)."""
-    return _serialize(_wrap(service.link_options, project_id, from_id, to_id))
+def link_options(
+    project_id: str, from_id: str = Query(), to_id: str = Query(), from_project_id: str | None = Query(None)
+):
+    """Link configurations that can join two requirements (drag-and-drop linking).
+
+    ``from_project_id``: the dragged requirement's project when it is not
+    ``project_id`` (the drop target's project).
+    """
+    return _serialize(_wrap(service.link_options, project_id, from_id, to_id, from_project_id))
+
+
+@app.get("/projects/{project_id}/incoming-links")
+def incoming_links(project_id: str, module_id: str | None = Query(None)):
+    """Links into this project from referencing projects (computed on read)."""
+    return _wrap(service.incoming_links, project_id, module_id)
 
 
 @app.delete("/projects/{project_id}/links")
@@ -917,7 +960,7 @@ async def unlink_requirements(project_id: str, body: LinkBody):
         service.unlink_requirements, project_id, body.config_id, body.source_id, body.target_id
     )
     await manager.broadcast(project_id)
-    return {"source": result["source"].to_dict(), "target": result["target"].to_dict()}
+    return _serialize(result)
 
 
 # --- WebSocket JSON-RPC -----------------------------------------------------
@@ -934,6 +977,8 @@ RPC_METHODS = {
     ),
     "project.set_parent": lambda p: service.set_project_parent(p["id"], p.get("parent_project_id")),
     "project.set_row_styles": lambda p: service.set_row_styles(p["id"], p.get("row_styles")),
+    "project.set_references": lambda p: service.set_project_references(p["id"], p.get("references")),
+    "project.references": lambda p: service.project_references(p["id"]),
     "project.save_as_template": lambda p: service.save_project_as_template(
         p["id"], p["name"], p.get("description", "")
     ),
@@ -975,7 +1020,7 @@ RPC_METHODS = {
     "module.purge": lambda p: {"purged": service.purge_module(p["project_id"], p["id"])},
     "module.reorder": lambda p: service.reorder_module(p["project_id"], p["id"], p["direction"]),
     "link_configuration.create": lambda p: service.create_link_configuration(
-        p["project_id"], p["name"], p["source_module_id"], p["target_module_id"]
+        p["project_id"], p["name"], p["source_module_id"], p["target_module_id"], p.get("target_project_id")
     ),
     "link_configuration.list": lambda p: service.list_link_configurations(p["project_id"]),
     "link_configuration.remove": lambda p: (
@@ -1025,8 +1070,9 @@ RPC_METHODS = {
         p["project_id"], p["config_id"], p["source_id"], p["target_id"]
     ),
     "requirement.link_options": lambda p: service.link_options(
-        p["project_id"], p["from_id"], p["to_id"]
+        p["project_id"], p["from_id"], p["to_id"], p.get("from_project_id")
     ),
+    "link.incoming": lambda p: service.incoming_links(p["project_id"], p.get("module_id")),
     "requirement.preview_test_results": lambda p: service.preview_test_results(
         p["project_id"], p["module_id"], p["xml"], _rpc_result_options(p)
     ),
@@ -1057,7 +1103,7 @@ def _error_response(request_id, code: int, message: str) -> dict:
 
 MUTATING_METHODS = {
     "project.create", "project.set_parent", "project.purge", "project.git_enable", "baseline.create",
-    "project.set_row_styles",
+    "project.set_row_styles", "project.set_references",
     "project.git_set_remote", "project.git_set_auto_push", "project.git_push", "project.git_pull",
     "project.create_from_remote",
     "attribute.add", "attribute.set_modules",

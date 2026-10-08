@@ -96,6 +96,7 @@ persistence" below.
     project.json                  # format_version (first key), then
                                    #   Project: id, name, description,
                                    #   parent_project_id (only if set),
+                                   #   references (only if non-empty),
                                    #   attributes (incl. system ones),
                                    #   id_counters, link_configurations, views,
                                    #   module_order (only if set),
@@ -184,8 +185,11 @@ persistence" below.
   requirement in the *same module*, forming a tree — see "Nesting" below),
   `order: int` (position among siblings sharing `parent_id`).
 - **LinkConfiguration** — `id`, `name`, `source_module_id`,
-  `target_module_id`. Defines one *directional*, named link type between
-  two specific modules — see "Link configurations" below.
+  `target_module_id`, `target_project_id` (written only when set: the
+  referenced project holding the target module of a cross-project
+  configuration). Defines one *directional*, named link type between two
+  specific modules — see "Link configurations" below and "Project
+  references and cross-project links".
 - **LinkPair** — `source_id`, `target_id`. One row per actual link,
   persisted per configuration in `links/<config-id>.json`.
 
@@ -505,8 +509,12 @@ changes.
 
 `Project.parent_project_id` forms a generic → specific product-line tree
 in the EN 50129 sense (e.g. RTE → RBC_GP → RBC_GA_NCBIR → RBC_SA_NCBIR →
-RBC_NCBIR); `None` means top level. It is a pure grouping: link
-configurations, attributes and requirements stay within one project.
+RBC_NCBIR); `None` means top level. It is a grouping: attributes and
+requirements stay within one project. The parent is referenced implicitly,
+so link configurations may target its modules (see "Project references and
+cross-project links"); reparenting away from a parent that a link
+configuration targets is refused (400) unless the parent is also listed in
+`references`.
 `ProjectService._check_parent` enforces the rules for `create_project` and
 `set_project_parent` (`PUT /projects/{id}/parent`): the parent must be the
 id of an existing project as listed in the data directory (404 otherwise;
@@ -528,6 +536,92 @@ so choosing "None (top level)" is possible even though the list already
 shows the project as top level.
 There is no project-removal operation (purge only deletes requirements), so
 the app itself never leaves a dangling parent.
+
+### Project references and cross-project links
+
+Project format 6. `Project.references` lists the other projects a project
+references explicitly (written right after `parent_project_id`, only when
+non-empty); the parent is referenced implicitly. The *effective* references
+(`ProjectService._effective_references`: parent first, then `references`,
+no duplicates, never the project itself) are the projects whose modules the
+project's link configurations may target — an ancestor, a sibling or a
+shared library project (e.g. a SUBSET-026 project).
+
+- **Managing** (`set_project_references`): `PUT /projects/{id}/references`
+  `{"references": [ids] | null}`, WS `project.set_references` `{id,
+  references}` (both broadcast `changed`) replace the explicit list. Each id
+  must be a listed project (404 otherwise), loadable (newer format 409,
+  broken 400), not the project itself (400); duplicates collapse; at most
+  100 (`MAX_PROJECT_REFERENCES`). Dropping a reference (or reparenting away
+  from the implicit parent) that a link configuration of the project still
+  targets is **refused** (400, "cannot stop referencing project … Remove
+  them first"): the user removes those configurations, which deletes their
+  links. `GET /projects/{id}/references` (WS `project.references`,
+  read-only) lists the effective references (`implicit` for the parent,
+  the number of configurations targeting each, `error` when one is missing
+  or unloadable) and `referenced_by` (every project referencing this one,
+  with its configurations targeting it and their link counts). UI: the
+  project page's References card and button and the sidebar project menu's
+  "References…" (action `project.references`, dialog
+  `ProjectReferencesModal`).
+- **Cross-project link configurations** (`create_link_configuration` with
+  `target_project_id`, REST body field / WS param): the target project must
+  be an effective reference (400 otherwise), the target module must exist
+  there (404), and the module types must form one of `LINK_TYPE_PAIRS` like
+  any configuration. `target_project_id` equal to the project itself means a
+  local configuration. The configuration, its `links/<config-id>.json` pairs
+  (plain requirement ids; the configuration names the target project) and
+  its mirror attribute all live in the **source (referencing) project**.
+- **Mirrors: source side stored, target side computed on read.** The source
+  requirement's mirror lists project-qualified targets (`"> rbc-gp:SYRS-0001"`;
+  requirement ids are only unique per project, and a requirement id never
+  contains `:`). Nothing is written into the target project when a link is
+  created or removed: its repository belongs to another project (possibly a
+  shared library referenced by many projects), so writing mirrors there
+  would commit into another project's history on every link change. The
+  incoming side is computed: `GET /projects/{id}/incoming-links?module_id=`
+  (WS `link.incoming`, read-only) scans the projects referencing this one;
+  the requirement detail panel shows these links ("… (from another
+  project)", `<` badges that open the source requirement).
+- **Linking**: `link_requirements`/`unlink_requirements` take the target as
+  a plain id or qualified with the configuration's target project
+  (`rbc-gp:SYRS-0001`; another qualifier is 400). Linking checks that the
+  target project is still referenced and the target is in the configured
+  module of that project. Unlinking a cross-project link whose target no
+  longer exists still works (`target` is `null` in the result).
+  `link_options` takes `from_project_id` (REST query parameter / WS param):
+  across projects, the options are the cross-project configurations of
+  either project targeting the other one, each with the `project_id`
+  holding it (where the link is created) and `source_project_id` /
+  `target_project_id`. Drag-and-drop linking (`useDropLink`) uses it, so a
+  row dragged from a window or tab of another project links when a
+  configuration exists.
+- **Removing requirements: cascade, not refusal.** Removing a requirement,
+  purging its module or its project also deletes the link pairs that
+  *other* projects' cross-project configurations hold to it, and refreshes
+  those projects' source mirrors (`_incoming_link_cleanup` /
+  `_apply_incoming_cleanup`) — the same cleanup as for links within a
+  project, so no project keeps a link to a requirement that no longer
+  exists. These writes happen in the referencing projects, which therefore
+  auto-commit them in their own repositories ("Link SYRS-0001 →
+  lib:S-0001 removed (Refines)"); every referencing project to clean up is
+  checked for a git sync conflict first (409 before anything is written).
+  Projects that cannot be loaded are skipped (never written). The API
+  broadcasts `changed` for every project the operation wrote
+  (`ProjectService.take_touched_projects`, used by
+  `ConnectionManager.broadcast`), and the frontend refetches references and
+  incoming links of every project on any `changed` event and after every
+  mutation (`invalidateCrossProject`).
+- **Where cross-project configurations are left out** (their target module
+  is not a module of the project): reports (`_report_links`,
+  `_report_linked_modules`; a traceability chain containing one is 400),
+  the test result import, the ReqIF export's `SPEC-RELATION`s (the mirror
+  attribute, with qualified targets, is exported as an attribute value like
+  in CSV/XLSX/DOCX) and save-as-template (configuration and view columns
+  dropped). Commit messages qualify cross-project targets.
+- Navigation: a qualified link end opens the requirement in its project
+  (`commands.goToRequirement`); badge tooltips look the requirement up in
+  that project.
 
 ### Project templates
 
@@ -605,7 +699,7 @@ domain rules.
 
 `project.json` and the app config file (`.reqman/config.json`) start with
 an integer `format_version` (`reqman/formats.py`: `PROJECT_FORMAT`,
-`CONFIG_FORMAT`; project currently 5, config 1). Module, requirement and
+`CONFIG_FORMAT`; project currently 6, config 1). Module, requirement and
 link-pair files have no version of their own; they are governed by their
 project's version. Templates keep their own, separate `format_version`.
 Project format 2 added `AttributeDefinition.modules` (per-module attribute
@@ -622,7 +716,10 @@ the `date` attribute type (see "Module types and date attributes"); the
 files (a version 4 `module.json` has no `type`). Every write that can store
 one of them also saves `project.json` (creating a module stores the module
 order, adding an attribute or a template project saves the project), so a
-file using them is always in a version 5 project.
+file using them is always in a version 5 project. Project format 6 added
+`Project.references` and `LinkConfiguration.target_project_id` (see
+"Project references and cross-project links"); the 5 → 6 step drops stray
+keys of those names and rewrites no module, requirement or link-pair file.
 
 Only optional attributes can be scoped to modules: a required attribute
 always applies to every module. `ProjectService._check_required_scope`
@@ -1124,15 +1221,15 @@ resource:
 
 | Resource | Routes |
 |---|---|
-| Projects | `POST/GET /projects` (`GET` lists unloadable projects as `{id, name, error}` stubs; `POST` body: `name`, `description`, optional `template_id`, optional `parent_project_id`), `GET /projects/{id}`, `PUT /projects/{id}/parent` (`{"parent_project_id": id or null}`), `PUT /projects/{id}/row-styles` (`{"row_styles": [...]}`; WS `project.set_row_styles`; 400 invalid) |
+| Projects | `POST/GET /projects` (`GET` lists unloadable projects as `{id, name, error}` stubs; `POST` body: `name`, `description`, optional `template_id`, optional `parent_project_id`), `GET /projects/{id}`, `PUT /projects/{id}/parent` (`{"parent_project_id": id or null}`), `GET/PUT /projects/{id}/references` (`{"references": [ids]}`; WS `project.references` / `project.set_references`), `PUT /projects/{id}/row-styles` (`{"row_styles": [...]}`; WS `project.set_row_styles`; 400 invalid) |
 | History (git) | `GET /projects/{id}/git` (status; WS `project.git_status`), `POST /projects/{id}/git/enable` (WS `project.git_enable`, broadcasts `changed`, also after a part-way failure; 409 nested/foreign/detached/merge etc. in progress/`current` not checked out, 400 git off or missing or a failed step), `GET /projects/{id}/git/log?limit=` (WS `project.git_log`), `GET .../modules/{m}/requirements/{r}/history` (WS `requirement.history`) — see "Project history (git)" |
 | Baselines (git) | `POST /projects/{id}/baselines` (`{name, description}`; WS `baseline.create`, broadcasts `changed`; 409 duplicate name / not `ready` / `baseline` moved by hand, 400 invalid name or git off/missing), `GET /projects/{id}/baselines` (WS `baseline.list`), `GET /projects/{id}/baselines/{name}` (WS `baseline.get`; 409 for a newer-format baseline), `GET .../baselines/{name}/modules/{m}/requirements` (WS `baseline.requirements`), `GET /projects/{id}/baselines/compare?from=&to=` (`to`/`from` = a baseline name or `current`; WS `baseline.compare`) — reads are read-only; see "Project history (git)" |
 | Templates | `GET /templates` → `[{id, source, name, description, modules: [{key, name, prefix, type}], error}]`, `POST /projects/{id}/save-as-template` (`{name, description}`; 409 on a name clash; broadcasts `templates_changed`), `POST /templates/import` (raw template JSON request body, `Content-Type: application/json` required (415 otherwise), UTF-8 with optional BOM, at most 1 MiB (413); invalid → 400, name clash → 409; returns the template summary; broadcasts `templates_changed`; WS: `template.import` `{text}`) |
 | Attributes | `POST /projects/{id}/attributes` (optional `modules`, `module_types`; WS `attribute.add`), `PUT /projects/{id}/attributes/{attr}/modules` (`{modules, module_types, drop_values}`; WS `attribute.set_modules`) |
-| Link configurations | `POST/GET /projects/{id}/link-configurations`, `DELETE .../link-configurations/{config_id}` |
+| Link configurations | `POST/GET /projects/{id}/link-configurations` (create: optional `target_project_id`, a referenced project), `DELETE .../link-configurations/{config_id}` |
 | Modules | `POST/GET /projects/{id}/modules` (create: `{name, prefix, description, type?}`; WS `module.create`), `GET .../modules/{id}`, `POST .../modules/{id}/purge`, `POST /projects/{project_id}/modules/{module_id}/reorder` (`{"direction": "up" \| "down"}`; WS: `module.reorder`) |
 | Requirements | `POST/GET .../requirements`, `GET/PUT/DELETE .../requirements/{id}`, `PUT .../requirements/{id}/parent` (move; body `parent_id`, optional `index`), `POST .../requirements/{id}/reorder`, `POST .../requirements/{id}/copy` |
-| Links | `POST/DELETE /projects/{id}/links` |
+| Links | `POST/DELETE /projects/{id}/links`, `GET /projects/{id}/links/options?from_id=&to_id=&from_project_id=` (WS `requirement.link_options`), `GET /projects/{id}/incoming-links?module_id=` (WS `link.incoming`; read-only) |
 | Export | `GET /projects/{id}/export/reqif`, `GET /projects/{id}/export/csv` |
 | Import | `POST /projects/{id}/modules/{module_id}/import/csv` (raw UTF-8 CSV request body, `Content-Type: text/csv` required (415 otherwise), at most 10 MiB (413); WS: `requirement.import_csv`), `POST .../modules/{m}/import/test-results/preview` and `POST .../modules/{m}/import/test-results` (raw JUnit XML / Robot output.xml body, `Content-Type: application/xml` or `text/xml` (415 otherwise), at most 64 MiB (413), options as query parameters; WS `requirement.preview_test_results` (read-only) / `requirement.import_test_results` with `xml` — see "Test result import") |
 | Verification status | `GET .../modules/{m}/verification-status` (WS `report.verification_status`; read-only, requirements modules only) |
@@ -1150,12 +1247,16 @@ resource:
 (`project.create`, `module.create/purge/reorder`, `requirement.add/update/remove/
 move/reorder/copy/link/unlink`, `link_configuration.create/list/remove`,
 …) — see `RPC_METHODS` in `app.py` for the exact table. Methods listed in
-`MUTATING_METHODS` broadcast a `changed` event after success, same as the
-REST side (`manager.broadcast`, excluding the sender socket so a client
+`MUTATING_METHODS` broadcast a `changed` event after success (one per
+project the operation wrote: removing a requirement also cleans up links in
+referencing projects), same as the REST side (`manager.broadcast`, excluding the sender socket so a client
 doesn't get a redundant refresh of its own change). Templates and
 subprojects: `template.list`, `project.create` (optional `template_id`,
 `parent_project_id`), `project.set_parent` (`{id, parent_project_id}`,
-broadcasts `changed`), `project.set_row_styles` (`{id, row_styles}`,
+broadcasts `changed`), `project.set_references` (`{id, references}`,
+broadcasts `changed`), `project.references` (`{id}`, read-only),
+`link.incoming` (`{project_id, module_id?}`, read-only),
+`project.set_row_styles` (`{id, row_styles}`,
 broadcasts `changed`), `project.save_as_template` (`{id, name,
 description}`) and `template.import` (`{text}`: the template file's
 content), both in `TEMPLATE_MUTATING_METHODS`: they broadcast

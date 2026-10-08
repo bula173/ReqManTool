@@ -2,7 +2,7 @@ import { Badge, Checkbox, Group, NumberInput, Select, Text, TextInput, Tooltip }
 import { IconCheck } from '@tabler/icons-react';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, Ref } from 'react';
-import { parseLinkValue, type LinkEntry } from '../actions/links';
+import { parseLinkValue, splitLinkEnd, type LinkEntry } from '../actions/links';
 import { useFindRequirement } from '../api/queries';
 import type { AttributeDefinition } from '../api/types';
 import { LazyRichTextField } from './LazyRichTextField';
@@ -46,9 +46,13 @@ function LinkBadge({
   const [hovered, setHovered] = useState(false);
   const outgoing = link.direction === 'out';
   const targetId = link.otherId;
-  const findQuery = useFindRequirement(projectId, targetId, hovered);
+  // A cross-project end is project-qualified (`rbc-gp:SYRS-0001`): look it up in that project.
+  const end = splitLinkEnd(targetId);
+  const findQuery = useFindRequirement(end.projectId ?? projectId, end.requirementId, hovered);
   const tooltipLabel = findQuery.data
-    ? richTextToPlain(findQuery.data.requirement.attributes.object_text ?? targetId)
+    ? `${end.projectId ? `${end.projectId}: ` : ''}${richTextToPlain(findQuery.data.requirement.attributes.object_text ?? targetId)}`
+    : findQuery.isError
+      ? `${targetId} (not found)`
     : findQuery.isFetching
       ? 'Loading…'
       : targetId;

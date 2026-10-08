@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
@@ -168,6 +169,9 @@ EXECUTION_TEST_STATUSES = ("passed", "failed", "blocked", "not_run", "not_planne
 # neither requirements nor test cases; the reports leave them out.
 REPORT_EXCLUDED_OBJECT_TYPES = frozenset({"heading", "information", "definition", "title", "comment", "note"})
 
+# The most projects one project may reference (``Project.references``).
+MAX_PROJECT_REFERENCES = 100
+
 # The most link configurations one traceability chain may have.
 MAX_TRACE_CHAIN = 10
 
@@ -217,6 +221,7 @@ def _records_history(method: Callable) -> Callable:
     def wrapper(self: "ProjectService", *args: Any, **kwargs: Any) -> Any:
         if self.store.is_recording():
             return method(self, *args, **kwargs)
+        self._last_touched.ids = set()
         if guards_project:
             project_id = args[0] if args else kwargs.get("project_id")
             if isinstance(project_id, str):
@@ -225,6 +230,7 @@ def _records_history(method: Callable) -> Callable:
             result = method(self, *args, **kwargs)
         for project_id in sorted(touched):
             self._auto_commit(project_id)
+        self._last_touched.ids = set(touched)
         return result
 
     return wrapper
@@ -311,6 +317,16 @@ class ProjectService:
         )
         # Without one, git history is off (plain files): the default for direct use and tests.
         self.history = history if history is not None else GitHistory()
+        # The projects the last successful mutation of this thread wrote
+        # (``_records_history``), so the API can broadcast every one of them:
+        # removing a requirement also cleans up links in referencing projects.
+        self._last_touched = threading.local()
+
+    def take_touched_projects(self) -> set[str]:
+        """The ids of the projects the last successful mutation (this thread) wrote; then forgotten."""
+        ids = getattr(self._last_touched, "ids", None) or set()
+        self._last_touched.ids = set()
+        return set(ids)
 
     # --- history (git) -----------------------------------------------------------
 
@@ -908,10 +924,168 @@ class ProjectService:
         """Move a project in the subproject tree; ``None`` makes it top level."""
         project = self.store.load_project(project_id)
         self._check_parent(project_id, parent_project_id)
+        self._check_references_in_use(
+            project, self._effective_references(replace(project, parent_project_id=parent_project_id))
+        )
         if project.parent_project_id != parent_project_id:
             project.parent_project_id = parent_project_id
             self.store.save_project(project)
         return project
+
+    # --- project references -----------------------------------------------------
+
+    @staticmethod
+    def _effective_references(project: Project) -> list[str]:
+        """The projects ``project`` references: its parent (implicitly), then ``references``.
+
+        No duplicates and never the project itself (hand-edited data is
+        filtered here, not rewritten). Link configurations may target the
+        modules of these projects.
+        """
+        candidates = [project.parent_project_id] if isinstance(project.parent_project_id, str) else []
+        refs: list[str] = []
+        for ref in [*candidates, *project.references]:
+            if ref and ref != project.id and ref not in refs:
+                refs.append(ref)
+        return refs
+
+    def _check_references_in_use(self, project: Project, new_effective: list[str]) -> None:
+        """Refuse to stop referencing a project that a link configuration of ``project`` targets.
+
+        Removing an explicit reference, or reparenting away from the parent
+        (implicitly referenced), would leave cross-project link
+        configurations pointing at a project that is no longer referenced.
+        The user removes those configurations first (which deletes their
+        links); nothing is cleaned up implicitly.
+        """
+        dropped = set(self._effective_references(project)) - set(new_effective)
+        in_use: dict[str, list[str]] = {}
+        for config in project.link_configurations:
+            if config.target_project_id in dropped:
+                in_use.setdefault(config.target_project_id, []).append(config.name)
+        if in_use:
+            target, names = sorted(in_use.items())[0]
+            listed = ", ".join(f"'{n}'" for n in names)
+            raise ValueError(
+                f"Project '{project.id}' cannot stop referencing project '{target}': link "
+                f"configuration(s) {listed} target it. Remove them first"
+            )
+
+    def _checked_references(self, project_id: str, references: Any) -> list[str]:
+        """``references`` as stored: existing, loadable project ids, never ``project_id``, no duplicates.
+
+        ``None`` means none. A dangling id is not found (404); a project that
+        cannot be loaded (newer format 409, broken file 400) cannot be
+        referenced either, since its modules cannot be read.
+        """
+        if references is None:
+            return []
+        if not isinstance(references, list) or not all(isinstance(r, str) and r for r in references):
+            raise ValueError("references must be a list of project ids")
+        if len(references) > MAX_PROJECT_REFERENCES:
+            raise ValueError(f"A project can reference at most {MAX_PROJECT_REFERENCES} projects")
+        listed = set(self.store.list_project_ids())
+        result: list[str] = []
+        for ref in references:
+            if ref == project_id:
+                raise ValueError("A project cannot reference itself")
+            if ref in result:
+                continue
+            if ref not in listed:
+                raise FileNotFoundError(f"Referenced project '{ref}' not found")
+            self.store.load_project(ref)
+            result.append(ref)
+        return result
+
+    @_records_history
+    def set_project_references(self, project_id: str, references: Any) -> Project:
+        """Replace the projects ``project_id`` references explicitly (``None``/``[]``: none).
+
+        The parent stays referenced implicitly whether or not it is listed.
+        Dropping a reference that a cross-project link configuration
+        targets is refused (``_check_references_in_use``).
+        """
+        project = self.store.load_project(project_id)
+        refs = self._checked_references(project_id, references)
+        self._check_references_in_use(project, self._effective_references(replace(project, references=refs)))
+        if project.references != refs:
+            project.references = refs
+            self.store.save_project(project)
+        return project
+
+    def project_references(self, project_id: str) -> dict[str, Any]:
+        """The projects ``project_id`` references and the projects that reference it (read-only).
+
+        ``references``: the effective list (parent first, marked
+        ``implicit``), each with its name (or ``error`` when it is missing
+        or cannot be loaded) and the number of this project's link
+        configurations targeting it. ``referenced_by``: every loadable
+        project whose effective references include this one, with its
+        configurations targeting this project and their link counts.
+        """
+        project = self.store.load_project(project_id)
+        listed = set(self.store.list_project_ids())
+        references: list[dict[str, Any]] = []
+        for ref in self._effective_references(project):
+            entry: dict[str, Any] = {
+                "id": ref,
+                "name": ref,
+                "implicit": ref == project.parent_project_id and ref not in project.references,
+                "link_configurations": sum(1 for c in project.link_configurations if c.target_project_id == ref),
+            }
+            try:
+                if ref not in listed:
+                    raise FileNotFoundError(f"Project '{ref}' not found")
+                entry["name"] = self.store.load_project(ref).name
+            except (OSError, ValueError) as exc:
+                entry["error"] = str(exc)
+            references.append(entry)
+        referenced_by: list[dict[str, Any]] = []
+        for other in self._other_projects(project_id):
+            if project_id not in self._effective_references(other):
+                continue
+            configs = [
+                {
+                    "id": c.id,
+                    "name": c.name,
+                    "links": len(self.store.load_link_pairs(other.id, c.id)),
+                }
+                for c in other.link_configurations
+                if c.target_project_id == project_id
+            ]
+            referenced_by.append({"id": other.id, "name": other.name, "link_configurations": configs})
+        return {"project_id": project_id, "references": references, "referenced_by": referenced_by}
+
+    def _other_projects(self, project_id: str) -> list[Project]:
+        """Every loadable project except ``project_id`` (unloadable ones are skipped, never written)."""
+        projects: list[Project] = []
+        for other_id in self.store.list_project_ids():
+            if other_id == project_id:
+                continue
+            try:
+                projects.append(self.store.load_project(other_id))
+            except (OSError, ValueError):
+                continue
+        return projects
+
+    def _load_link_target_project(self, project: Project, config: LinkConfiguration) -> str:
+        """The project holding a configuration's target module; checks a cross-project one is referenced."""
+        if config.target_project_id is None:
+            return project.id
+        if config.target_project_id not in self._effective_references(project):
+            raise ValueError(
+                f"Link configuration '{config.name}' targets project '{config.target_project_id}', "
+                f"which project '{project.id}' no longer references"
+            )
+        if not self.store.project_exists(config.target_project_id):
+            raise FileNotFoundError(f"Project '{config.target_project_id}' not found")
+        self.store.load_project(config.target_project_id)
+        return config.target_project_id
+
+    @staticmethod
+    def _local_configs(project: Project) -> list[LinkConfiguration]:
+        """The project's link configurations between its own modules (not cross-project ones)."""
+        return [c for c in project.link_configurations if c.target_project_id is None]
 
     @_records_history
     def add_attribute_definition(
@@ -1769,33 +1943,94 @@ class ProjectService:
         return module_id, self.store.load_requirement(project_id, module_id, requirement_id)
 
     def _cleanup_links_for_requirement(self, project_id: str, requirement_id: str) -> None:
+        """Remove the project's own link pairs with ``requirement_id`` at either end; refresh the mirrors.
+
+        A cross-project configuration's targets live in another project, so
+        only its sources can be ``requirement_id`` here (a target with the
+        same id is another project's requirement).
+        """
         project = self.store.load_project(project_id)
         for config in project.link_configurations:
+            cross = config.target_project_id is not None
             pairs = self.store.load_link_pairs(project_id, config.id)
             remaining = []
             affected: list[str] = []
             for pair in pairs:
-                if pair.source_id == requirement_id or pair.target_id == requirement_id:
+                if pair.source_id == requirement_id or (not cross and pair.target_id == requirement_id):
                     other_id = pair.target_id if pair.source_id == requirement_id else pair.source_id
                     affected.append(other_id)
                     continue
                 remaining.append(pair)
             if len(remaining) != len(pairs):
                 self.store.save_link_pairs(project_id, config.id, remaining)
+                if cross:
+                    continue  # the other ends are in the target project, which stores no mirror
                 for other_id in affected:
                     other_module = self.store.find_requirement_module(project_id, other_id)
                     if other_module is not None:
-                        self._refresh_link_attribute(project_id, config.id, other_module, other_id)
+                        self._refresh_link_attribute(project_id, config.id, other_module, other_id, config)
+
+    def _incoming_link_cleanup(
+        self, project_id: str, requirement_ids: set[str]
+    ) -> list[tuple[Project, LinkConfiguration, list[LinkPair]]]:
+        """The cross-project link pairs of other projects that target ``requirement_ids`` of ``project_id``.
+
+        Each as (referencing project, its configuration, all its pairs).
+        Projects that cannot be loaded are skipped (never written).
+        """
+        affected: list[tuple[Project, LinkConfiguration, list[LinkPair]]] = []
+        if not requirement_ids:
+            return affected
+        for other in self._other_projects(project_id):
+            for config in other.link_configurations:
+                if config.target_project_id != project_id:
+                    continue
+                pairs = self.store.load_link_pairs(other.id, config.id)
+                if any(p.target_id in requirement_ids for p in pairs):
+                    affected.append((other, config, pairs))
+        return affected
+
+    def _check_incoming_cleanup(self, affected: list[tuple[Project, LinkConfiguration, list[LinkPair]]]) -> None:
+        """Refuse (409) before anything is written if a referencing project to clean up has a git sync conflict."""
+        for other_id in sorted({other.id for other, _, _ in affected}):
+            self._require_no_sync_conflict(other_id)
+
+    def _apply_incoming_cleanup(
+        self, affected: list[tuple[Project, LinkConfiguration, list[LinkPair]]], requirement_ids: set[str]
+    ) -> None:
+        """Delete the pairs targeting ``requirement_ids`` in the referencing projects; refresh their source mirrors.
+
+        This writes into the referencing (source) projects, whose
+        repositories commit it like any change of theirs; the target
+        project never stores anything about links pointing at it.
+        """
+        for other, config, pairs in affected:
+            remaining = [p for p in pairs if p.target_id not in requirement_ids]
+            self.store.save_link_pairs(other.id, config.id, remaining)
+            for source_id in sorted({p.source_id for p in pairs if p.target_id in requirement_ids}):
+                module_id = self.store.find_requirement_module(other.id, source_id)
+                if module_id is not None:
+                    self._refresh_link_attribute(other.id, config.id, module_id, source_id, config)
 
     @_records_history
     def remove_requirement(self, project_id: str, module_id: str, requirement_id: str) -> None:
+        """Remove a requirement: children are promoted, its links are deleted.
+
+        Links to it from other projects (cross-project link configurations
+        of projects referencing this one) are deleted too, in those
+        projects, so no project keeps a link to a requirement that no longer
+        exists.
+        """
         removed = self.store.load_requirement(project_id, module_id, requirement_id)
+        incoming = self._incoming_link_cleanup(project_id, {requirement_id})
+        self._check_incoming_cleanup(incoming)
         for other in self.store.load_all_requirements(project_id, module_id):
             if other.parent_id == requirement_id:
                 other.parent_id = removed.parent_id
                 self.store.save_requirement(project_id, module_id, other)
 
         self._cleanup_links_for_requirement(project_id, requirement_id)
+        self._apply_incoming_cleanup(incoming, {requirement_id})
         self.store.delete_requirement(project_id, module_id, requirement_id)
 
     @_records_history
@@ -1810,10 +2045,14 @@ class ProjectService:
         return self._purge_module(project_id, module_id)
 
     def _purge_module(self, project_id: str, module_id: str) -> int:
+        """Delete a module's requirements, their links and the links to them from referencing projects."""
         ids = set(self.store.list_requirement_ids(project_id, module_id))
+        incoming = self._incoming_link_cleanup(project_id, ids)
+        self._check_incoming_cleanup(incoming)
         for requirement_id in ids:
             self._cleanup_links_for_requirement(project_id, requirement_id)
             self.store.delete_requirement(project_id, module_id, requirement_id)
+        self._apply_incoming_cleanup(incoming, ids)
         return len(ids)
 
     @_records_history
@@ -1821,8 +2060,12 @@ class ProjectService:
         # A missing project is not found and a stub (unloadable project) is
         # refused, even when there is nothing to delete.
         self.store.load_project(project_id)
+        module_ids = self.store.list_module_ids(project_id)
+        # Every referencing project to clean up is checked before anything is deleted.
+        all_ids = {rid for mid in module_ids for rid in self.store.list_requirement_ids(project_id, mid)}
+        self._check_incoming_cleanup(self._incoming_link_cleanup(project_id, all_ids))
         total = 0
-        for module_id in self.store.list_module_ids(project_id):
+        for module_id in module_ids:
             total += self._purge_module(project_id, module_id)
         return total
 
@@ -1830,25 +2073,58 @@ class ProjectService:
 
     @_records_history
     def create_link_configuration(
-        self, project_id: str, name: str, source_module_id: str, target_module_id: str
+        self,
+        project_id: str,
+        name: str,
+        source_module_id: str,
+        target_module_id: str,
+        target_project_id: Any = None,
     ) -> LinkConfiguration:
+        """Create a link configuration from a module of the project to a module of it or of a referenced project.
+
+        ``target_project_id`` (``None`` or the project itself: a module of
+        this project) must be one of the projects this project references
+        (its parent or ``references``) for a cross-project configuration.
+        The configuration, its link pairs and its mirror attribute all live
+        in this (the source) project; the target project is not written.
+        """
         project = self.store.load_project(project_id)
+        if target_project_id == project_id:
+            target_project_id = None
+        if target_project_id is not None:
+            if not isinstance(target_project_id, str):
+                raise ValueError("target_project_id must be a project id or null")
+            if target_project_id not in self._effective_references(project):
+                raise ValueError(
+                    f"Project '{project_id}' does not reference project '{target_project_id}'; "
+                    "add it to the project references first"
+                )
+            if not self.store.project_exists(target_project_id):
+                raise FileNotFoundError(f"Project '{target_project_id}' not found")
+            self.store.load_project(target_project_id)
+        target_owner = target_project_id or project_id
         if not self.store.module_exists(project_id, source_module_id):
             raise FileNotFoundError(f"Module '{source_module_id}' not found in project '{project_id}'")
-        if not self.store.module_exists(project_id, target_module_id):
-            raise FileNotFoundError(f"Module '{target_module_id}' not found in project '{project_id}'")
+        if not self.store.module_exists(target_owner, target_module_id):
+            raise FileNotFoundError(f"Module '{target_module_id}' not found in project '{target_owner}'")
         config = self._add_link_configuration(
             project,
             name,
             self.store.load_module(project_id, source_module_id),
-            self.store.load_module(project_id, target_module_id),
+            self.store.load_module(target_owner, target_module_id),
+            target_project_id,
         )
         self.store.save_project(project)
         self.store.save_link_pairs(project_id, config.id, [])
         return config
 
     def _add_link_configuration(
-        self, project: Project, name: Any, source: Module, target: Module
+        self,
+        project: Project,
+        name: Any,
+        source: Module,
+        target: Module,
+        target_project_id: str | None = None,
     ) -> LinkConfiguration:
         """Add a link configuration and its system mirror attribute to ``project`` in memory.
 
@@ -1870,6 +2146,7 @@ class ProjectService:
             name=name,
             source_module_id=source_module_id,
             target_module_id=target_module_id,
+            target_project_id=target_project_id,
         )
         project.link_configurations.append(config)
         project.attributes.append(
@@ -2033,12 +2310,33 @@ class ProjectService:
         raise FileNotFoundError(f"Link configuration '{config_id}' not found in project '{project.id}'")
 
     def _refresh_link_attribute(
-        self, project_id: str, config_id: str, module_id: str, requirement_id: str
+        self,
+        project_id: str,
+        config_id: str,
+        module_id: str,
+        requirement_id: str,
+        config: LinkConfiguration | None = None,
     ) -> None:
+        """Recompute one requirement's read-only mirror of a link configuration.
+
+        ``"> target"`` per outgoing and ``"< source"`` per incoming link,
+        ``"; "``-joined. A cross-project configuration's targets are
+        project-qualified (``"> rbc-gp:SYRS-0001"``: requirement ids are only
+        unique per project) and it has no incoming entries here: its
+        targets live in the other project, which stores no mirror (see
+        ``incoming_links``).
+        """
+        if config is None:
+            config = next(
+                (c for c in self.store.load_project(project_id).link_configurations if c.id == config_id), None
+            )
         pairs = self.store.load_link_pairs(project_id, config_id)
         outgoing = [p.target_id for p in pairs if p.source_id == requirement_id]
-        incoming = [p.source_id for p in pairs if p.target_id == requirement_id]
-        entries = [f"> {t}" for t in outgoing] + [f"< {s}" for s in incoming]
+        if config is not None and config.target_project_id is not None:
+            entries = [f"> {config.target_project_id}:{t}" for t in outgoing]
+        else:
+            incoming = [p.source_id for p in pairs if p.target_id == requirement_id]
+            entries = [f"> {t}" for t in outgoing] + [f"< {s}" for s in incoming]
 
         requirement = self.store.load_requirement(project_id, module_id, requirement_id)
         if entries:
@@ -2047,111 +2345,242 @@ class ProjectService:
             requirement.attributes.pop(config_id, None)
         self.store.save_requirement(project_id, module_id, requirement)
 
+    @staticmethod
+    def _plain_target_id(config: LinkConfiguration, target_id: str) -> str:
+        """``target_id`` without a ``<project>:`` qualifier, which must name the configuration's target project.
+
+        Clients may pass a cross-project target as shown in the mirror
+        (``rbc-gp:SYRS-0001``) or plain; a configuration within one project
+        takes plain ids only (a requirement id never contains ``:``).
+        """
+        if ":" not in target_id:
+            return target_id
+        owner, _, plain = target_id.partition(":")
+        if config.target_project_id is None or owner != config.target_project_id:
+            raise ValueError(
+                f"Target '{target_id}' is not in the target project of link configuration '{config.name}'"
+            )
+        return plain
+
     @_records_history
     def link_requirements(
         self, project_id: str, config_id: str, source_id: str, target_id: str
     ) -> dict[str, Requirement]:
+        """Link two requirements through a configuration of ``project_id`` (the source project).
+
+        The source must be in the configuration's source module and the
+        target in its target module, in the target project for a
+        cross-project configuration (which must still be referenced). Only
+        this project's files are written: the pair and the source's mirror
+        (plus the target's mirror for a configuration within the project).
+        """
         project = self.store.load_project(project_id)
         config = self._get_link_configuration(project, config_id)
+        target_id = self._plain_target_id(config, target_id)
+        target_project = self._load_link_target_project(project, config)
 
         source_module = self.store.find_requirement_module(project_id, source_id)
         if source_module is None:
             raise FileNotFoundError(f"Requirement '{source_id}' not found in project '{project_id}'")
-        target_module = self.store.find_requirement_module(project_id, target_id)
+        target_module = self.store.find_requirement_module(target_project, target_id)
         if target_module is None:
-            raise FileNotFoundError(f"Requirement '{target_id}' not found in project '{project_id}'")
+            raise FileNotFoundError(f"Requirement '{target_id}' not found in project '{target_project}'")
 
         if source_module != config.source_module_id or target_module != config.target_module_id:
+            target_where = (
+                f"'{config.target_module_id}'" if config.target_project_id is None
+                else f"'{config.target_module_id}' of project '{config.target_project_id}'"
+            )
             raise ValueError(
                 f"Link configuration '{config.name}' requires source in module "
-                f"'{config.source_module_id}' and target in module '{config.target_module_id}'"
+                f"'{config.source_module_id}' and target in module {target_where}"
             )
 
         pairs = self.store.load_link_pairs(project_id, config_id)
         if any(p.source_id == source_id and p.target_id == target_id for p in pairs):
-            raise ValueError(f"Link '{config.name}' from '{source_id}' to '{target_id}' already exists")
+            shown = target_id if config.target_project_id is None else f"{config.target_project_id}:{target_id}"
+            raise ValueError(f"Link '{config.name}' from '{source_id}' to '{shown}' already exists")
         pairs.append(LinkPair(source_id=source_id, target_id=target_id))
         self.store.save_link_pairs(project_id, config_id, pairs)
 
-        self._refresh_link_attribute(project_id, config_id, source_module, source_id)
-        self._refresh_link_attribute(project_id, config_id, target_module, target_id)
+        self._refresh_link_attribute(project_id, config_id, source_module, source_id, config)
+        if config.target_project_id is None:
+            self._refresh_link_attribute(project_id, config_id, target_module, target_id, config)
 
         return {
             "source": self.store.load_requirement(project_id, source_module, source_id),
-            "target": self.store.load_requirement(project_id, target_module, target_id),
+            "target": self.store.load_requirement(target_project, target_module, target_id),
         }
 
-    def link_options(self, project_id: str, from_id: str, to_id: str) -> list[dict[str, Any]]:
+    def link_options(
+        self, project_id: str, from_id: str, to_id: str, from_project_id: str | None = None
+    ) -> list[dict[str, Any]]:
         """The links that may join two requirements, in either direction.
 
-        Used by drag-and-drop linking: ``from_id`` is the dragged requirement,
-        ``to_id`` the one it was dropped on. Every link configuration between
+        Used by drag-and-drop linking: ``from_id`` is the dragged requirement
+        (of ``from_project_id``, default ``project_id``), ``to_id`` the one it
+        was dropped on (of ``project_id``). Every link configuration between
         the two requirements' modules is an option, oriented the configured
         way: a configuration from the dragged requirement's module to the drop
         target's module links ``from_id`` → ``to_id``; one in the opposite
         direction links ``to_id`` → ``from_id``. A configuration within one
         module (both requirements in it) is offered once, in drag direction.
-        ``exists`` marks a link that is already there (creating it again is
-        rejected by ``link_requirements``). No configuration → empty list.
-        Read-only; options are listed in the project's configuration order.
+
+        Across projects, the options are the cross-project configurations of
+        either project that target the other one (and that it still
+        references); ``project_id`` of an option is the project holding the
+        configuration, where the link is created (``POST
+        /projects/{project_id}/links``). ``exists`` marks a link that is
+        already there (creating it again is rejected by
+        ``link_requirements``). No configuration → empty list. Read-only;
+        options are listed in configuration order, the drop target's
+        project first.
         """
-        if from_id == to_id:
+        if from_project_id is None:
+            from_project_id = project_id
+        if from_id == to_id and from_project_id == project_id:
             raise ValueError("A requirement cannot be linked to itself")
         project = self.store.load_project(project_id)
-        from_module = self.store.find_requirement_module(project_id, from_id)
+        from_project = project if from_project_id == project_id else self.store.load_project(from_project_id)
+        from_module = self.store.find_requirement_module(from_project_id, from_id)
         if from_module is None:
-            raise FileNotFoundError(f"Requirement '{from_id}' not found in project '{project_id}'")
+            raise FileNotFoundError(f"Requirement '{from_id}' not found in project '{from_project_id}'")
         to_module = self.store.find_requirement_module(project_id, to_id)
         if to_module is None:
             raise FileNotFoundError(f"Requirement '{to_id}' not found in project '{project_id}'")
 
+        def option(holder: Project, config: LinkConfiguration, source: tuple[str, str], target: tuple[str, str]) -> dict[str, Any]:
+            pairs = self.store.load_link_pairs(holder.id, config.id)
+            exists = any(p.source_id == source[1] and p.target_id == target[1] for p in pairs)
+            return {
+                "config": config,
+                "project_id": holder.id,
+                "source_id": source[1],
+                "target_id": target[1],
+                "source_project_id": source[0],
+                "target_project_id": target[0],
+                "source_module_id": config.source_module_id,
+                "target_module_id": config.target_module_id,
+                "exists": exists,
+            }
+
         options: list[dict[str, Any]] = []
-        for config in project.link_configurations:
-            if config.source_module_id == from_module and config.target_module_id == to_module:
-                source_id, target_id = from_id, to_id
-            elif config.source_module_id == to_module and config.target_module_id == from_module:
-                source_id, target_id = to_id, from_id
-            else:
-                continue
-            pairs = self.store.load_link_pairs(project_id, config.id)
-            exists = any(p.source_id == source_id and p.target_id == target_id for p in pairs)
-            options.append(
-                {
-                    "config": config,
-                    "source_id": source_id,
-                    "target_id": target_id,
-                    "source_module_id": config.source_module_id,
-                    "target_module_id": config.target_module_id,
-                    "exists": exists,
-                }
-            )
+        if from_project_id == project_id:
+            for config in self._local_configs(project):
+                if config.source_module_id == from_module and config.target_module_id == to_module:
+                    source, target = from_id, to_id
+                elif config.source_module_id == to_module and config.target_module_id == from_module:
+                    source, target = to_id, from_id
+                else:
+                    continue
+                options.append(option(project, config, (project_id, source), (project_id, target)))
+            return options
+
+        # The drop target's project links to the dragged requirement's project ...
+        if from_project_id in self._effective_references(project):
+            for config in project.link_configurations:
+                if (
+                    config.target_project_id == from_project_id
+                    and config.source_module_id == to_module
+                    and config.target_module_id == from_module
+                ):
+                    options.append(option(project, config, (project_id, to_id), (from_project_id, from_id)))
+        # ... or the dragged requirement's project links to the drop target's.
+        if project_id in self._effective_references(from_project):
+            for config in from_project.link_configurations:
+                if (
+                    config.target_project_id == project_id
+                    and config.source_module_id == from_module
+                    and config.target_module_id == to_module
+                ):
+                    options.append(option(from_project, config, (from_project_id, from_id), (project_id, to_id)))
         return options
 
     @_records_history
     def unlink_requirements(
         self, project_id: str, config_id: str, source_id: str, target_id: str
-    ) -> dict[str, Requirement]:
+    ) -> dict[str, Requirement | None]:
+        """Remove one link of a configuration of ``project_id`` (the source project).
+
+        For a cross-project configuration the target may already be gone
+        (or its project no longer readable): the pair is removed anyway and
+        ``target`` is None in the result.
+        """
         project = self.store.load_project(project_id)
-        self._get_link_configuration(project, config_id)
+        config = self._get_link_configuration(project, config_id)
+        target_id = self._plain_target_id(config, target_id)
 
         source_module = self.store.find_requirement_module(project_id, source_id)
-        target_module = self.store.find_requirement_module(project_id, target_id)
         if source_module is None:
             raise FileNotFoundError(f"Requirement '{source_id}' not found in project '{project_id}'")
-        if target_module is None:
-            raise FileNotFoundError(f"Requirement '{target_id}' not found in project '{project_id}'")
+        target_project = config.target_project_id or project_id
+        target_module: str | None = None
+        if config.target_project_id is None:
+            target_module = self.store.find_requirement_module(project_id, target_id)
+            if target_module is None:
+                raise FileNotFoundError(f"Requirement '{target_id}' not found in project '{project_id}'")
+        else:
+            try:
+                target_module = self.store.find_requirement_module(target_project, target_id)
+            except (OSError, ValueError):
+                target_module = None
 
         pairs = self.store.load_link_pairs(project_id, config_id)
         pairs = [p for p in pairs if not (p.source_id == source_id and p.target_id == target_id)]
         self.store.save_link_pairs(project_id, config_id, pairs)
 
-        self._refresh_link_attribute(project_id, config_id, source_module, source_id)
-        self._refresh_link_attribute(project_id, config_id, target_module, target_id)
+        self._refresh_link_attribute(project_id, config_id, source_module, source_id, config)
+        if config.target_project_id is None and target_module is not None:
+            self._refresh_link_attribute(project_id, config_id, target_module, target_id, config)
 
         return {
             "source": self.store.load_requirement(project_id, source_module, source_id),
-            "target": self.store.load_requirement(project_id, target_module, target_id),
+            "target": (
+                self.store.load_requirement(target_project, target_module, target_id)
+                if target_module is not None
+                else None
+            ),
         }
+
+    def incoming_links(self, project_id: str, module_id: str | None = None) -> list[dict[str, Any]]:
+        """Links into ``project_id`` from other projects (cross-project configurations), read-only.
+
+        Cross-project links are stored only in the source (referencing)
+        project, so the target project's requirement files carry no mirror
+        of them; this computes them on read. Each entry: the source project
+        (id, name), configuration (id, name), source module and requirement,
+        and the target module and requirement of this project. With
+        ``module_id``, only links into that module. Projects that cannot be
+        loaded are skipped. Sorted by target id, then source project and
+        source id.
+        """
+        self.store.load_project(project_id)
+        if module_id is not None and not self.store.module_exists(project_id, module_id):
+            raise FileNotFoundError(f"Module '{module_id}' not found in project '{project_id}'")
+        result: list[dict[str, Any]] = []
+        for other in self._other_projects(project_id):
+            if project_id not in self._effective_references(other):
+                continue
+            for config in other.link_configurations:
+                if config.target_project_id != project_id:
+                    continue
+                if module_id is not None and config.target_module_id != module_id:
+                    continue
+                for pair in self.store.load_link_pairs(other.id, config.id):
+                    result.append(
+                        {
+                            "project_id": other.id,
+                            "project_name": other.name,
+                            "config_id": config.id,
+                            "config_name": config.name,
+                            "source_module_id": config.source_module_id,
+                            "source_id": pair.source_id,
+                            "target_module_id": config.target_module_id,
+                            "target_id": pair.target_id,
+                        }
+                    )
+        result.sort(key=lambda e: (e["target_id"], e["project_id"], e["source_id"], e["config_id"]))
+        return result
 
     # --- templates ------------------------------------------------------------
 
@@ -2356,7 +2785,10 @@ class ProjectService:
     ) -> Template:
         """A project's structure as a template; no requirements, no id counters, no parent."""
         builtin_ids = {a.id for a in BUILTIN_ATTRIBUTES}
-        link_ids = {c.id for c in project.link_configurations}
+        # Cross-project configurations are not saved (their target module is
+        # not part of the template); views drop their mirror columns.
+        local_configs = ProjectService._local_configs(project)
+        link_ids = {c.id for c in local_configs}
         attributes = [
             TemplateAttribute(
                 id=a.id,
@@ -2399,7 +2831,7 @@ class ProjectService:
                 TemplateLinkConfiguration(
                     key=c.id, name=c.name, source_module=c.source_module_id, target_module=c.target_module_id
                 )
-                for c in project.link_configurations
+                for c in local_configs
             ],
             views=views,
             # Rules hand-edited data no longer resolves are not carried over.
@@ -2601,7 +3033,7 @@ class ProjectService:
         direction (a configuration from a module to itself counts once).
         """
         linked: dict[str, set[str]] = {}
-        for config in project.link_configurations:
+        for config in self._local_configs(project):
             ends = (config.source_module_id, config.target_module_id)
             if ends == (from_id, to_id):
                 forward = True
@@ -2617,7 +3049,7 @@ class ProjectService:
     def _report_linked_modules(self, project: Project, module: Module, module_type: str) -> list[Module]:
         """Modules of ``module_type`` joined to ``module`` by a link configuration (display order)."""
         joined: set[str] = set()
-        for config in project.link_configurations:
+        for config in self._local_configs(project):
             if config.source_module_id == module.id:
                 joined.add(config.target_module_id)
             if config.target_module_id == module.id:
@@ -2721,6 +3153,12 @@ class ProjectService:
         if len(set(config_ids)) != len(config_ids):
             raise ValueError("A link configuration appears twice in the chain")
         configs = [self._get_link_configuration(project, cid) for cid in config_ids]
+        for config in configs:
+            if config.target_project_id is not None:
+                raise ValueError(
+                    f"Link configuration '{config.name}' links to another project; cross-project "
+                    "configurations cannot be part of a traceability matrix yet"
+                )
         module_by_id = {m.id: m for m in self.list_modules(project_id)}
 
         first = configs[0]
@@ -3144,7 +3582,7 @@ class ProjectService:
         """
         modules = {m.id: m for m in self.list_modules(project.id)}
         joined: list[tuple[LinkConfiguration, Module, bool]] = []
-        for config in project.link_configurations:
+        for config in self._local_configs(project):
             if config.source_module_id == module.id and config.target_module_id != module.id:
                 other, record_is_source = config.target_module_id, True
             elif config.target_module_id == module.id and config.source_module_id != module.id:
@@ -3540,11 +3978,12 @@ class ProjectService:
 
         project = self.store.load_project(project_id)
         modules = self._export_modules(project, keep_rich=True)
-        link_pairs = {
-            config.id: self.store.load_link_pairs(project_id, config.id)
-            for config in project.link_configurations
-        }
-        return export_project_to_reqif(project, modules, project.link_configurations, link_pairs)
+        # Cross-project links become no SPEC-RELATION: their targets are not
+        # in this file. Their mirror attribute (project-qualified targets,
+        # "> rbc-gp:SYRS-0001") is exported like every attribute.
+        local_configs = self._local_configs(project)
+        link_pairs = {config.id: self.store.load_link_pairs(project_id, config.id) for config in local_configs}
+        return export_project_to_reqif(project, modules, local_configs, link_pairs)
 
     def export_csv(self, project_id: str) -> str:
         from .csv_export import export_project_to_csv

@@ -53,9 +53,9 @@ export interface ActionTargets {
   link: LinkTarget | null;
   /** A module tab of the tab bar: the right-clicked tab, or the active tab by default. */
   tab: ModuleTabRef | null;
-  // Hooks for later items: module folders (`folder`) and project references
-  // (`reference`) become element types here once those features exist; their
-  // menus reuse `ActionMenuEntries` and `AppActionsValue.openMenu` unchanged.
+  // Hook for a later item: module folders (`folder`) become an element type
+  // here; their menus reuse `ActionMenuEntries` and `AppActionsValue.openMenu`
+  // unchanged. Project references are project actions (`project.references`).
 }
 
 /** A module with the order of its project's modules (for Move Up/Down availability). */
@@ -84,7 +84,7 @@ export interface LinkTarget {
   requirement: Requirement;
   configId: string;
   direction: 'out' | 'in';
-  /** The requirement at the other end of the link. */
+  /** The requirement at the other end of the link; project-qualified (`rbc-gp:SYRS-0001`) across projects. */
   otherId: string;
 }
 
@@ -136,6 +136,8 @@ export type DialogRequest =
   | { kind: 'attributeModules'; projectId: string; attribute: AttributeDefinition }
   /** Drag-and-drop linking with several possible link configurations: the user picks one. */
   | { kind: 'dropLink'; projectId: string; fromId: string; toId: string; options: LinkOption[] }
+  /** The projects a project references (its link configurations may target their modules). */
+  | { kind: 'projectReferences'; project: Project }
   | { kind: 'shortcuts' }
   | { kind: 'about' };
 
@@ -180,8 +182,10 @@ export interface AppCommands {
   /** Move a module one place up/down in its project's module order (`module.reorder`). */
   reorderModule: (projectId: string, moduleId: string, direction: 'up' | 'down') => Promise<Module>;
   /**
-   * Open the module holding `requirementId` (any module of the open project)
-   * and select, expand to and scroll to it. Rejects when it cannot be found.
+   * Open the module holding `requirementId` (any module of the open project,
+   * or of another project for a project-qualified link end such as
+   * `rbc-gp:SYRS-0001`) and select, expand to and scroll to it. Rejects when
+   * it cannot be found.
    */
   goToRequirement: (requirementId: string) => Promise<void>;
   /** Select a requirement of the open module and reveal it in the sidebar's Module tab. */

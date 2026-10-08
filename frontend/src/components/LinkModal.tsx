@@ -39,10 +39,13 @@ export function LinkModal({ projectId, moduleId, source, onClose }: LinkModalPro
   );
   const selectedConfig = availableConfigs.find((c) => c.id === form.values.config_id) ?? null;
 
-  const targetRequirementsQuery = useRequirements(projectId, selectedConfig?.target_module_id);
+  // A cross-project configuration's target module is in a referenced project.
+  const targetProjectId = selectedConfig?.target_project_id ?? projectId;
+  const crossProject = targetProjectId !== projectId;
+  const targetRequirementsQuery = useRequirements(targetProjectId, selectedConfig?.target_module_id);
   const targetOptions = (targetRequirementsQuery.data ?? [])
-    .filter((r) => r.id !== source?.id)
-    .map((r) => ({ value: r.id, label: r.id }));
+    .filter((r) => crossProject || r.id !== source?.id)
+    .map((r) => ({ value: r.id, label: crossProject ? `${targetProjectId}:${r.id}` : r.id }));
 
   const handleSubmit = form.onSubmit((values) => {
     if (!source) return;
@@ -50,7 +53,8 @@ export function LinkModal({ projectId, moduleId, source, onClose }: LinkModalPro
       { config_id: values.config_id, source_id: source.id, target_id: values.target_id },
       {
         onSuccess: () => {
-          notifications.show({ message: `Linked ${source.id} -> ${values.target_id}`, color: 'green' });
+          const shown = crossProject ? `${targetProjectId}:${values.target_id}` : values.target_id;
+          notifications.show({ message: `Linked ${source.id} -> ${shown}`, color: 'green' });
           onClose();
         },
         onError: (error) => {
@@ -75,7 +79,10 @@ export function LinkModal({ projectId, moduleId, source, onClose }: LinkModalPro
           <Select
             label="Link configuration"
             placeholder="Pick a link configuration"
-            data={availableConfigs.map((c) => ({ value: c.id, label: c.name }))}
+            data={availableConfigs.map((c) => ({
+              value: c.id,
+              label: c.target_project_id ? `${c.name} (to project ${c.target_project_id})` : c.name,
+            }))}
             required
             disabled={availableConfigs.length === 0}
             {...form.getInputProps('config_id')}
@@ -90,8 +97,12 @@ export function LinkModal({ projectId, moduleId, source, onClose }: LinkModalPro
             searchable
             data={targetOptions}
             required
-            disabled={!selectedConfig}
+            disabled={!selectedConfig || targetRequirementsQuery.isLoading}
             {...form.getInputProps('target_id')}
+            error={
+              form.errors.target_id ??
+              (targetRequirementsQuery.isError ? 'Failed to load the target requirements' : undefined)
+            }
           />
           <Group justify="flex-end" mt="sm">
             <Button variant="default" onClick={onClose}>

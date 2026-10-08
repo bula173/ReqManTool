@@ -24,6 +24,7 @@ import {
   IconFolderPlus,
   IconHierarchy2,
   IconInfoCircle,
+  IconLink,
   IconPalette,
   IconPlus,
   IconTemplate,
@@ -36,6 +37,7 @@ import { ApiError } from '../api/client';
 import {
   useModules,
   useProject,
+  useProjectReferences,
   useProjects,
   useRemoveLinkConfiguration,
   useRemoveView,
@@ -58,6 +60,115 @@ import {
   type Module,
   type View,
 } from '../api/types';
+
+/** A module of another (referenced) project, named "Project: Module". */
+function CrossProjectModuleLabel({ projectId, moduleId, projectName }: { projectId: string; moduleId: string; projectName: string }) {
+  const modulesQuery = useModules(projectId);
+  const module = modulesQuery.data?.find((m) => m.id === moduleId);
+  return (
+    <Group gap={4} wrap="nowrap">
+      <IconLink size={14} aria-label="Cross-project" />
+      <Text size="sm">
+        {projectName}: {module?.name ?? moduleId}
+      </Text>
+    </Group>
+  );
+}
+
+/** The projects this project references (parent implicitly) and the projects referencing it. */
+function ProjectReferencesCard({ projectId, onEdit, canEdit }: { projectId: string; onEdit: () => void; canEdit: boolean }) {
+  const referencesQuery = useProjectReferences(projectId);
+  const data = referencesQuery.data;
+  return (
+    <Card withBorder>
+      <Group justify="space-between" mb="sm">
+        <Title order={4}>References</Title>
+        <Button size="xs" variant="default" leftSection={<IconLink size={14} />} onClick={onEdit} disabled={!canEdit}>
+          Edit references
+        </Button>
+      </Group>
+      <Text size="xs" c="dimmed" mb="sm">
+        Link configurations may target modules of referenced projects (the parent is referenced
+        implicitly). Cross-project links are stored in the referencing project.
+      </Text>
+      {referencesQuery.isLoading && <Loader size="sm" />}
+      {referencesQuery.isError && (
+        <Text c="red" size="sm">
+          Failed to load references
+          {referencesQuery.error instanceof Error ? `: ${referencesQuery.error.message}` : ''}
+        </Text>
+      )}
+      {data && (
+        <Stack gap="xs">
+          <Group gap={4}>
+            <Text size="sm">References:</Text>
+            {data.references.length === 0 && (
+              <Text size="sm" c="dimmed">
+                none
+              </Text>
+            )}
+            {data.references.map((ref) => (
+              <Tooltip
+                key={ref.id}
+                label={
+                  ref.error ??
+                  `${ref.implicit ? 'Parent project (referenced implicitly)' : 'Referenced project'}; ${ref.link_configurations} link configuration(s) target it`
+                }
+                multiline
+                w={320}
+              >
+                <Badge
+                  variant={ref.implicit ? 'outline' : 'light'}
+                  color={ref.error ? 'red' : undefined}
+                  component={ref.error ? undefined : Link}
+                  to={`/projects/${encodeURIComponent(ref.id)}`}
+                  style={{ cursor: ref.error ? undefined : 'pointer' }}
+                >
+                  {ref.name}
+                  {ref.implicit ? ' (parent)' : ''}
+                </Badge>
+              </Tooltip>
+            ))}
+          </Group>
+          <Group gap={4}>
+            <Text size="sm">Referenced by:</Text>
+            {data.referenced_by.length === 0 && (
+              <Text size="sm" c="dimmed">
+                no project
+              </Text>
+            )}
+            {data.referenced_by.map((ref) => {
+              const links = ref.link_configurations.reduce((sum, c) => sum + c.links, 0);
+              return (
+                <Tooltip
+                  key={ref.id}
+                  label={
+                    ref.link_configurations.length === 0
+                      ? 'No link configuration targets this project'
+                      : ref.link_configurations.map((c) => `${c.name}: ${c.links} link(s)`).join('; ')
+                  }
+                  multiline
+                  w={320}
+                >
+                  <Badge
+                    variant="light"
+                    color="grape"
+                    component={Link}
+                    to={`/projects/${encodeURIComponent(ref.id)}`}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    {ref.name}
+                    {links > 0 ? ` (${links} link${links === 1 ? '' : 's'})` : ''}
+                  </Badge>
+                </Tooltip>
+              );
+            })}
+          </Group>
+        </Stack>
+      )}
+    </Card>
+  );
+}
 
 export function ProjectPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -221,6 +332,15 @@ export function ProjectPage() {
           <Button
             size="xs"
             variant="default"
+            leftSection={<IconLink size={14} />}
+            disabled={!isAvailable('project.references')}
+            onClick={() => run('project.references')}
+          >
+            References
+          </Button>
+          <Button
+            size="xs"
+            variant="default"
             leftSection={<IconTemplate size={14} />}
             onClick={() => run('file.saveAsTemplate')}
           >
@@ -238,6 +358,12 @@ export function ProjectPage() {
       </Group>
 
       <GitStatusPanel projectId={projectId} />
+
+      <ProjectReferencesCard
+        projectId={projectId}
+        canEdit={isAvailable('project.references')}
+        onEdit={() => run('project.references')}
+      />
 
       <Card withBorder>
         <Group justify="space-between" mb="sm">
@@ -324,7 +450,17 @@ export function ProjectPage() {
                 <Table.Tr key={config.id}>
                   <Table.Td>{config.name}</Table.Td>
                   <Table.Td>{moduleLabel(config.source_module_id)}</Table.Td>
-                  <Table.Td>{moduleLabel(config.target_module_id)}</Table.Td>
+                  <Table.Td>
+                    {config.target_project_id ? (
+                      <CrossProjectModuleLabel
+                        projectId={config.target_project_id}
+                        moduleId={config.target_module_id}
+                        projectName={projects.find((p) => p.id === config.target_project_id)?.name ?? config.target_project_id}
+                      />
+                    ) : (
+                      moduleLabel(config.target_module_id)
+                    )}
+                  </Table.Td>
                   <Table.Td>
                     <Tooltip label="Remove">
                       <ActionIcon variant="subtle" color="red" onClick={() => handleRemoveLinkConfig(config)}>
