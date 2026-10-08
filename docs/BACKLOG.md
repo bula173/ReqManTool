@@ -84,6 +84,27 @@ item first (phase A), then test, review and fix by area (phase B).
 
 ### Next — requested, in delivery order
 
+- [ ] Server edition: publish and push projects with the login account
+      (GitHub, GitLab, Gerrit). Requested 2026-10-09. A project-admin (or
+      server admin) logged in through a `github`, `gitlab` or `gerrit`
+      provider can, without a separate "connection": "Publish project"
+      (create the repository/Gerrit project under a chosen org/group/
+      parent, private by default, add the `reqmantool` topic where the
+      host supports it, set it as the project's remote, push `current`,
+      `baseline` and `baseline/*` tags) and Push / Pull an existing remote
+      on that host — authenticated with the user's login OAuth token for
+      that git command only (never stored in repo config or remote URL).
+      Gerrit: new provider type `gerrit` (base URL; login via the
+      company OIDC/OAuth that fronts Gerrit, or Gerrit's own OAuth
+      plugin) — create project via REST `PUT /projects/{name}`, push via
+      HTTPS with the user's Gerrit HTTP credentials (stored server-side
+      per user, encrypted, entered once in the user menu) or SSH; option
+      "push for review" to `refs/for/current` (creates a Gerrit change)
+      instead of a direct push; change status shown in the Git panel.
+      Push/publish require project-admin (editors: push only when the
+      project setting allows). Local edition keeps provider connections.
+      REST + WS parity; provider errors verbatim; docs/SERVER_SETUP.md
+      gets a Gerrit section.
 - [ ] Server edition: project discovery through a GitHub App (slice 2).
       Requested 2026-10-08; slice 1 (GitHub OAuth App + GitLab: topic
       `reqmantool` + `project.json` scan, "Available on GitHub/GitLab" in
