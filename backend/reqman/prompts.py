@@ -69,7 +69,7 @@ PLACEHOLDERS: dict[str, str] = {
     "project_description": "Description of the project",
     "module_name": "Name of the target module (where the CSV answer is imported)",
     "module_description": "Description of the target module",
-    "module_type": "Type of the target module (requirements, test_cases, test_execution)",
+    "module_type": "Type of the target module (requirements, test_cases, test_execution, operational_scenarios)",
     "module_prefix": "Requirement id prefix of the target module",
     "csv_header": "The exact CSV import header of the target module (one line)",
     "attribute_guide": "One line per CSV column: type, required flag, enum choices, date format",

@@ -1,10 +1,11 @@
 export type AttributeType = 'string' | 'text' | 'integer' | 'boolean' | 'enum' | 'date';
 
 /**
- * What a module holds (project format 5). Omitted by the backend for the
- * default `requirements`; read it with `moduleTypeOf` (`api/moduleTypes.ts`).
+ * What a module holds (project format 5; `operational_scenarios` since
+ * format 9). Omitted by the backend for the default `requirements`; read it
+ * with `moduleTypeOf` (`api/moduleTypes.ts`).
  */
-export type ModuleType = 'requirements' | 'test_cases' | 'test_execution';
+export type ModuleType = 'requirements' | 'test_cases' | 'test_execution' | 'operational_scenarios';
 
 export interface AttributeDefinition {
   id: string;
@@ -470,6 +471,34 @@ export interface CreateModuleFromTemplateResult {
   view_id: string | null;
   /** Number of skeleton requirements (headings and informative texts) created. */
   headings: number;
+}
+
+/** A chapter heading "Apply chapter template" adds (or would add) to an existing module. */
+export interface SkeletonHeading {
+  /** Server-allocated id (provisional in a preview). */
+  id: string;
+  heading: string;
+  parent_id: string | null;
+  /** Depth in the module tree (1: a root). */
+  level: number;
+  /** Whether it goes under a heading the module already has. */
+  under_existing: boolean;
+}
+
+/** `POST .../apply-skeleton/preview` (WS `module.preview_skeleton`): read-only. */
+export interface ModuleSkeletonPreview {
+  template_id: string;
+  headings: SkeletonHeading[];
+  /** Every requirement that would be created: headings plus their informative texts. */
+  requirements: number;
+}
+
+/** `POST .../apply-skeleton` (WS `module.apply_skeleton`). */
+export interface ApplyModuleSkeletonResult {
+  template_id: string;
+  /** Ids of every requirement created (headings and informative texts); empty when nothing was missing. */
+  created: string[];
+  headings: SkeletonHeading[];
 }
 
 /**

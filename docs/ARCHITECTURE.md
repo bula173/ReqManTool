@@ -189,7 +189,8 @@ persistence" below.
   (legacy data; the stored definition is not rewritten).
 - **Module** (`module.json`) — `id`, `name`, `prefix` (e.g. `"REQ"` — the
   namespace requirement ids in this module are allocated from), `description`,
-  `type` (`requirements | test_cases | test_execution`; written, and returned
+  `type` (`requirements | test_cases | test_execution |
+  operational_scenarios`; written, and returned
   by the API, only when it is not the default `requirements` — see "Module
   types" below).
 - **Requirement** (`<id>.json`) — `id`, `attributes: dict[str, Any]` (keyed
@@ -277,14 +278,16 @@ central pairs store).
 ### Module types and date attributes
 
 Project format 5 gives every module a **type**: `requirements` (the
-default, and what every module was before), `test_cases` or
-`test_execution`. It is chosen at creation — `POST /projects/{id}/modules`
-and WS `module.create` take an optional `type`; anything else than the three
+default, and what every module was before), `test_cases`,
+`test_execution` or (project format 9) `operational_scenarios` (operational
+scenarios / ConOps). It is chosen at creation — `POST /projects/{id}/modules`
+and WS `module.create` take an optional `type`; anything else than these
 values is 400 / -32602 ("Unknown module type …") — and cannot be changed
 later. `module.json` stores it only when it is not `requirements`, and the
 API omits it the same way (the frontend reads it with `moduleTypeOf`). An
 unknown value in a hand-edited file reads as `requirements`. The UI shows
-it as an icon (`components/ModuleTypeIcon.tsx`: document, flask, checklist)
+it as an icon (`components/ModuleTypeIcon.tsx`: document, flask, checklist,
+route)
 in the Project tab of the sidebar, the module tab bar and the project page.
 
 - **Attribute scope by type**: `AttributeDefinition.module_types` lists
@@ -300,8 +303,12 @@ in the Project tab of the sidebar, the module tab bar and the project page.
   collapse, unknown types are refused. Required attributes cannot be scoped
   by type either (`_check_required_scope`).
 - **Link type pairs**: a new link configuration (API or template) must join
-  `requirements → requirements`, `test_cases → requirements` or
-  `test_execution → test_cases` (`LINK_TYPE_PAIRS`,
+  `requirements → requirements`, `test_cases → requirements`,
+  `test_execution → test_cases`, `requirements → operational_scenarios`
+  (requirements derived from the scenarios they come from),
+  `test_cases → operational_scenarios` (scenario-based acceptance tests) or
+  `operational_scenarios → operational_scenarios` (refinement)
+  (`LINK_TYPE_PAIRS`,
   `_check_link_types`); anything else is 400 / -32602 and nothing is
   written. Configurations already stored are never checked, so existing
   (all-`requirements`) projects and hand-edited data keep loading and
@@ -317,7 +324,12 @@ in the Project tab of the sidebar, the module tab bar and the project page.
   "Executes SysTest"/"Executes SwTest") with execution attributes scoped by
   type: Result (Passed/Failed/Blocked/Not Run, default Not Run), Executed By,
   Execution Date (`date`), Build/SW Version Under Test, Evidence/Log Ref, a
-  Test Execution view and row styles for Passed/Failed/Blocked.
+  Test Execution view and row styles for Passed/Failed/Blocked. It starts
+  with OpScen (`operational_scenarios`, prefix OPS, module template
+  `builtin:operational_scenarios`, linked from StRS by "Derived from
+  OpScen") with scenario attributes scoped to it: Actors, Trigger,
+  Preconditions (shared with the test modules), Scenario Steps,
+  Postconditions and Operational Level/Mode (ETCS levels and modes).
 - **Date values** are ISO strings, so they sort and compare as text. The
   editors use the browser's native date picker (`<input type="date">`; no
   extra dependency). Exports: CSV writes the string (re-importable; the CSV
@@ -402,7 +414,8 @@ their items; per step the grid links (row → column), covered rows ("N of M
 covered", %), uncovered rows and orphan columns (no link from the previous
 module); the trace of every first-module item through the chain (`reached`
 ids per later module, `complete` when it reaches the last one); and the
-unverified items — items of each `requirements` module of the chain that
+unverified items — items of each `requirements` or `operational_scenarios`
+module of the chain (`TRACE_VERIFIED_TYPES`: scenario coverage by tests) that
 reach no item of the next `test_cases` module in the chain. CSV: the trace
 table; XLSX: Summary, Trace, one "Matrix n" grid per step and Gaps
 (uncovered, orphans, unverified). The UI draws grids up to 1000 × 200.
@@ -810,7 +823,8 @@ own `format_version` 1) describes one module: default name, prefix,
 description and type, the attributes that apply to it (no `required`, no
 link configurations, nothing cross-project), an optional view and a heading
 skeleton. Built-in ones live in `backend/reqman/templates/modules/`
-(`requirements`, `test_cases`, `test_execution`), user ones in
+(`requirements`, `test_cases`, `test_execution`, `operational_scenarios`),
+user ones in
 `<data-directory>/_templates/modules/`; ids are namespaced like project
 templates (`builtin:<stem>` / `user:<stem>`) in a namespace of their own.
 A module template file is rejected as a project template and vice versa.
@@ -857,6 +871,28 @@ files.
   `text`, rich text reduced to plain text. Round-tripped and dry-run before
   writing; a name used by any module template → 409; broadcasts
   `templates_changed`.
+- **Apply chapter template** (`POST
+  /projects/{id}/modules/{module}/apply-skeleton`, WS
+  `module.apply_skeleton`; read-only preview `POST
+  .../apply-skeleton/preview`, WS `module.preview_skeleton`; module menu and
+  Edit ▸ "Apply chapter template…", which shows the preview): body
+  `template_id` (a module template; null/omitted: `builtin:<module type>`).
+  Gives an *existing* module the template's heading skeleton
+  (`ProjectService.apply_module_skeleton`, planned by
+  `_module_skeleton_plan`): level by level, a skeleton node whose title
+  (case-insensitive, whitespace collapsed) is already a heading under the
+  same parent is descended into; any other node is added with its subtree
+  and `text`, appended after the existing siblings. Existing requirements
+  are never moved, changed or deleted, so applying again adds nothing (and
+  writes nothing). Only the headings are applied: the template's attributes
+  and view are not merged, except that Object Type is made to apply to the
+  module if it did not. Lock, permission and module-lock rules are those of
+  every module write (`_records_history`); one commit, one `changed`
+  broadcast. Returns `{template_id, created: [ids], headings: [{id, heading,
+  parent_id, level, under_existing}]}` (the preview: `{template_id,
+  headings, requirements}` with provisional ids). The RBC template gives
+  every module an RBC/CENELEC chapter structure (OpScen, StRS, SyRS, SwRS,
+  the test specifications and the test execution campaigns).
 - **Listing** (`GET /module-templates`, WS `module_template.list`): like
   project templates, every entry is dry-run on an empty project and an
   invalid one is listed with `error`. The frontend fetches it lazily (when
@@ -957,7 +993,7 @@ into any AI chat and pastes the CSV answer back into the CSV import.
 `project.json` and the app config file (`config.json`, see "Packaging,
 configuration and install") start with
 an integer `format_version` (`reqman/formats.py`: `PROJECT_FORMAT`,
-`CONFIG_FORMAT`; project currently 8, config 1). Module, requirement and
+`CONFIG_FORMAT`; project currently 9, config 1). Module, requirement and
 link-pair files have no version of their own; they are governed by their
 project's version. Templates keep their own, separate `format_version`.
 Project format 2 added `AttributeDefinition.modules` (per-module attribute
@@ -988,7 +1024,13 @@ every module in one) from the order on save. Project format 8 added
 `Project.locked` (see "Project lifecycle: lock and remove"); the 7 → 8 step
 drops a stray `locked` key and rewrites no module, requirement or link-pair
 file. The bump makes an older ReqManTool refuse a version 8 project instead
-of dropping the lock on save, which would silently unlock it.
+of dropping the lock on save, which would silently unlock it. Project
+format 9 added the `operational_scenarios` module type (see "Module types
+and date attributes"); the 8 → 9 step drops `operational_scenarios` from
+attribute `module_types` (a version 8 reader matched no module with it) and
+rewrites no module, requirement or link-pair file. The bump makes an older
+ReqManTool refuse a version 9 project instead of reading operational
+scenario modules as requirements modules and dropping their type on save.
 
 Only optional attributes can be scoped to modules: a required attribute
 always applies to every module. `ProjectService._check_required_scope`

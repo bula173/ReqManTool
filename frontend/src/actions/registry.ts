@@ -401,6 +401,8 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
       action('requirement.makeLink'),
       action('edit.cancelLink'),
       divider,
+      action('module.applySkeleton'),
+      divider,
       action('requirement.delete'),
       // Destructive bulk deletes, kept apart from the requirement entries.
       divider,
@@ -617,6 +619,7 @@ export const MODULE_NODE_MENU: MenuEntry[] = [
   divider,
   action('module.aiPrompts'),
   divider,
+  action('module.applySkeleton'),
   action('module.saveAsTemplate'),
   divider,
   action('project.newModule'),

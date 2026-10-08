@@ -11,6 +11,7 @@ import type {
   ModuleLocks,
   ModuleTreeEntry,
   ModuleTreeFolderEntry,
+  ModuleType,
   Project,
   ProjectListEntry,
   Requirement,
@@ -177,6 +178,8 @@ export type DialogRequest =
   | { kind: 'newModule'; projectId: string; folderId?: string | null; fromTemplate?: boolean }
   /** Save a module's attributes, optional view and headings as a user module template. */
   | { kind: 'saveModuleAsTemplate'; projectId: string; moduleId: string; moduleName: string }
+  /** Add a module template's missing chapter headings to an existing module (preview first). */
+  | { kind: 'applySkeleton'; projectId: string; moduleId: string; moduleName: string; moduleType: ModuleType }
   /** A new module folder in `parentId` (null: the top level). */
   | { kind: 'newModuleFolder'; projectId: string; parentId: string | null }
   | { kind: 'renameModuleFolder'; projectId: string; folderId: string; name: string }

@@ -279,6 +279,7 @@ def test_project_template_module_skeleton_limit_names_the_module():
 def test_builtin_module_templates_are_listed_and_valid(service):
     listed = service.list_module_templates()
     assert [(t["id"], t["error"]) for t in listed] == [
+        ("builtin:operational_scenarios", None),
         ("builtin:requirements", None),
         ("builtin:test_execution", None),
         ("builtin:test_cases", None),
@@ -687,7 +688,9 @@ def test_rest_and_ws_list_module_templates(client):
     assert rest.status_code == 200
     with client.websocket_connect("/ws") as ws:
         assert _rpc(ws, "module_template.list", {})["result"] == rest.json()
-    assert [t["id"] for t in rest.json()] == ["builtin:requirements", "builtin:test_execution", "builtin:test_cases"]
+    assert [t["id"] for t in rest.json()] == [
+        "builtin:operational_scenarios", "builtin:requirements", "builtin:test_execution", "builtin:test_cases",
+    ]
 
 
 # --- save module as template ---------------------------------------------------------------
@@ -995,11 +998,14 @@ def test_rbc_template_creates_the_heading_skeletons(service):
         texts[module.id] = kinds.count("Information")
         assert len(kinds) == headings[module.id] + texts[module.id], module.id
     assert headings == {
-        "strs": 16, "syrs": 26, "swrs": 37, "systest": 8, "swtest": 8, "systestexec": 6, "swtestexec": 6,
+        "opscen": 13, "strs": 27, "syrs": 28, "swrs": 37, "systest": 21, "swtest": 21, "systestexec": 13,
+        "swtestexec": 13,
     }
-    assert texts == {"strs": 2, "syrs": 2, "swrs": 1, "systest": 1, "swtest": 1, "systestexec": 1, "swtestexec": 1}
+    assert texts == {
+        "opscen": 1, "strs": 3, "syrs": 2, "swrs": 1, "systest": 2, "swtest": 2, "systestexec": 2, "swtestexec": 2,
+    }
     counters = service.get_project(project.id).id_counters
-    assert counters["SYRS"] == 28 and counters["SWRS"] == 38 and counters["STRS"] == 18
+    assert counters["SYRS"] == 30 and counters["SWRS"] == 38 and counters["STRS"] == 30 and counters["OPS"] == 14
 
 
 # --- save project as template: skeletons ---------------------------------------------------------

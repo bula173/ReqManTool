@@ -185,13 +185,24 @@ _ISO_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 
 # The (source module type, target module type) pairs a link configuration may
 # join: requirements trace to requirements, test cases verify requirements and
-# test executions execute test cases. Checked when a configuration is created
-# (API or template); configurations already stored are never rejected.
+# test executions execute test cases. Requirements are also derived from the
+# operational scenarios they come from, scenario-based (acceptance) test cases
+# verify scenarios, and scenarios refine scenarios. Checked when a
+# configuration is created (API or template); configurations already stored
+# are never rejected.
 LINK_TYPE_PAIRS = (
     ("requirements", "requirements"),
     ("test_cases", "requirements"),
     ("test_execution", "test_cases"),
+    ("requirements", "operational_scenarios"),
+    ("test_cases", "operational_scenarios"),
+    ("operational_scenarios", "operational_scenarios"),
 )
+
+# Module types whose items a traceability matrix reports as unverified when
+# they reach no item of a later ``test_cases`` module of the chain:
+# requirements, and operational scenarios (scenario coverage by tests).
+TRACE_VERIFIED_TYPES = ("requirements", "operational_scenarios")
 
 # --- reports (traceability matrix, verification and test execution reports) ---
 #
@@ -4972,8 +4983,14 @@ class ProjectService:
         skeleton: list[SkeletonNode],
         allocate: Callable[[], str],
         extended: list[str] | None = None,
+        parent_id: str | None = None,
+        start: int = 0,
     ) -> list[Requirement]:
         """The requirements of a heading skeleton for new ``module``, in tree order (in memory).
+
+        The skeleton's top nodes go under ``parent_id`` (None: the module's
+        roots) with orders from ``start`` (``apply_module_skeleton`` appends
+        to an existing module that way).
 
         Each node is a requirement with ObjectText = the heading and Object
         Type = Heading; its ``text`` a first child with Object Type =
@@ -5014,7 +5031,7 @@ class ProjectService:
                 # Child headings follow the informative text.
                 build(node.children, heading.id, 1 if node.text is not None else 0)
 
-        build(skeleton, None, 0)
+        build(skeleton, parent_id, start)
         return result
 
     def _skeleton_from_module(self, project: Project, module: Module) -> list[SkeletonNode]:
@@ -5250,6 +5267,177 @@ class ProjectService:
             "extended_attributes": applied["extended"],
             "view_id": applied["view_id"],
             "headings": len(applied["requirements"]),
+        }
+
+    # --- chapter templates for existing modules ---
+
+    @staticmethod
+    def _heading_key(text: str) -> str:
+        """A heading title compared case-insensitively with whitespace runs collapsed."""
+        return " ".join(text.split()).casefold()
+
+    def _module_skeleton_plan(self, project_id: str, module_id: str, template_id: Any) -> dict[str, Any]:
+        """What ``apply_module_skeleton`` adds (in memory, nothing written).
+
+        ``template_id`` names a module template (None: the built-in one of
+        the module's type, ``builtin:<type>``). Its skeleton is matched level
+        by level against the module's headings (requirements whose Object
+        Type reads "Heading"), by title (``_heading_key``): a skeleton node
+        whose title already is a heading under the same parent is descended
+        into, any other node is added with its whole subtree (and its
+        ``text``), after the existing siblings. Nothing existing is changed.
+        """
+        project = self.store.load_project(project_id)
+        module = self.store.load_module(project_id, module_id)
+        if template_id is None:
+            template_id = make_template_id(BUILTIN_SOURCE, module.type)
+        template = self._load_module_template(template_id)
+        existing = self.store.load_all_requirements(project_id, module_id)
+        extended: list[str] = []
+        created: list[Requirement] = []
+        object_type_id: str | None = None
+        heading_value: str | None = None
+        if template.skeleton:
+            try:
+                object_type = self._skeleton_object_type(project, module, extended)
+                heading_value = self._object_type_value(object_type, "Heading")
+            except ValueError as exc:
+                raise ValueError(f"Chapter template '{template_id}' cannot be applied: {exc}") from exc
+            object_type_id = object_type.id
+            children: dict[str | None, list[Requirement]] = {}
+            for requirement in existing:
+                children.setdefault(requirement.parent_id, []).append(requirement)
+
+            def headings_under(parent_id: str | None) -> dict[str, str]:
+                found: dict[str, str] = {}
+                for r in sorted(children.get(parent_id, []), key=lambda r: (r.order, r.id)):
+                    kind = r.attributes.get(object_type.id)
+                    if not isinstance(kind, str) or self._report_key(kind) != "heading":
+                        continue
+                    value = r.attributes.get("object_text")
+                    plain = richtext.to_plain(value) if isinstance(value, str) else ""
+                    found.setdefault(self._heading_key(str(plain)), r.id)
+                return found
+
+            additions: list[tuple[str | None, list[SkeletonNode]]] = []
+            # Iterative walk (parent id, skeleton nodes at that level), in tree order.
+            stack: list[tuple[str | None, list[SkeletonNode]]] = [(None, template.skeleton)]
+            while stack:
+                parent_id, nodes = stack.pop()
+                present = headings_under(parent_id)
+                new_nodes: list[SkeletonNode] = []
+                descend: list[tuple[str | None, list[SkeletonNode]]] = []
+                for node in nodes:
+                    match = present.get(self._heading_key(node.heading))
+                    if match is None:
+                        new_nodes.append(node)
+                    elif node.children:
+                        descend.append((match, node.children))
+                if new_nodes:
+                    additions.append((parent_id, new_nodes))
+                stack.extend(reversed(descend))
+
+            def allocate() -> str:
+                return self._allocate_requirement_id(project, module)
+
+            for parent_id, nodes in additions:
+                created.extend(
+                    self._skeleton_requirements(
+                        project, module, nodes, allocate, extended,
+                        parent_id=parent_id, start=self._next_sibling_order(existing, parent_id),
+                    )
+                )
+            if extended:
+                order = module_tree.module_ids(self._module_tree(project))
+                for attr in project.attributes:
+                    if attr.id in extended:
+                        attr.modules = self._place_in_scope(attr.modules, module.id, order)
+
+        depth: dict[str, int] = {}
+        parent_of = {r.id: r.parent_id for r in existing}
+        parent_of.update({r.id: r.parent_id for r in created})
+
+        def level(requirement_id: str) -> int:
+            if requirement_id not in depth:
+                chain: list[str] = []
+                current: str | None = requirement_id
+                while current is not None and current not in depth and current not in chain:
+                    chain.append(current)
+                    current = parent_of.get(current)
+                base = depth.get(current, 0) if current is not None else 0
+                for offset, rid in enumerate(reversed(chain), start=1):
+                    depth[rid] = base + offset
+            return depth[requirement_id]
+
+        new_ids = {r.id for r in created}
+        headings = [
+            {
+                "id": r.id,
+                "heading": str(richtext.to_plain(r.attributes.get("object_text") or "")),
+                "parent_id": r.parent_id,
+                "level": level(r.id),
+                # Whether the parent is an existing heading (False: one added here or the module root).
+                "under_existing": r.parent_id is not None and r.parent_id not in new_ids,
+            }
+            for r in created
+            if object_type_id is not None and r.attributes.get(object_type_id) == heading_value
+        ]
+        return {
+            "project": project,
+            "module": module,
+            "template_id": template_id,
+            "created": created,
+            "headings": headings,
+            "extended": extended,
+        }
+
+    def preview_module_skeleton(self, project_id: str, module_id: str, template_id: Any = None) -> dict[str, Any]:
+        """The headings ``apply_module_skeleton`` would add (read-only; ids are provisional).
+
+        Returns ``{"template_id", "headings": [{"id", "heading", "parent_id",
+        "level", "under_existing"}], "requirements"}`` (``requirements``:
+        every requirement it would create, headings and their texts).
+        """
+        plan = self._module_skeleton_plan(project_id, module_id, template_id)
+        return {
+            "template_id": plan["template_id"],
+            "headings": plan["headings"],
+            "requirements": len(plan["created"]),
+        }
+
+    @_records_history
+    def apply_module_skeleton(self, project_id: str, module_id: str, template_id: Any = None) -> dict[str, Any]:
+        """Add a chapter template's missing headings to an existing module (``_module_skeleton_plan``).
+
+        Idempotent: applying the same template again adds nothing. Existing
+        requirements are never moved, changed or deleted; new headings (and
+        their informative texts) get server-allocated ids and other
+        attributes their defaults. The Object Type attribute is made to
+        apply to the module if it did not. Nothing is written when nothing
+        is missing. Returns ``{"template_id", "created": [ids], "headings":
+        [...]}`` (headings as in ``preview_module_skeleton``).
+        """
+        plan = self._module_skeleton_plan(project_id, module_id, template_id)
+        project: Project = plan["project"]
+        created: list[Requirement] = plan["created"]
+        if created:
+            if guard_active():
+                status = self._status_attribute(project, plan["module"])
+                if status is not None:
+                    self._check_status_changes(
+                        project_id,
+                        module_id,
+                        [
+                            (None, None, r.attributes[status.id])
+                            for r in created
+                            if r.attributes.get(status.id) not in (None, "")
+                        ],
+                    )
+            self._write_new_requirements(project, module_id, created)
+        return {
+            "template_id": plan["template_id"],
+            "created": [r.id for r in created],
+            "headings": plan["headings"],
         }
 
     def save_module_as_template(
@@ -5549,7 +5737,8 @@ class ProjectService:
         step per configuration (grid links row -> column, covered rows,
         uncovered rows, orphan columns), the trace of every first-module item
         through the whole chain, totals, and the unverified items: items of a
-        ``requirements`` module of the chain that reach no item of a later
+        ``requirements`` or ``operational_scenarios`` module of the chain
+        (``TRACE_VERIFIED_TYPES``) that reach no item of a later
         ``test_cases`` module.
         """
         project = self.store.load_project(project_id)
@@ -5657,7 +5846,7 @@ class ProjectService:
         unverified = []
         for index, module in enumerate(modules):
             later_tests = [k for k in range(index + 1, len(modules)) if modules[k].type == "test_cases"]
-            if module.type != "requirements" or not later_tests:
+            if module.type not in TRACE_VERIFIED_TYPES or not later_tests:
                 continue
             test_index = later_tests[0]
             missing = [

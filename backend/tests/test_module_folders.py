@@ -889,6 +889,7 @@ def test_save_as_template_without_folders_writes_no_module_tree(service):
 def test_rbc_template_creates_its_folders(service):
     project = service.create_project("RBC", template_id=RBC)
     assert service.get_module_tree(project.id) == [
+        M("opscen"),
         F("requirements", "Requirements", M("strs"), M("syrs"), M("swrs")),
         F("tests", "Tests", M("systest"), M("swtest")),
         F("test-execution", "Test Execution", M("systestexec"), M("swtestexec")),

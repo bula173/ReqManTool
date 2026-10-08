@@ -1,4 +1,4 @@
-import { IconChecklist, IconFileText, IconFlask, type IconProps } from '@tabler/icons-react';
+import { IconChecklist, IconFileText, IconFlask, IconRoute, type IconProps } from '@tabler/icons-react';
 import { MODULE_TYPE_LABELS, moduleTypeOf } from '../api/moduleTypes';
 import type { Module, ModuleType } from '../api/types';
 
@@ -6,12 +6,14 @@ const ICONS: Record<ModuleType, typeof IconFileText> = {
   requirements: IconFileText,
   test_cases: IconFlask,
   test_execution: IconChecklist,
+  operational_scenarios: IconRoute,
 };
 
 /**
  * The icon of a module type (requirements: document, test cases: flask, test
- * execution: checklist), titled with the type's name for hover and screen
- * readers. Pass `module` (its `type` may be omitted: requirements) or `type`.
+ * execution: checklist, operational scenarios: route), titled with the type's
+ * name for hover and screen readers. Pass `module` (its `type` may be omitted:
+ * requirements) or `type`.
  */
 export function ModuleTypeIcon({
   module,

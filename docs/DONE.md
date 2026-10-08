@@ -1720,3 +1720,32 @@ Newest entries are appended at the end.
       Tests: `backend/tests/test_server_discovery.py` (smoke; provider HTTP
       mocked, local bare repository as the remote). Left over: GitHub App
       provider type (backlog).
+- [x] **Operational Scenarios module type and chapter templates for every
+      module** (2026-10-08). New module type `operational_scenarios`
+      (`MODULE_TYPES`, project format 9: an older ReqManTool would read such
+      modules as requirements modules and drop the type on save; the 8 → 9
+      step drops `operational_scenarios` from attribute `module_types`).
+      Link type pairs added: requirements → operational_scenarios ("derived
+      from"), test_cases → operational_scenarios (scenario-based tests) and
+      operational_scenarios → operational_scenarios (refines). Traceability
+      reports scenarios not reached by a later test_cases module as
+      unverified (`TRACE_VERIFIED_TYPES`); the verification report stays
+      requirements-only. Built-in module template
+      `builtin:operational_scenarios` (Actors, Trigger, Preconditions,
+      Scenario Steps, Postconditions; chapters Introduction, Actors and
+      Roles, Normal / Degraded Operation, Emergency, Maintenance).
+      RBC_Template: OpScen module first (prefix OPS), "Derived from OpScen"
+      (StRS → OpScen), scenario attributes scoped to it (Preconditions
+      shared with the test modules, Operational Level/Mode enum), an
+      Operational Scenarios view scoped to it, and RBC/CENELEC chapter
+      skeletons for every module (new for StRS, SysTest/SwTest and the test
+      execution campaigns; SyRS gains Data Preparation). "Apply chapter
+      template…" for existing modules: `POST
+      /projects/{p}/modules/{m}/apply-skeleton` (+ `/preview`), WS
+      `module.apply_skeleton` / `module.preview_skeleton`; adds only
+      headings whose title is missing at that level, after the existing
+      ones; idempotent; never moves or changes existing requirements.
+      Frontend: type option and route icon, link pairs, `ApplySkeletonModal`
+      (template picker, preview list) in the module menu and Edit menu.
+      Tests: `backend/tests/test_operational_scenarios.py`, stale RBC/type
+      expectations updated.

@@ -404,9 +404,9 @@ def test_reorder_module_up_down_and_boundaries(service):
 
 def test_template_keeps_declared_module_order(service):
     project = service.create_project("RBC", template_id=RBC)
-    # The RBC template's module tree, depth-first (folders Requirements, Tests, Test Execution).
+    # The RBC template's module tree, depth-first (OpScen, then folders Requirements, Tests, Test Execution).
     assert [m.name for m in service.list_modules(project.id)] == [
-        "StRS", "SyRS", "SwRS", "SysTest", "SwTest", "SysTestExec", "SwTestExec"
+        "OpScen", "StRS", "SyRS", "SwRS", "SysTest", "SwTest", "SysTestExec", "SwTestExec"
     ]
 
 

@@ -52,7 +52,8 @@ attribute applies to every module, so ``ProjectService`` reports a template
 with a required, scoped attribute as invalid.
 
 An attribute's optional ``module_types`` lists module types
-(``requirements``, ``test_cases``, ``test_execution``) the attribute also
+(``requirements``, ``test_cases``, ``test_execution``,
+``operational_scenarios``) the attribute also
 applies to, and a module's optional ``type`` is one of those
 (absent: ``requirements``). Both were added without a ``format_version``
 bump under the rule below: an older ReqManTool ignores them and creates

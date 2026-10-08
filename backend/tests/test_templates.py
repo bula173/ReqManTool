@@ -51,7 +51,7 @@ def test_builtin_rbc_template_is_listed_and_valid(service):
     assert rbc["source"] == "builtin"
     assert rbc["error"] is None
     assert [m["name"] for m in rbc["modules"]] == [
-        "StRS", "SyRS", "SwRS", "SysTest", "SwTest", "SysTestExec", "SwTestExec"
+        "OpScen", "StRS", "SyRS", "SwRS", "SysTest", "SwTest", "SysTestExec", "SwTestExec"
     ]
 
 
@@ -59,7 +59,7 @@ def test_create_project_from_rbc_template_builds_structure(service):
     project = service.create_project("RBC GP", template_id=RBC)
     store = service.store
     assert {m.name for m in service.list_modules(project.id)} == {
-        "StRS", "SyRS", "SwRS", "SysTest", "SwTest", "SysTestExec", "SwTestExec"
+        "OpScen", "StRS", "SyRS", "SwRS", "SysTest", "SwTest", "SysTestExec", "SwTestExec"
     }
     reloaded = store.load_project(project.id)
     configs = {c.name: c for c in reloaded.link_configurations}
@@ -317,7 +317,7 @@ def test_rest_templates_and_subprojects(client):
     assert resp.status_code == 200, resp.text
     gp = resp.json()
     assert gp["parent_project_id"] == "rte"
-    assert len(client.get(f"/projects/{gp['id']}/modules").json()) == 7
+    assert len(client.get(f"/projects/{gp['id']}/modules").json()) == 8
 
     assert client.post("/projects", json={"name": "X", "template_id": "user:none"}).status_code == 404
     assert client.post("/projects", json={"name": "X", "template_id": "bogus"}).status_code == 400

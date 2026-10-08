@@ -11,6 +11,7 @@ import {
   IconGitCommit,
   IconGridDots,
   IconLink,
+  IconListTree,
   IconLock,
   IconLockAccess,
   IconLockOpen,
@@ -313,6 +314,28 @@ export const moduleActions: Action<'module'>[] = [
         projectId: target.projectId,
         moduleId: target.module.id,
         moduleName: target.module.name,
+      });
+    },
+  },
+  {
+    // Adds a chapter template's missing headings to the module (previewed first; nothing existing changes).
+    id: 'module.applySkeleton',
+    element: 'module',
+    edits: true,
+    editsModule: true,
+    label: 'Apply chapter template…',
+    icon: IconListTree,
+    opensDialog: true,
+    isAvailable: (ctx) => ctx.target !== null,
+    run: (ctx) => {
+      const target = ctx.target;
+      if (!target) return;
+      ctx.commands.openDialog({
+        kind: 'applySkeleton',
+        projectId: target.projectId,
+        moduleId: target.module.id,
+        moduleName: target.module.name,
+        moduleType: moduleTypeOf(target.module),
       });
     },
   },

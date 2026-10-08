@@ -2,7 +2,7 @@
   "format_version": 2,
   "id": "rbc_template",
   "name": "RBC_Template",
-  "description": "ERTMS/ETCS Radio Block Centre project structured for the CENELEC railway standards EN 50126 (RAMS), EN 50128 (software) and EN 50129 (safety-related electronic systems): stakeholder, system and software requirements with system and software test specifications and their test executions, traced V-model style.",
+  "description": "ERTMS/ETCS Radio Block Centre project structured for the CENELEC railway standards EN 50126 (RAMS), EN 50128 (software) and EN 50129 (safety-related electronic systems): operational scenarios, stakeholder, system and software requirements with system and software test specifications and their test executions, traced V-model style.",
   "attributes": [
     {
       "id": "object_type",
@@ -102,7 +102,7 @@
       "required": false,
       "default": null,
       "choices": null,
-      "modules": ["systest", "swtest"]
+      "modules": ["opscen", "systest", "swtest"]
     },
     {
       "id": "test_steps",
@@ -130,6 +130,51 @@
       "default": null,
       "choices": ["Not Run", "Passed", "Failed", "Blocked", "Not Applicable"],
       "modules": ["systest", "swtest"]
+    },
+    {
+      "id": "actors",
+      "name": "Actors",
+      "type": "text",
+      "required": false,
+      "default": null,
+      "choices": null,
+      "modules": ["opscen"]
+    },
+    {
+      "id": "trigger",
+      "name": "Trigger",
+      "type": "text",
+      "required": false,
+      "default": null,
+      "choices": null,
+      "modules": ["opscen"]
+    },
+    {
+      "id": "scenario_steps",
+      "name": "Scenario Steps",
+      "type": "text",
+      "required": false,
+      "default": null,
+      "choices": null,
+      "modules": ["opscen"]
+    },
+    {
+      "id": "postconditions",
+      "name": "Postconditions",
+      "type": "text",
+      "required": false,
+      "default": null,
+      "choices": null,
+      "modules": ["opscen"]
+    },
+    {
+      "id": "operational_mode",
+      "name": "Operational Level/Mode",
+      "type": "enum",
+      "required": false,
+      "default": null,
+      "choices": ["Level 2", "Level 3", "SR", "FS", "OS", "SH", "TR", "PT", "SB"],
+      "modules": ["opscen"]
     },
     {
       "id": "result",
@@ -179,11 +224,161 @@
   ],
   "modules": [
     {
+      "key": "opscen",
+      "name": "OpScen",
+      "prefix": "OPS",
+      "description": "Operational scenarios / concept of operations (ConOps) for the RBC: how trains, signallers and neighbouring systems use it step by step, e.g. Start of Mission, Movement Authority extension, Handover RBC-RBC, Emergency stop and degraded modes. Stakeholder requirements are derived from them.",
+      "type": "operational_scenarios",
+      "module_template": "builtin:operational_scenarios",
+      "skeleton": [
+        {
+          "heading": "Introduction"
+        },
+        {
+          "heading": "Actors and Roles",
+          "text": "Driver, signaller / RBC operator, onboard ERTMS/ETCS unit, interlocking, neighbouring RBC and maintainer."
+        },
+        {
+          "heading": "Normal Operation",
+          "children": [
+            {
+              "heading": "Start of Mission"
+            },
+            {
+              "heading": "Movement Authority Extension"
+            },
+            {
+              "heading": "Handover RBC-RBC"
+            },
+            {
+              "heading": "End of Mission"
+            }
+          ]
+        },
+        {
+          "heading": "Degraded Operation",
+          "children": [
+            {
+              "heading": "Loss of Radio Communication"
+            },
+            {
+              "heading": "Staff Responsible / On Sight Movements"
+            }
+          ]
+        },
+        {
+          "heading": "Emergency",
+          "children": [
+            {
+              "heading": "Emergency Stop"
+            }
+          ]
+        },
+        {
+          "heading": "Maintenance"
+        }
+      ]
+    },
+    {
       "key": "strs",
       "name": "StRS",
       "prefix": "STRS",
       "description": "Stakeholder Requirements Specification: customer, infrastructure-manager and operational needs for the RBC, including references to the ERTMS/ETCS UNISIG subsets in force.",
-      "module_template": "builtin:requirements"
+      "module_template": "builtin:requirements",
+      "skeleton": [
+        {
+          "heading": "Introduction",
+          "children": [
+            {
+              "heading": "Purpose"
+            },
+            {
+              "heading": "Scope"
+            },
+            {
+              "heading": "Definitions and Abbreviations"
+            },
+            {
+              "heading": "References"
+            }
+          ]
+        },
+        {
+          "heading": "Stakeholders",
+          "text": "Infrastructure manager, railway undertakings, signallers / traffic control, maintenance organisation, safety authority / assessor."
+        },
+        {
+          "heading": "Operational Needs",
+          "text": "Needs per operational scenario group; each need is derived from the scenarios of OpScen.",
+          "children": [
+            {
+              "heading": "Normal Operation"
+            },
+            {
+              "heading": "Degraded Operation"
+            },
+            {
+              "heading": "Emergency"
+            },
+            {
+              "heading": "Maintenance"
+            }
+          ]
+        },
+        {
+          "heading": "Interfaces with External Systems",
+          "children": [
+            {
+              "heading": "Onboard Unit / EVC"
+            },
+            {
+              "heading": "Interlocking"
+            },
+            {
+              "heading": "Neighbouring RBC"
+            },
+            {
+              "heading": "TMS / CTC"
+            },
+            {
+              "heading": "GSM-R / FRMCS"
+            },
+            {
+              "heading": "Maintenance and Diagnostics"
+            }
+          ]
+        },
+        {
+          "heading": "Performance and Capacity"
+        },
+        {
+          "heading": "RAMS Targets",
+          "children": [
+            {
+              "heading": "Safety Integrity (SIL)"
+            },
+            {
+              "heading": "Tolerable Hazard Rates (THR)"
+            },
+            {
+              "heading": "Reliability, Availability and Maintainability"
+            }
+          ]
+        },
+        {
+          "heading": "Security"
+        },
+        {
+          "heading": "Regulatory and Standards",
+          "text": "TSI CCS, EN 50126 / EN 50128 / EN 50129 / EN 50159, UNISIG subsets in force."
+        },
+        {
+          "heading": "Constraints"
+        },
+        {
+          "heading": "Lifecycle, Maintenance and Support"
+        }
+      ]
     },
     {
       "key": "syrs",
@@ -278,7 +473,15 @@
           "heading": "Constraints"
         },
         {
-          "heading": "Configuration and Data"
+          "heading": "Configuration and Data",
+          "children": [
+            {
+              "heading": "Data Preparation"
+            },
+            {
+              "heading": "Configuration Management of Data"
+            }
+          ]
         }
       ]
     },
@@ -423,7 +626,80 @@
       "prefix": "SYST",
       "description": "System test specification: test cases verifying the SyRS.",
       "type": "test_cases",
-      "module_template": "builtin:test_cases"
+      "module_template": "builtin:test_cases",
+      "skeleton": [
+        {
+          "heading": "Introduction",
+          "children": [
+            {
+              "heading": "Purpose"
+            },
+            {
+              "heading": "Scope"
+            },
+            {
+              "heading": "References"
+            }
+          ]
+        },
+        {
+          "heading": "Test Environment",
+          "text": "System test bench: RBC under test, onboard and interlocking simulators, GSM-R / Euroradio test network.",
+          "children": [
+            {
+              "heading": "Laboratory"
+            },
+            {
+              "heading": "Simulators"
+            },
+            {
+              "heading": "Test Tools"
+            }
+          ]
+        },
+        {
+          "heading": "Test Strategy and Coverage",
+          "text": "How the SyRS requirements are covered: test levels, techniques and coverage criteria."
+        },
+        {
+          "heading": "Functional Tests",
+          "children": [
+            {
+              "heading": "Start of Mission"
+            },
+            {
+              "heading": "Movement Authority"
+            },
+            {
+              "heading": "Level and Mode Transitions"
+            },
+            {
+              "heading": "Temporary Speed Restrictions"
+            },
+            {
+              "heading": "Emergency Messages"
+            },
+            {
+              "heading": "Handover RBC-RBC"
+            }
+          ]
+        },
+        {
+          "heading": "Interface Tests"
+        },
+        {
+          "heading": "Performance Tests"
+        },
+        {
+          "heading": "Safety / Fault-Injection Tests"
+        },
+        {
+          "heading": "Degraded Modes"
+        },
+        {
+          "heading": "Regression Tests"
+        }
+      ]
     },
     {
       "key": "swtest",
@@ -431,7 +707,80 @@
       "prefix": "SWT",
       "description": "Software test specification (EN 50128 overall software testing): test cases verifying the SwRS.",
       "type": "test_cases",
-      "module_template": "builtin:test_cases"
+      "module_template": "builtin:test_cases",
+      "skeleton": [
+        {
+          "heading": "Introduction",
+          "children": [
+            {
+              "heading": "Purpose"
+            },
+            {
+              "heading": "Scope"
+            },
+            {
+              "heading": "References"
+            }
+          ]
+        },
+        {
+          "heading": "Test Environment",
+          "text": "Software test environment: host and target test harnesses, stubs and simulators, coverage tools.",
+          "children": [
+            {
+              "heading": "Laboratory"
+            },
+            {
+              "heading": "Simulators"
+            },
+            {
+              "heading": "Test Tools"
+            }
+          ]
+        },
+        {
+          "heading": "Test Strategy and Coverage",
+          "text": "How the SwRS requirements are covered: test levels, techniques and coverage criteria."
+        },
+        {
+          "heading": "Functional Tests",
+          "children": [
+            {
+              "heading": "Start of Mission"
+            },
+            {
+              "heading": "Movement Authority"
+            },
+            {
+              "heading": "Level and Mode Transitions"
+            },
+            {
+              "heading": "Temporary Speed Restrictions"
+            },
+            {
+              "heading": "Emergency Messages"
+            },
+            {
+              "heading": "Handover RBC-RBC"
+            }
+          ]
+        },
+        {
+          "heading": "Interface Tests"
+        },
+        {
+          "heading": "Performance Tests"
+        },
+        {
+          "heading": "Safety / Fault-Injection Tests"
+        },
+        {
+          "heading": "Degraded Modes"
+        },
+        {
+          "heading": "Regression Tests"
+        }
+      ]
     },
     {
       "key": "systestexec",
@@ -439,7 +788,54 @@
       "prefix": "SYSTX",
       "description": "System test execution: one entry per executed SysTest test case, with its result, executor, date, build/version under test and evidence.",
       "type": "test_execution",
-      "module_template": "builtin:test_execution"
+      "module_template": "builtin:test_execution",
+      "skeleton": [
+        {
+          "heading": "Campaign",
+          "text": "The SysTest campaign: build/version under test, environment, dates and team.",
+          "children": [
+            {
+              "heading": "Build / Version Under Test"
+            },
+            {
+              "heading": "Test Environment"
+            },
+            {
+              "heading": "Dates and Team"
+            }
+          ]
+        },
+        {
+          "heading": "Results",
+          "text": "Execution records per SysTest chapter.",
+          "children": [
+            {
+              "heading": "Functional Tests"
+            },
+            {
+              "heading": "Interface Tests"
+            },
+            {
+              "heading": "Performance Tests"
+            },
+            {
+              "heading": "Safety / Fault-Injection Tests"
+            },
+            {
+              "heading": "Degraded Modes"
+            },
+            {
+              "heading": "Regression Tests"
+            }
+          ]
+        },
+        {
+          "heading": "Deviations and Anomalies"
+        },
+        {
+          "heading": "Summary and Verdict"
+        }
+      ]
     },
     {
       "key": "swtestexec",
@@ -447,10 +843,58 @@
       "prefix": "SWTX",
       "description": "Software test execution (EN 50128 software test report): one entry per executed SwTest test case, with its result, executor, date, software version under test and evidence.",
       "type": "test_execution",
-      "module_template": "builtin:test_execution"
+      "module_template": "builtin:test_execution",
+      "skeleton": [
+        {
+          "heading": "Campaign",
+          "text": "The SwTest campaign: build/version under test, environment, dates and team.",
+          "children": [
+            {
+              "heading": "Build / Version Under Test"
+            },
+            {
+              "heading": "Test Environment"
+            },
+            {
+              "heading": "Dates and Team"
+            }
+          ]
+        },
+        {
+          "heading": "Results",
+          "text": "Execution records per SwTest chapter.",
+          "children": [
+            {
+              "heading": "Functional Tests"
+            },
+            {
+              "heading": "Interface Tests"
+            },
+            {
+              "heading": "Performance Tests"
+            },
+            {
+              "heading": "Safety / Fault-Injection Tests"
+            },
+            {
+              "heading": "Degraded Modes"
+            },
+            {
+              "heading": "Regression Tests"
+            }
+          ]
+        },
+        {
+          "heading": "Deviations and Anomalies"
+        },
+        {
+          "heading": "Summary and Verdict"
+        }
+      ]
     }
   ],
   "module_tree": [
+    {"module": "opscen"},
     {
       "folder": "requirements",
       "name": "Requirements",
@@ -478,6 +922,12 @@
     }
   ],
   "link_configurations": [
+    {
+      "key": "strs_opscen",
+      "name": "Derived from OpScen",
+      "source_module": "strs",
+      "target_module": "opscen"
+    },
     {
       "key": "syrs_strs",
       "name": "Satisfies StRS",
@@ -518,7 +968,12 @@
   "views": [
     {
       "name": "Requirements",
-      "attribute_ids": ["object_text", "object_type", "status", "sil", "safety_related", "allocation", "verification_method", "source", "link:syrs_strs", "link:swrs_syrs"]
+      "attribute_ids": ["object_text", "object_type", "status", "sil", "safety_related", "allocation", "verification_method", "source", "link:strs_opscen", "link:syrs_strs", "link:swrs_syrs"]
+    },
+    {
+      "name": "Operational Scenarios",
+      "attribute_ids": ["object_text", "object_type", "operational_mode", "actors", "trigger", "preconditions", "scenario_steps", "postconditions", "status", "link:strs_opscen"],
+      "modules": ["opscen"]
     },
     {
       "name": "Safety",

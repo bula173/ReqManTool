@@ -523,7 +523,8 @@ class CreateModuleBody(BaseModel):
     name: str
     prefix: str
     description: str = ""
-    # "requirements" (default), "test_cases" or "test_execution"; validated
+    # "requirements" (default), "test_cases", "test_execution" or
+    # "operational_scenarios"; validated
     # by the service so REST and WebSocket reject alike.
     type: Any = None
     # The module folder to create it in; null/omitted = the top level.
@@ -538,6 +539,12 @@ class CreateModuleFromTemplateBody(BaseModel):
     description: Any = None
     # The module folder to create it in; null/omitted = the top level.
     folder_id: Any = None
+
+
+class ApplyModuleSkeletonBody(BaseModel):
+    # A module template id (its heading skeleton is applied); null/omitted:
+    # the built-in template of the module's type. Validated by the service.
+    template_id: Any = None
 
 
 class SaveModuleAsTemplateBody(BaseModel):
@@ -1370,6 +1377,19 @@ async def create_module_from_template(project_id: str, body: CreateModuleFromTem
     return {**result, "module": result["module"].to_dict()}
 
 
+@app.post("/projects/{project_id}/modules/{module_id}/apply-skeleton/preview")
+def preview_module_skeleton(project_id: str, module_id: str, body: ApplyModuleSkeletonBody):
+    """Read-only: the chapter headings apply-skeleton would add (no write, no broadcast)."""
+    return _wrap(service.preview_module_skeleton, project_id, module_id, body.template_id)
+
+
+@app.post("/projects/{project_id}/modules/{module_id}/apply-skeleton")
+async def apply_module_skeleton(project_id: str, module_id: str, body: ApplyModuleSkeletonBody):
+    result = _wrap(service.apply_module_skeleton, project_id, module_id, body.template_id)
+    await manager.broadcast(project_id)
+    return result
+
+
 @app.post("/projects/{project_id}/modules/{module_id}/save-as-template")
 async def save_module_as_template(project_id: str, module_id: str, body: SaveModuleAsTemplateBody):
     template = _wrap(
@@ -1762,6 +1782,13 @@ RPC_METHODS = {
     "module.save_as_template": lambda p: service.save_module_as_template(
         p["project_id"], p["id"], p["name"], p.get("description", ""), p.get("view_id")
     ),
+    "module.apply_skeleton": lambda p: service.apply_module_skeleton(
+        p["project_id"], p["id"], p.get("template_id")
+    ),
+    # Read-only, never broadcast (not in MUTATING_METHODS).
+    "module.preview_skeleton": lambda p: service.preview_module_skeleton(
+        p["project_id"], p["id"], p.get("template_id")
+    ),
     "module.get": lambda p: service.get_module(p["project_id"], p["id"]),
     "module.list": lambda p: service.list_modules(p["project_id"]),
     "module.purge": lambda p: {"purged": service.purge_module(p["project_id"], p["id"])},
@@ -1881,7 +1908,8 @@ MUTATING_METHODS = {
     "project.create_from_remote", "project.create_from_provider", "project.git_publish",
     "project.git_review_start", "project.git_review_forget",
     "attribute.add", "attribute.set_modules",
-    "module.create", "module.create_from_template", "module.purge", "module.reorder", "module.move",
+    "module.create", "module.create_from_template", "module.apply_skeleton", "module.purge", "module.reorder",
+    "module.move",
     "module_folder.create", "module_folder.rename", "module_folder.delete", "module_folder.move",
     "module_folder.reorder",
     "link_configuration.create", "link_configuration.remove",

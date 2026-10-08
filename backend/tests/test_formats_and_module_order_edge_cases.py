@@ -156,7 +156,11 @@ def test_same_size_in_place_bump_with_restored_mtime_is_detected(service):
     before = path.stat()
     text = path.read_text()
     assert f'"format_version": {PROJECT_FORMAT.current},' in text
-    edited = text.replace(f'"format_version": {PROJECT_FORMAT.current},', f'"format_version": {NEWER},', 1)
+    old = f'"format_version": {PROJECT_FORMAT.current},'
+    new = f'"format_version": {NEWER},'
+    if len(new) > len(old):  # e.g. 9 -> 10: drop the space after the colon to keep the size
+        new = f'"format_version":{NEWER},'
+    edited = text.replace(old, new, 1)
     assert len(edited) == len(text)
     with open(path, "r+", encoding="utf-8") as handle:  # in place: same inode
         handle.write(edited)
@@ -470,7 +474,7 @@ def test_other_projects_stay_usable_next_to_a_newer_project(service):
 
     reloaded = ProjectService(ProjectStore(root))
     assert reloaded.get_requirement(blank.id, module.id, req.id).attributes["object_text"] == "fine"
-    assert [m.name for m in reloaded.list_modules(from_template.id)][0] == "StRS"
+    assert [m.name for m in reloaded.list_modules(from_template.id)][0] == "OpScen"
     summary = reloaded.save_project_as_template(blank.id, "From blank")
     assert reloaded.create_project("Copy", template_id=summary["id"]).id
     # The listing shows the newer project as a read-only stub instead of failing.
@@ -590,7 +594,7 @@ def test_module_order_via_rest_create_and_template(client):
     rbc = client.post("/projects", json={"name": "RBC", "template_id": "builtin:rbc_template"}).json()["id"]
     names = [m["name"] for m in client.get(f"/projects/{rbc}/modules").json()]
     # The RBC template's module tree, depth-first.
-    assert names == ["StRS", "SyRS", "SwRS", "SysTest", "SwTest", "SysTestExec", "SwTestExec"]
+    assert names == ["OpScen", "StRS", "SyRS", "SwRS", "SysTest", "SwTest", "SysTestExec", "SwTestExec"]
 
 
 # --- module reorder: REST / WebSocket parity ----------------------------------------

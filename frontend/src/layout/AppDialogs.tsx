@@ -30,6 +30,7 @@ import { ProjectReferencesModal } from '../components/ProjectReferencesModal';
 import { RemoveProjectModal } from '../components/RemoveProjectModal';
 import { RequirementFormModal } from '../components/RequirementFormModal';
 import { RowStylesModal } from '../components/RowStylesModal';
+import { ApplySkeletonModal } from '../components/ApplySkeletonModal';
 import { SaveAsTemplateModal } from '../components/SaveAsTemplateModal';
 import { SaveModuleAsTemplateModal } from '../components/SaveModuleAsTemplateModal';
 import { SaveLayoutAsViewModal } from '../components/SaveLayoutAsViewModal';
@@ -184,6 +185,16 @@ export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; 
           projectId={dialog.projectId}
           moduleId={dialog.moduleId}
           moduleName={dialog.moduleName}
+          onClose={onClose}
+        />
+      );
+    case 'applySkeleton':
+      return (
+        <ApplySkeletonModal
+          projectId={dialog.projectId}
+          moduleId={dialog.moduleId}
+          moduleName={dialog.moduleName}
+          moduleType={dialog.moduleType}
           onClose={onClose}
         />
       );

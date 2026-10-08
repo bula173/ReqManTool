@@ -736,6 +736,7 @@ def test_saved_template_json_format_and_contents(service):
     )
     types = {m["key"]: m.get("type", "requirements") for m in data["modules"]}
     assert types == {
+        "opscen": "operational_scenarios",
         "strs": "requirements", "syrs": "requirements", "swrs": "requirements",
         "systest": "test_cases", "swtest": "test_cases",
         "systestexec": "test_execution", "swtestexec": "test_execution",
@@ -743,7 +744,9 @@ def test_saved_template_json_format_and_contents(service):
     assert all("type" not in m for m in data["modules"] if types[m["key"]] == "requirements")
     assert {"strs", "syrs", "swrs"} <= {m["key"] for m in data["modules"] if m.get("skeleton")}
     assert all(list(c) == ["key", "name", "source_module", "target_module"] for c in data["link_configurations"])
-    assert all(list(v) == ["name", "attribute_ids"] for v in data["views"])
+    # ``modules`` only for a view scoped to some modules (the RBC Operational Scenarios view).
+    assert all(list(v) == ["name", "attribute_ids"] + (["modules"] if "modules" in v else []) for v in data["views"])
+    assert [v["modules"] for v in data["views"] if "modules" in v] == [["opscen"]]
     # Mirror attributes are not saved as attributes; requirements, counters and parent are not saved.
     assert not any(a.get("system") for a in data["attributes"])
     assert {a["id"] for a in data["attributes"]}.isdisjoint({c["key"] for c in data["link_configurations"]})

@@ -76,11 +76,14 @@ DATE_ERROR = "Run On: '{}' is not a date (expected YYYY-MM-DD)"
 
 def test_attribute_types_include_date():
     assert ATTRIBUTE_TYPES == ("string", "text", "integer", "boolean", "enum", "date")
-    assert MODULE_TYPES == ("requirements", "test_cases", "test_execution")
+    assert MODULE_TYPES == ("requirements", "test_cases", "test_execution", "operational_scenarios")
     assert LINK_TYPE_PAIRS == (
         ("requirements", "requirements"),
         ("test_cases", "requirements"),
         ("test_execution", "test_cases"),
+        ("requirements", "operational_scenarios"),
+        ("test_cases", "operational_scenarios"),
+        ("operational_scenarios", "operational_scenarios"),
     )
 
 
@@ -347,7 +350,7 @@ def test_create_module_rejects_unknown_type_and_writes_nothing(service, tmp_path
     with pytest.raises(ValueError) as excinfo:
         service.create_module(project.id, "Mod", "M", type=module_type)
     assert str(excinfo.value) == (
-        f"Unknown module type {module_type!r}; expected one of requirements, test_cases, test_execution"
+        f"Unknown module type {module_type!r}; expected one of requirements, test_cases, test_execution, operational_scenarios"
     )
     assert service.list_modules(project.id) == []
     assert _snapshot(tmp_path / project.id) == before
@@ -394,7 +397,7 @@ def test_create_module_type_rest_and_ws(client, tmp_path):
 
 def test_create_module_invalid_type_rest_400_ws_32602_and_no_broadcast(client, tmp_path):
     project_id = client.post("/projects", json={"name": "P"}).json()["id"]
-    expected = "Unknown module type 'Tests'; expected one of requirements, test_cases, test_execution"
+    expected = "Unknown module type 'Tests'; expected one of requirements, test_cases, test_execution, operational_scenarios"
     with client.websocket_connect("/ws") as ws, client.websocket_connect("/ws") as watcher:
         resp = client.post(f"/projects/{project_id}/modules", json={"name": "T", "prefix": "T", "type": "Tests"})
         assert resp.status_code == 400
@@ -454,8 +457,8 @@ def test_empty_module_types_are_not_written(service, tmp_path):
 @pytest.mark.parametrize(
     "module_types, message",
     [
-        (["bogus"], "Unknown module type(s) ['bogus']; expected some of requirements, test_cases, test_execution"),
-        (["test_cases", "Tests"], "Unknown module type(s) ['Tests']; expected some of requirements, test_cases, test_execution"),
+        (["bogus"], "Unknown module type(s) ['bogus']; expected some of requirements, test_cases, test_execution, operational_scenarios"),
+        (["test_cases", "Tests"], "Unknown module type(s) ['Tests']; expected some of requirements, test_cases, test_execution, operational_scenarios"),
         ("test_cases", "Attribute module_types must be a list of module types"),
         ([1], "Attribute module_types must be a list of module types"),
     ],
@@ -594,7 +597,8 @@ def test_link_configuration_refuses_other_type_pairs_and_writes_nothing(service,
     assert str(excinfo.value) == (
         f"A link from module 'Source' ({source_type}) to module 'Target' ({target_type}) is not allowed; "
         "link configurations join requirements → requirements, test_cases → requirements, "
-        "test_execution → test_cases"
+        "test_execution → test_cases, requirements → operational_scenarios, "
+        "test_cases → operational_scenarios, operational_scenarios → operational_scenarios"
     )
     assert _snapshot(tmp_path / project.id) == before
     assert service.list_link_configurations(project.id) == []
@@ -637,7 +641,7 @@ def test_stored_link_configuration_with_disallowed_types_keeps_loading_and_linki
 
 
 def test_project_format_is_current_and_v4_project_loads_without_rewrite(service, tmp_path):
-    assert PROJECT_FORMAT.current == 8
+    assert PROJECT_FORMAT.current == 9
     project = service.create_project("P")
     module = service.create_module(project.id, "Reqs", "REQ")
     service.add_attribute_definition(project.id, "note", "Note")
@@ -674,6 +678,7 @@ def test_rbc_template_lists_and_creates_module_types(service):
     rbc = next(t for t in service.list_templates() if t["id"] == RBC)
     types = {m["key"]: m["type"] for m in rbc["modules"]}
     assert types == {
+        "opscen": "operational_scenarios",
         "strs": "requirements", "syrs": "requirements", "swrs": "requirements",
         "systest": "test_cases", "swtest": "test_cases",
         "systestexec": "test_execution", "swtestexec": "test_execution",

@@ -1,6 +1,7 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { API_BASE_URL, api } from './client';
 import type {
+  ApplyModuleSkeletonResult,
   AttributeDefinition,
   Baseline,
   BaselineCompare,
@@ -27,6 +28,7 @@ import type {
   LinkOption,
   Module,
   ModuleFolder,
+  ModuleSkeletonPreview,
   ModuleTemplateSummary,
   ModuleTreeEntry,
   ModuleType,
@@ -515,6 +517,47 @@ export function useCreateModuleFromTemplate(projectId: string) {
     }) =>
       api.post<CreateModuleFromTemplateResult>(
         `/projects/${encodeURIComponent(projectId)}/modules/from-template`,
+        body,
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+    },
+  });
+}
+
+/**
+ * What "Apply chapter template" would add to a module (`POST
+ * .../apply-skeleton/preview`, WS `module.preview_skeleton`): read-only, so a
+ * plain query keyed by the template; `templateId` null means the built-in
+ * template of the module's type.
+ */
+export function useModuleSkeletonPreview(projectId: string, moduleId: string, templateId: string | null) {
+  return useQuery({
+    queryKey: [...queryKeys.project(projectId), 'skeleton-preview', moduleId, templateId] as const,
+    queryFn: () =>
+      api.post<ModuleSkeletonPreview>(
+        `/projects/${encodeURIComponent(projectId)}/modules/${encodeURIComponent(moduleId)}/apply-skeleton/preview`,
+        { template_id: templateId },
+      ),
+    // Always recomputed when the dialog opens: the module may have changed.
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+  });
+}
+
+/**
+ * Adds a chapter template's missing headings to an existing module (`POST
+ * .../apply-skeleton`, WS `module.apply_skeleton`). Idempotent; existing
+ * requirements are never changed. Everything under the project is refetched
+ * (requirements, and the Object Type scope if it was extended).
+ */
+export function useApplyModuleSkeleton(projectId: string, moduleId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { template_id: string | null }) =>
+      api.post<ApplyModuleSkeletonResult>(
+        `/projects/${encodeURIComponent(projectId)}/modules/${encodeURIComponent(moduleId)}/apply-skeleton`,
         body,
       ),
     onSuccess: () => {

@@ -1,0 +1,111 @@
+{
+  "format_version": 1,
+  "kind": "module",
+  "id": "operational_scenarios",
+  "name": "Operational scenarios",
+  "description": "An operational scenario (ConOps) module: actors, triggers, steps and outcomes of normal, degraded, emergency and maintenance operation.",
+  "module": {
+    "name": "Operational Scenarios",
+    "prefix": "OPS",
+    "description": "Operational scenarios / concept of operations: how the system is used, step by step.",
+    "type": "operational_scenarios"
+  },
+  "attributes": [
+    {
+      "id": "object_type",
+      "name": "Object Type",
+      "type": "enum",
+      "default": null,
+      "choices": [
+        "Heading",
+        "Requirement",
+        "Information",
+        "Definition",
+        "Assumption",
+        "Test Case"
+      ]
+    },
+    {
+      "id": "status",
+      "name": "Status",
+      "type": "enum",
+      "default": "Draft",
+      "choices": [
+        "Draft",
+        "Proposed",
+        "Reviewed",
+        "Approved",
+        "Rejected",
+        "Deleted"
+      ]
+    },
+    {
+      "id": "actors",
+      "name": "Actors",
+      "type": "text",
+      "default": null,
+      "choices": null
+    },
+    {
+      "id": "trigger",
+      "name": "Trigger",
+      "type": "text",
+      "default": null,
+      "choices": null
+    },
+    {
+      "id": "preconditions",
+      "name": "Preconditions",
+      "type": "text",
+      "default": null,
+      "choices": null
+    },
+    {
+      "id": "scenario_steps",
+      "name": "Scenario Steps",
+      "type": "text",
+      "default": null,
+      "choices": null
+    },
+    {
+      "id": "postconditions",
+      "name": "Postconditions",
+      "type": "text",
+      "default": null,
+      "choices": null
+    }
+  ],
+  "view": {
+    "name": "Operational Scenarios",
+    "attribute_ids": [
+      "object_text",
+      "object_type",
+      "actors",
+      "trigger",
+      "preconditions",
+      "scenario_steps",
+      "postconditions",
+      "status"
+    ]
+  },
+  "skeleton": [
+    {
+      "heading": "Introduction"
+    },
+    {
+      "heading": "Actors and Roles"
+    },
+    {
+      "heading": "Normal Operation"
+    },
+    {
+      "heading": "Degraded Operation"
+    },
+    {
+      "heading": "Emergency"
+    },
+    {
+      "heading": "Maintenance"
+    }
+  ]
+}

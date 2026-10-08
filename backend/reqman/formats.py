@@ -123,7 +123,8 @@ def _project_v4_to_v5(data: dict) -> dict:
     """Project format 4 -> 5: module types, type-scoped attributes and ``date`` attributes.
 
     Version 5 adds ``Module.type`` (``module.json``: ``requirements``,
-    ``test_cases`` or ``test_execution``; absent = ``requirements``),
+    ``test_cases`` or ``test_execution``, later also
+    ``operational_scenarios`` (format 9); absent = ``requirements``),
     ``AttributeDefinition.module_types`` (the module types an attribute also
     applies to; absent or empty = none) and the ``date`` attribute type
     (ISO ``YYYY-MM-DD`` strings). Version 4 had none of them: every module
@@ -208,9 +209,37 @@ def _project_v7_to_v8(data: dict) -> dict:
     return data
 
 
+def _project_v8_to_v9(data: dict) -> dict:
+    """Project format 8 -> 9: the ``operational_scenarios`` module type.
+
+    Version 9 adds ``operational_scenarios`` to ``MODULE_TYPES``
+    (``module.json`` ``type`` and ``AttributeDefinition.module_types``).
+    Version 8 read an unknown module type as ``requirements``, so no module
+    of a version 8 project had this type and an ``operational_scenarios``
+    entry in an attribute's ``module_types`` matched nothing: such entries
+    are dropped here so they keep meaning nothing. Module files are not
+    rewritten (the one theoretical exception, a hand-added
+    ``"type": "operational_scenarios"``, is read as the module's type from
+    now on). Requirement and link-pair files are unchanged. The bump exists
+    so that an older ReqManTool, which would read operational scenario
+    modules as requirements modules and drop the type and type scopes on
+    save, refuses version 9 projects instead.
+    """
+    attributes = data.get("attributes")
+    if isinstance(attributes, list):
+        for attr in attributes:
+            if isinstance(attr, dict) and isinstance(attr.get("module_types"), list):
+                kept = [t for t in attr["module_types"] if t != "operational_scenarios"]
+                if kept:
+                    attr["module_types"] = kept
+                else:
+                    attr.pop("module_types")
+    return data
+
+
 PROJECT_FORMAT = FileFormat(
     name="project",
-    current=8,
+    current=9,
     migrations={
         1: _project_v1_to_v2,
         2: _project_v2_to_v3,
@@ -219,6 +248,7 @@ PROJECT_FORMAT = FileFormat(
         5: _project_v5_to_v6,
         6: _project_v6_to_v7,
         7: _project_v7_to_v8,
+        8: _project_v8_to_v9,
     },
 )
 CONFIG_FORMAT = FileFormat(name="config", current=1)

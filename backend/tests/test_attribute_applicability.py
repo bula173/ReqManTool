@@ -172,8 +172,10 @@ def test_rbc_template_scopes_attributes_by_module(service):
     attrs = {a.id: a for a in project.attributes}
     tests = [modules["SysTest"], modules["SwTest"]]
     specs = [modules["StRS"], modules["SyRS"], modules["SwRS"]]
-    for attr_id in ("preconditions", "test_steps", "expected_result", "test_result"):
+    for attr_id in ("test_steps", "expected_result", "test_result"):
         assert attrs[attr_id].modules == tests
+    # Preconditions also describe operational scenarios.
+    assert attrs["preconditions"].modules == [modules["OpScen"], *tests]
     for attr_id in ("sil", "allocation", "verification_method"):
         assert attrs[attr_id].modules == specs
     assert attrs["status"].modules == []

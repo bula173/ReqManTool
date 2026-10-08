@@ -21,8 +21,8 @@ AttributeType = Literal["string", "text", "integer", "boolean", "enum", "date"]
 # What a module holds (project format 5). ``requirements`` is the default, and
 # the only kind before module types existed. Rules (which link configurations
 # may join which kinds) live in ``ProjectService``.
-ModuleType = Literal["requirements", "test_cases", "test_execution"]
-MODULE_TYPES: tuple[str, ...] = ("requirements", "test_cases", "test_execution")
+ModuleType = Literal["requirements", "test_cases", "test_execution", "operational_scenarios"]
+MODULE_TYPES: tuple[str, ...] = ("requirements", "test_cases", "test_execution", "operational_scenarios")
 DEFAULT_MODULE_TYPE = "requirements"
 
 
@@ -265,7 +265,8 @@ class Module:
     name: str
     prefix: str
     description: str = ""
-    # One of ``MODULE_TYPES`` (project format 5). Written only when it is not
+    # One of ``MODULE_TYPES`` (project format 5; ``operational_scenarios``
+    # since format 9). Written only when it is not
     # the default, so a requirements module keeps exactly the keys it had
     # before module types existed (API responses omit it the same way). A
     # missing or unknown value reads as ``requirements``.
