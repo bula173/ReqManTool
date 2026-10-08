@@ -1481,6 +1481,38 @@
       AppDialogs.tsx}`, `index.css`. Not covered: tests, browser
       verification; follow-ups in the backlog ("Two-step linking:
       follow-ups").
+- [x] **AGPL compliance in the app** (2026-10-08; follow-up of the
+      2026-10-06 licence change). AGPL §13 source offer: a "Source code"
+      link in the footer and Help ▸ About from the new `GET /about` (WS
+      `about.get`) → `{version, build, license, source_url,
+      source_ref|null, source_link}`; `GET /version` unchanged. Setting
+      `source_url`: env `REQMAN_SOURCE_URL` > config key `source_url` >
+      default `https://github.com/bula173/ReqManTool`; must be http(s)
+      (startup fails otherwise); trailing `/`/`.git` stripped. Ref: a
+      commit build id → that commit; tag-like → the tag; `dev`, `-dirty`,
+      another `REQMAN_BUILD` or a checkout with uncommitted tracked
+      changes → repo root; link `<source_url>/tree/<ref>`. The frontend
+      falls back to the upstream URL if the backend is unreachable;
+      `etc/build-dist.sh` marks dirty builds `-dirty`. About dialog:
+      Source code and Licence (`AGPL-3.0-only`) rows, AGPL notice
+      (copyright 2026 Marcin Kwiatkowski, no-warranty wording, commercial
+      licence / `LICENSING.md`), note that operators of modified versions
+      must publish their source and set `source_url`; stale "(MIT
+      license)" text removed. Third-party licences: Vite plugin
+      `frontend/plugins/thirdPartyLicenses.ts` (no new dependency) emits
+      `dist/assets/third-party-licenses.json` from production deps with
+      licence texts (warns, never fails the build); the backend list is
+      computed at runtime from installed metadata (`GET
+      /about/third-party`, WS `about.third_party`). SPDX `AGPL-3.0-only`
+      in `frontend/package.json` (+ package-lock root); `pyproject.toml`
+      already had it. `CONTRIBUTING.md` (new) with the CLA requirement;
+      `LICENSING.md`, `README.md`, `docs/ARCHITECTURE.md` updated.
+      Backend: `backend/reqman/{licenses.py (new), version.py, config.py,
+      app.py}`. UI: `AboutModal` (Help ▸ About), `VersionFooter`,
+      `ThirdPartyLicensesModal` (new; Frontend/Backend tabs, filter,
+      expandable texts, opened from About), `hooks/useSourceCode.ts`
+      (new). Not covered: tests, CLA text; follow-ups in the backlog
+      ("AGPL compliance: follow-ups").
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -1563,14 +1595,6 @@ item first (phase A), then test, review and fix by area (phase B).
 
 ### Next — requested, in delivery order
 
-- [ ] AGPL compliance in the app. Follow-up of the 2026-10-06 licence
-      change. AGPL §13: users interacting with the app over a network must
-      be offered the corresponding source — add a "Source code" link (repo
-      URL + exact version/commit from the version item) in Help → About
-      and the footer; licence notice in About; SPDX
-      `AGPL-3.0-only` in `frontend/package.json` and (with the
-      distribution item) `pyproject.toml`; a third-party licence list
-      generated at build time; `CONTRIBUTING.md` with the CLA requirement.
 - [ ] Server edition: login (GitLab / OIDC / LDAP), users, project
       membership, module edit locks. Requested 2026-10-06 (replaces the
       2026-10-04 "User handling" item; scope change confirmed by the user).
@@ -1955,6 +1979,18 @@ area by area once phase A is complete.
       the menus. (3) On narrow screens one Esc closes a side-panel overlay
       and cancels the pending link at once. (4) No frontend tests (phase
       B).
+- [ ] AGPL compliance: follow-ups (2026-10-08). (1) The actual CLA text
+      or a CLA-assistant setup must be supplied by the user
+      (`CONTRIBUTING.md` only states the requirement). (2) A fork's
+      frontend falls back to the upstream URL when the backend is
+      unreachable (a build-time `define` override is possible). (3) Commit
+      links 404 for unpushed local commits (only uncommitted changes are
+      detected). (4) No Help-menu item opens the third-party licence list
+      directly. (5) `licensesOpen` stays true if About is closed from
+      outside. (6) Environment markers other than `extra` are not
+      evaluated in the Python third-party list. (7) Tests pending (phase
+      B); `tests/test_version.py::test_app_startup_prewarms_git_build`
+      was adjusted.
 
 ### Open decisions
 

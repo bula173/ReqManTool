@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import type { IncomingMessage } from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { defineConfig, type ProxyOptions } from 'vite'
+import { thirdPartyLicenses } from './plugins/thirdPartyLicenses.ts'
 
 // Backend the dev/preview server proxies API and WebSocket calls to. Lets the
 // app run behind a single public origin (e.g. a Cloudflare Tunnel) when built
@@ -28,6 +29,7 @@ const apiProxy: Record<string, ProxyOptions> = {
   '/config': { target: apiTarget },
   '/fs': { target: apiTarget },
   '/version': { target: apiTarget },
+  '/about': { target: apiTarget },
   '/templates': { target: apiTarget },
   '/module-templates': { target: apiTarget },
   '/prompts': { target: apiTarget },
@@ -80,7 +82,8 @@ function readBuildId(isBuild: boolean): string {
 
 // https://vite.dev/config/
 export default defineConfig(({ command }) => ({
-  plugins: [react()],
+  // thirdPartyLicenses: assets/third-party-licenses.json (Help ▸ About ▸ Third-party licences).
+  plugins: [react(), thirdPartyLicenses(fileURLToPath(new URL('.', import.meta.url)))],
   define: {
     __REQMAN_VERSION__: JSON.stringify(readToolVersion()),
     __REQMAN_BUILD__: JSON.stringify(readBuildId(command === 'build')),

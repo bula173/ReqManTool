@@ -1628,10 +1628,13 @@ console script (`reqman/cli.py`). The version comes from
   `http://localhost:8899` / `ws://localhost:8899/ws` and a production build
   uses the page origin (`''` and `ws(s)://<host>/ws`).
 - **Settings** (`config.py`): `data_dir`, `host`, `port`, `cors_origins`,
-  each resolved as CLI flag > env var (`REQMAN_DATA_DIR`, `REQMAN_HOST`,
-  `REQMAN_PORT`, `REQMAN_CORS_ORIGINS`) > config file > default
-  (`localhost`, `8899`, `http://localhost:5173`; data: `example_database/`
+  `source_url`, each resolved as CLI flag > env var (`REQMAN_DATA_DIR`,
+  `REQMAN_HOST`, `REQMAN_PORT`, `REQMAN_CORS_ORIGINS`, `REQMAN_SOURCE_URL`)
+  > config file > default (`localhost`, `8899`, `http://localhost:5173`,
+  `https://github.com/bula173/ReqManTool`; data: `example_database/`
   in a checkout, the per-user data directory in an installed package).
+  `source_url` (http(s) only, else start-up fails with `ValueError`) is
+  added without a `CONFIG_FORMAT` bump, like `host`/`port`.
   `reqman config` prints the effective values and their sources.
 - **Which config file**: `REQMAN_CONFIG_FILE` / `--config`; else, when
   running from a git checkout whose `.reqman/config.json` exists, that file
@@ -1745,6 +1748,20 @@ backend/reqman/
                    per process, pre-warmed in the FastAPI lifespan at
                    start-up; the backend has no build step, so the commit
                    date is used), else "dev".
+                   about_info(source_url) → {version, build, license,
+                   source_url, source_ref, source_link} for GET /about and
+                   WS about.get (AGPL-3.0 §13 "Source code" link):
+                   source_ref = the commit of a "<commit> (<date>)" build or
+                   a release-tag build id, None for dev, "-dirty" builds or
+                   a checkout with uncommitted tracked changes (git status,
+                   cached, pre-warmed with the build id); source_link =
+                   <source_url>/tree/<ref> or the repository.
+  licenses.py      python_third_party(): installed runtime dependencies of
+                   reqmantool (package metadata, or requirements.txt in a
+                   checkout, following Requires-Dist; extras skipped) with
+                   licence, homepage and licence-file texts; GET
+                   /about/third-party and WS about.third_party. Computed
+                   once per process.
 ```
 
 **Why a service layer at all, instead of putting logic in the route
@@ -1759,7 +1776,7 @@ almost mechanical adapter.
 ### REST API surface
 
 All routes are project-scoped (`/projects/{project_id}/...`) except
-`/projects`, `/templates`, `/config`, `/fs/browse`, and `/version`. See `backend/reqman/app.py` for
+`/projects`, `/templates`, `/config`, `/fs/browse`, `/version` and `/about`. See `backend/reqman/app.py` for
 the authoritative, current route list — the summary here groups them by
 resource:
 
@@ -1780,6 +1797,7 @@ resource:
 | Purge | `POST /projects/{id}/purge` |
 | Data directory | `GET/POST /config`, `GET /fs/browse` |
 | Version | `GET /version` → `{version, build}` (WS: `version.get`, read-only, no broadcast) |
+| About / licences | `GET /about` → `{version, build, license, source_url, source_ref, source_link}` (WS `about.get`), `GET /about/third-party` → `{packages: [{name, version, license, homepage, license_text}]}` (WS `about.third_party`) — read-only, no broadcast. The frontend's own npm list is a static file of the bundle, `assets/third-party-licenses.json`, emitted by `frontend/plugins/thirdPartyLicenses.ts` in `vite build` (served from memory by `vite` dev) |
 | Live sync | `WS /ws` |
 
 ### WebSocket JSON-RPC

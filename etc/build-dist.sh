@@ -16,8 +16,14 @@ PYTHON="${PYTHON:-python3}"
 
 # One build id for the frontend footer and the backend (GET /version):
 # REQMAN_BUILD if set (CI: the release tag), else "<short commit> (<date>)".
+# Uncommitted changes to tracked files mark the commit "-dirty": such a build
+# is not a published revision, so Help > About links the repository instead
+# of the commit (reqman/version.py, about_info).
 if [ -z "${REQMAN_BUILD:-}" ]; then
     COMMIT="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || true)"
+    if [ -n "$COMMIT" ] && [ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+        COMMIT="$COMMIT-dirty"
+    fi
     REQMAN_BUILD="${COMMIT:+$COMMIT ($(date +%Y-%m-%d))}"
     REQMAN_BUILD="${REQMAN_BUILD:-dev}"
 fi

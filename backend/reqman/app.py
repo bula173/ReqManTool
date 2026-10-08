@@ -37,7 +37,8 @@ from .service import RESULT_IMPORT_OPTIONS, ConflictError, ProjectLockedError, P
 from .store import ProjectStore
 from .templates import MAX_TEMPLATE_IMPORT_BYTES
 from .prompts import MAX_PROMPT_IMPORT_BYTES
-from .version import build_id, version_info
+from .licenses import python_third_party
+from .version import about_info, build_id, version_info
 
 logger = logging.getLogger("reqman.app")
 
@@ -70,6 +71,7 @@ async def lifespan(_app: FastAPI):
     # synchronously on the event loop, so the first `version.get` must not
     # wait on the git subprocess.
     build_id()
+    about_info(SETTINGS.source_url)
     yield
 
 
@@ -202,6 +204,21 @@ def root():
 @app.get("/version")
 def get_version():
     return version_info()
+
+
+# --- about: licence, corresponding source, third-party licences ------------
+
+
+@app.get("/about")
+def get_about():
+    """Version, build, licence (SPDX) and the source of this build (AGPL-3.0 §13); see version.about_info."""
+    return about_info(SETTINGS.source_url)
+
+
+@app.get("/about/third-party")
+def get_third_party_licenses():
+    """Licences of the installed Python runtime dependencies (the frontend bundle ships its own list)."""
+    return {"packages": list(python_third_party())}
 
 
 # --- config ----------------------------------------------------------
@@ -1485,6 +1502,8 @@ def _rpc_result_options(params: dict) -> dict[str, Any]:
 
 RPC_METHODS = {
     "version.get": lambda p: version_info(),
+    "about.get": lambda p: about_info(SETTINGS.source_url),
+    "about.third_party": lambda p: {"packages": list(python_third_party())},
     "project.create": lambda p: service.create_project(
         p["name"], p.get("description", ""), p.get("template_id"), p.get("parent_project_id")
     ),

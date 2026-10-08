@@ -367,9 +367,20 @@ def test_app_startup_prewarms_git_build(tmp_path, monkeypatch, fresh_git_cache):
     version_module._git_build.cache_clear()
     calls = []
     monkeypatch.setattr(version_module.subprocess, "run", _fake_git("abc1234 2026-10-04\n", calls=calls))
+    version_module._git_worktree_modified.cache_clear()
+
+    def git_log_calls():
+        return [call for call in calls if "log" in call[0][0]]
+
     with TestClient(app_module.app) as started:
-        assert len(calls) == 1
+        assert len(git_log_calls()) == 1
+        # The worktree check behind GET /about / about.get is prewarmed too.
+        started_calls = len(calls)
         with started.websocket_connect("/ws") as ws:
             ws.send_json({"jsonrpc": "2.0", "id": 1, "method": "version.get"})
             assert ws.receive_json()["result"]["build"] == "abc1234 (2026-10-04)"
-    assert len(calls) == 1
+            ws.send_json({"jsonrpc": "2.0", "id": 2, "method": "about.get"})
+            assert ws.receive_json()["result"]["build"] == "abc1234 (2026-10-04)"
+    assert len(git_log_calls()) == 1
+    assert len(calls) == started_calls
+    version_module._git_worktree_modified.cache_clear()

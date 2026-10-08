@@ -40,4 +40,12 @@ and the commercial licence.
 
 Dependencies keep their own licences (MIT, BSD, Apache-2.0 and similar,
 all compatible with AGPL-3.0). See `backend/requirements.txt` and
-`frontend/package.json`.
+`frontend/package.json`; the running app lists them with their licence
+texts in Help ▸ About ▸ Third-party licences.
+
+## Source code of a running instance
+
+The app links the source of the running build in its footer and in
+Help ▸ About. Whoever runs a modified version for other users over a
+network sets `source_url` (config file) or `REQMAN_SOURCE_URL` to the
+place where that modified source is published.

@@ -56,6 +56,8 @@ import type {
   VerificationReport,
   VerificationStatuses,
   VersionInfo,
+  AboutInfo,
+  ThirdPartyLicenses,
   View,
 } from './types';
 
@@ -135,6 +137,11 @@ export const queryKeys = {
   incomingLinks: (projectId: string, moduleId: string) => ['projects', projectId, 'incoming-links', moduleId] as const,
   config: ['config'] as const,
   version: ['version'] as const,
+  /** Under `version`: refetched with it on reconnect, and kept across data directory switches. */
+  about: ['version', 'about'] as const,
+  backendThirdParty: ['version', 'third-party'] as const,
+  /** The frontend bundle's own licence list (static file next to the bundle). */
+  frontendThirdParty: ['frontend-third-party'] as const,
   templates: ['templates'] as const,
   /** Module templates (GET /module-templates); fetched lazily, refetched on `templates_changed`. */
   moduleTemplates: ['module-templates'] as const,
@@ -164,6 +171,45 @@ export function useBackendVersion(): UseQueryResult<VersionInfo> {
     queryFn: () => api.get<VersionInfo>('/version'),
     staleTime: 5 * 60_000,
     retry: 1,
+  });
+}
+
+/** Licence and corresponding-source location of the backend build (GET /about). */
+export function useAbout(): UseQueryResult<AboutInfo> {
+  return useQuery({
+    queryKey: queryKeys.about,
+    queryFn: () => api.get<AboutInfo>('/about'),
+    staleTime: 5 * 60_000,
+    retry: 1,
+  });
+}
+
+/** Licences of the backend's Python dependencies (GET /about/third-party); fetched when shown. */
+export function useBackendThirdPartyLicenses(enabled: boolean): UseQueryResult<ThirdPartyLicenses> {
+  return useQuery({
+    queryKey: queryKeys.backendThirdParty,
+    queryFn: () => api.get<ThirdPartyLicenses>('/about/third-party'),
+    staleTime: Infinity,
+    retry: 1,
+    enabled,
+  });
+}
+
+/** Path of the frontend licence list, emitted next to the bundle by vite.config.ts (plugins/thirdPartyLicenses.ts). */
+export const FRONTEND_THIRD_PARTY_URL = `${import.meta.env.BASE_URL}assets/third-party-licenses.json`;
+
+/** Licences of the frontend's npm dependencies, generated at build time; fetched from the page origin when shown. */
+export function useFrontendThirdPartyLicenses(enabled: boolean): UseQueryResult<ThirdPartyLicenses> {
+  return useQuery({
+    queryKey: queryKeys.frontendThirdParty,
+    queryFn: async () => {
+      const response = await fetch(FRONTEND_THIRD_PARTY_URL, { headers: { Accept: 'application/json' } });
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
+      return (await response.json()) as ThirdPartyLicenses;
+    },
+    staleTime: Infinity,
+    retry: 1,
+    enabled,
   });
 }
 

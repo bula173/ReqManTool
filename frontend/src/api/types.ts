@@ -373,6 +373,33 @@ export interface VersionInfo {
   build: string;
 }
 
+/**
+ * GET /about (WebSocket `about.get`): the backend's version and build, its
+ * licence, and where the source of this build is (AGPL-3.0 §13).
+ * `source_ref` is the commit or release tag, or null when the build is not
+ * tied to a published revision (dev build, local changes); `source_link`
+ * then points at the repository itself.
+ */
+export interface AboutInfo extends VersionInfo {
+  license: string;
+  source_url: string;
+  source_ref: string | null;
+  source_link: string;
+}
+
+/** One third-party package and its licence (GET /about/third-party, and the frontend bundle's list). */
+export interface ThirdPartyPackage {
+  name: string;
+  version: string;
+  license: string;
+  homepage: string | null;
+  license_text: string | null;
+}
+
+export interface ThirdPartyLicenses {
+  packages: ThirdPartyPackage[];
+}
+
 export type TemplateSource = 'builtin' | 'user';
 
 /** One entry of GET /templates (WS `template.list`). */
