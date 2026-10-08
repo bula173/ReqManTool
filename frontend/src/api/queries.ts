@@ -59,6 +59,8 @@ import type {
   AboutInfo,
   ThirdPartyLicenses,
   View,
+  ViewCreate,
+  ViewUpdate,
 } from './types';
 
 export const queryKeys = {
@@ -1102,8 +1104,7 @@ export function useViews(projectId: string | undefined): UseQueryResult<View[]> 
 export function useCreateView(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string; attribute_ids: string[] }) =>
-      api.post<View>(`/projects/${projectId}/views`, body),
+    mutationFn: (body: ViewCreate) => api.post<View>(`/projects/${projectId}/views`, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.project(projectId) });
       qc.invalidateQueries({ queryKey: ['projects', projectId, 'views'] });
@@ -1118,6 +1119,23 @@ export function useSetViewColumnWidths(projectId: string) {
     mutationFn: ({ viewId, columnWidths }: { viewId: string; columnWidths: Record<string, number> | null }) =>
       api.put<View>(`/projects/${projectId}/views/${viewId}/column-widths`, { column_widths: columnWidths }),
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+      qc.invalidateQueries({ queryKey: ['projects', projectId, 'views'] });
+    },
+  });
+}
+
+/** Changes a view's name, ordered columns, shared widths and/or single-line columns (only the fields given). */
+export function useUpdateView(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ viewId, changes }: { viewId: string; changes: ViewUpdate }) =>
+      api.put<View>(`/projects/${projectId}/views/${encodeURIComponent(viewId)}`, changes),
+    onSuccess: (view) => {
+      // Show the saved view right away (callers drop their local draft of it on success).
+      qc.setQueryData<View[]>(['projects', projectId, 'views'], (views) =>
+        views?.map((v) => (v.id === view.id ? view : v)),
+      );
       qc.invalidateQueries({ queryKey: queryKeys.project(projectId) });
       qc.invalidateQueries({ queryKey: ['projects', projectId, 'views'] });
     },

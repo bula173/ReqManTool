@@ -274,6 +274,8 @@ MAX_TRACE_CHAIN = 10
 VIEW_ID_COLUMN = "@id"
 MIN_COLUMN_WIDTH = 40
 MAX_COLUMN_WIDTH = 4000
+# The fields ``ProjectService.update_view`` accepts (any non-empty subset).
+VIEW_UPDATE_FIELDS = ("name", "attribute_ids", "column_widths", "single_line", "modules")
 
 # Row styling rules (``Project.row_styles``): the most a project may have,
 # the keys of one rule, and the color format.
@@ -3510,10 +3512,15 @@ class ProjectService:
         name: str,
         attribute_ids: list[str],
         column_widths: Any = None,
+        single_line: Any = None,
+        modules: Any = None,
     ) -> View:
         project = self.store.load_project(project_id)
-        view = self._add_view(project, name, attribute_ids)
+        scope = self._checked_view_modules(project, modules)
+        view = self._add_view(project, name, self._checked_view_attribute_ids(project, attribute_ids))
         view.column_widths = self._checked_column_widths(column_widths, view)
+        view.single_line = self._checked_single_line(single_line, view)
+        view.modules = scope
         self.store.save_project(project)
         return view
 
@@ -3521,12 +3528,126 @@ class ProjectService:
     def set_view_column_widths(self, project_id: str, view_id: str, column_widths: Any) -> View:
         """Store (or, with None or an empty mapping, clear) a view's shared column widths."""
         project = self.store.load_project(project_id)
-        view = next((v for v in project.views if v.id == view_id), None)
-        if view is None:
-            raise FileNotFoundError(f"View '{view_id}' not found in project '{project_id}'")
+        view = self._get_view(project, view_id)
         view.column_widths = self._checked_column_widths(column_widths, view)
         self.store.save_project(project)
         return view
+
+    @_records_history
+    def update_view(self, project_id: str, view_id: str, changes: Any) -> View:
+        """Change any of a view's ``name``, ``attribute_ids``, ``column_widths``, ``single_line`` and ``modules``.
+
+        ``changes`` maps field names (``VIEW_UPDATE_FIELDS``, at least one) to
+        new values; fields not given keep their value. ``attribute_ids`` is
+        the ordered column list (the table's column order): defined
+        attributes, no duplicates. ``column_widths`` and ``single_line`` may
+        be None (or empty) to clear them; they must name the view's columns
+        (``VIEW_ID_COLUMN`` or one of the new ``attribute_ids``). When only
+        ``attribute_ids`` changes, the stored widths and single-line columns
+        of removed columns are dropped and the rest follow the new order.
+        ``modules`` is the view's module scope (module ids; None or empty:
+        every module). Everything is validated before anything is written.
+        """
+        if not isinstance(changes, dict):
+            raise ValueError("View changes must be an object")
+        unknown = [key for key in changes if key not in VIEW_UPDATE_FIELDS]
+        if unknown:
+            raise ValueError(
+                f"Unknown view field(s) {sorted(map(str, unknown))}; expected any of {list(VIEW_UPDATE_FIELDS)}"
+            )
+        if not changes:
+            raise ValueError(f"Nothing to update: give at least one of {list(VIEW_UPDATE_FIELDS)}")
+        project = self.store.load_project(project_id)
+        view = self._get_view(project, view_id)
+        name = self._checked_view_name(project, changes["name"], view.id) if "name" in changes else view.name
+        attribute_ids = (
+            self._checked_view_attribute_ids(project, changes["attribute_ids"])
+            if "attribute_ids" in changes
+            else list(view.attribute_ids)
+        )
+        # New values are validated against the new columns; kept values are
+        # pruned to them (never rejected: they may be hand-edited) and reordered.
+        updated = View(id=view.id, name=name, attribute_ids=attribute_ids)
+        order = list(dict.fromkeys((VIEW_ID_COLUMN, *attribute_ids)))
+        if "column_widths" in changes:
+            column_widths = self._checked_column_widths(changes["column_widths"], updated)
+        else:
+            stored = view.column_widths or {}
+            column_widths = {
+                k: stored[k] for k in order if k in stored and MIN_COLUMN_WIDTH <= stored[k] <= MAX_COLUMN_WIDTH
+            } or None
+        if "single_line" in changes:
+            single_line = self._checked_single_line(changes["single_line"], updated)
+        else:
+            single_line = [k for k in order if k in (view.single_line or [])] or None
+        modules = self._checked_view_modules(project, changes["modules"]) if "modules" in changes else view.modules
+        view.name = name
+        view.modules = modules
+        view.attribute_ids = attribute_ids
+        view.column_widths = column_widths
+        view.single_line = single_line
+        self.store.save_project(project)
+        return view
+
+    def _checked_view_modules(self, project: Project, modules: Any) -> list[str]:
+        """``modules`` as a stored view scope: existing module ids in display order ([]: every module)."""
+        if modules is None:
+            return []
+        if not isinstance(modules, list) or not all(isinstance(m, str) for m in modules):
+            raise ValueError("View modules must be a list of module ids")
+        order = self._module_order(project)
+        unknown = sorted(set(modules) - set(order))
+        if unknown:
+            raise ValueError(f"Unknown module(s) for project '{project.id}': {unknown}")
+        return [module_id for module_id in order if module_id in set(modules)]
+
+    @staticmethod
+    def _get_view(project: Project, view_id: str) -> View:
+        view = next((v for v in project.views if v.id == view_id), None)
+        if view is None:
+            raise FileNotFoundError(f"View '{view_id}' not found in project '{project.id}'")
+        return view
+
+    @staticmethod
+    def _checked_view_attribute_ids(project: Project, attribute_ids: Any) -> list[str]:
+        """A view's ordered attribute columns: a list of defined attribute ids without duplicates."""
+        if not isinstance(attribute_ids, list) or not all(isinstance(a, str) for a in attribute_ids):
+            raise ValueError("attribute_ids must be a list of attribute ids")
+        duplicates = sorted({a for a in attribute_ids if attribute_ids.count(a) > 1})
+        if duplicates:
+            raise ValueError(f"Duplicate attribute(s) in view: {duplicates}")
+        defined_ids = {a.id for a in project.attributes}
+        unknown = set(attribute_ids) - defined_ids
+        if unknown:
+            raise ValueError(f"Unknown attribute(s) for project '{project.id}': {sorted(unknown)}")
+        return list(attribute_ids)
+
+    @staticmethod
+    def _checked_single_line(single_line: Any, view: View) -> list[str] | None:
+        """Validated single-line (no wrap) columns for ``view``, or None when there are none.
+
+        A list of the view's column keys (``VIEW_ID_COLUMN`` or one of its
+        ``attribute_ids``) without duplicates; None or an empty list means
+        every column wraps (the key is then not written). Stored in the
+        view's column order.
+        """
+        if single_line is None:
+            return None
+        if not isinstance(single_line, list) or not all(isinstance(k, str) for k in single_line):
+            raise ValueError("single_line must be a list of column keys")
+        allowed = (VIEW_ID_COLUMN, *view.attribute_ids)
+        seen: set[str] = set()
+        for key in single_line:
+            if key not in allowed:
+                raise ValueError(
+                    f"Unknown column '{key}' for view '{view.name}'; expected '{VIEW_ID_COLUMN}' "
+                    "or one of the view's attribute ids"
+                )
+            if key in seen:
+                raise ValueError(f"Duplicate column '{key}' in single_line")
+            seen.add(key)
+        ordered = [key for key in allowed if key in seen]
+        return ordered or None
 
     @staticmethod
     def _checked_column_widths(column_widths: Any, view: View) -> dict[str, int] | None:
@@ -3572,8 +3693,8 @@ class ProjectService:
 
         Names are compared case-insensitively after stripping, like view
         names in templates, so a project can always be saved as a template.
-        ``view_id`` is the view being renamed (its own name is not a clash);
-        no caller passes it yet: it is reserved for a future view rename.
+        ``view_id`` is the view being renamed (its own name is not a clash;
+        ``update_view``).
         Existing duplicates in older data are left as they are.
         """
         if not isinstance(name, str) or not name.strip():
@@ -4088,7 +4209,14 @@ class ProjectService:
                         f"views[{index}] ('{tview.name}'): unknown attribute '{ref}' (expected "
                         f"'object_text', a template attribute id, or '{LINK_REF_PREFIX}<key>')"
                     )
-            self._add_view(project, tview.name, mapped)
+            view = self._add_view(project, tview.name, mapped)
+            try:
+                self._apply_template_view_layout(tview, view, dict(zip(tview.attribute_ids, mapped)))
+            except ValueError as exc:
+                raise ValueError(f"views[{index}] ('{tview.name}'): {exc}") from exc
+            # Module keys were checked by the template parser.
+            wanted_modules = {module_ids[key] for key in tview.modules}
+            view.modules = [m for m in module_tree.module_ids(project.module_order) if m in wanted_modules]
 
         for index, mtemplate, id_map in pending_views:
             try:
@@ -4235,15 +4363,19 @@ class ProjectService:
         kept_ids = builtin_ids | {a.id for a in attributes}
         views = []
         for view in project.views:
-            refs: list[str] = []
+            ref_of: dict[str, str] = {}
             for attr_id in view.attribute_ids:
                 if attr_id in link_ids:
-                    refs.append(f"{LINK_REF_PREFIX}{attr_id}")
+                    ref_of[attr_id] = f"{LINK_REF_PREFIX}{attr_id}"
                 elif attr_id in kept_ids:
-                    refs.append(attr_id)
+                    ref_of[attr_id] = attr_id
                 # else: a reference the project itself no longer resolves
                 # (e.g. its link configuration was removed) is dropped.
-            views.append(TemplateView(name=view.name, attribute_ids=refs))
+            refs = [ref_of[a] for a in view.attribute_ids if a in ref_of]
+            template_view = ProjectService._template_view(view, refs, ref_of)
+            # Module keys are module ids; a scope entry naming no module is dropped.
+            template_view.modules = [m.id for m in modules if m.id in view.modules]
+            views.append(template_view)
         return Template(
             id=template_id,
             source=USER_SOURCE,
@@ -4477,6 +4609,10 @@ class ProjectService:
         for attr in project.attributes:
             if len(attr.modules) > 1:
                 attr.modules = sorted(attr.modules, key=lambda m: position.get(m, len(position)))
+        # View scopes follow the same order.
+        for view in project.views:
+            if len(view.modules) > 1:
+                view.modules = sorted(view.modules, key=lambda m: position.get(m, len(position)))
 
     def _merge_template_view(self, project: Project, view: TemplateView | None, id_map: dict[str, str]) -> str | None:
         """Add a module template's view unless one of that name exists; the new view's id, or None."""
@@ -4486,7 +4622,43 @@ class ProjectService:
         if any(isinstance(v.name, str) and v.name.strip().casefold() == folded for v in project.views):
             return None
         refs = [ref if ref == "object_text" else id_map[ref] for ref in view.attribute_ids]
-        return self._add_view(project, view.name, refs).id
+        added = self._add_view(project, view.name, refs)
+        try:
+            self._apply_template_view_layout(view, added, dict(zip(view.attribute_ids, refs)))
+        except ValueError as exc:
+            raise ValueError(f"view ('{view.name}'): {exc}") from exc
+        return added.id
+
+    @staticmethod
+    def _template_view(view: View, refs: list[str], ref_of: dict[str, str]) -> TemplateView:
+        """``view`` as a template view: its kept columns as ``refs`` (``ref_of``: attribute id to ref), with its layout."""
+        def key_ref(key: str) -> str | None:
+            return VIEW_ID_COLUMN if key == VIEW_ID_COLUMN else ref_of.get(key)
+
+        widths = {key_ref(k): w for k, w in (view.column_widths or {}).items() if key_ref(k) is not None}
+        single_line = [key_ref(k) for k in (view.single_line or []) if key_ref(k) is not None]
+        return TemplateView(
+            name=view.name, attribute_ids=refs, column_widths=widths or None, single_line=single_line or None
+        )
+
+    @classmethod
+    def _apply_template_view_layout(cls, tview: TemplateView, view: View, id_of: dict[str, str]) -> None:
+        """Set ``view``'s widths and single-line columns from a template view (``id_of``: ref to attribute id)."""
+        def key_id(key: str) -> str:
+            if key == VIEW_ID_COLUMN:
+                return key
+            if key not in id_of:
+                raise ValueError(
+                    f"Unknown column '{key}'; expected '{VIEW_ID_COLUMN}' or one of the view's attribute_ids"
+                )
+            return id_of[key]
+
+        if tview.column_widths:
+            view.column_widths = cls._checked_column_widths(
+                {key_id(k): w for k, w in tview.column_widths.items()}, view
+            )
+        if tview.single_line:
+            view.single_line = cls._checked_single_line([key_id(k) for k in tview.single_line], view)
 
     @classmethod
     def _skeleton_object_type(cls, project: Project, module: Module) -> AttributeDefinition:
@@ -4831,7 +5003,9 @@ class ProjectService:
         ]
         kept = builtin_ids | {a.id for a in attributes}
         template_view = (
-            TemplateView(name=view.name, attribute_ids=[a for a in view.attribute_ids if a in kept])
+            self._template_view(
+                view, [a for a in view.attribute_ids if a in kept], {a: a for a in view.attribute_ids if a in kept}
+            )
             if view is not None
             else None
         )

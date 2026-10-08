@@ -32,6 +32,7 @@ import {
   IconTemplate,
   IconTrash,
   IconTrashX,
+  IconPencil,
 } from '@tabler/icons-react';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -558,8 +559,9 @@ export function ProjectPage() {
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Name</Table.Th>
-                <Table.Th>Attributes</Table.Th>
-                <Table.Th w={60} />
+                <Table.Th>Columns (in order)</Table.Th>
+                <Table.Th>Modules</Table.Th>
+                <Table.Th w={90} />
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -568,11 +570,30 @@ export function ProjectPage() {
                   <Table.Td>{view.name}</Table.Td>
                   <Table.Td>{view.attribute_ids.map(attributeLabel).join(', ')}</Table.Td>
                   <Table.Td>
-                    <Tooltip label="Remove">
-                      <ActionIcon variant="subtle" color="red" disabled={readOnly} onClick={() => handleRemoveView(view)}>
-                        <IconTrash size={16} />
-                      </ActionIcon>
-                    </Tooltip>
+                    {(view.modules ?? []).length === 0
+                      ? 'All'
+                      : (view.modules ?? []).map((id) => modulesQuery.data?.find((m) => m.id === id)?.name ?? id).join(', ')}
+                  </Table.Td>
+                  <Table.Td>
+                    <Group gap={2} wrap="nowrap">
+                      <Tooltip label="Edit view (name, columns, order, wrap, modules)">
+                        <ActionIcon
+                          variant="subtle"
+                          aria-label={`Edit view ${view.name}`}
+                          disabled={readOnly}
+                          onClick={() =>
+                            appState.commands.openDialog({ kind: 'editView', projectId: project.id, viewId: view.id })
+                          }
+                        >
+                          <IconPencil size={16} />
+                        </ActionIcon>
+                      </Tooltip>
+                      <Tooltip label="Remove">
+                        <ActionIcon variant="subtle" color="red" disabled={readOnly} onClick={() => handleRemoveView(view)}>
+                          <IconTrash size={16} />
+                        </ActionIcon>
+                      </Tooltip>
+                    </Group>
                   </Table.Td>
                 </Table.Tr>
               ))}

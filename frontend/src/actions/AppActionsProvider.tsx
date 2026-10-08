@@ -32,12 +32,14 @@ import {
   useReorderRequirement,
   useRequirements,
   useSetViewColumnWidths,
+  useUpdateView,
   useTemplates,
   useUnlockProject,
   useUnlinkRequirements,
   useViews,
   type FindRequirementResult,
 } from '../api/queries';
+import { applicableViews } from '../api/applicability';
 import { VERIFICATION_COLUMN_STORAGE_KEY } from '../hooks/columnLayout';
 import { resolveAndLink } from '../hooks/useDropLink';
 import { AppDialogs } from '../layout/AppDialogs';
@@ -127,6 +129,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const gitPush = useGitPush(projectId ?? '');
   const gitPull = useGitPull(projectId ?? '');
   const setViewColumnWidths = useSetViewColumnWidths(projectId ?? '');
+  const updateView = useUpdateView(projectId ?? '');
   // The data folder the clipboard and selection belong to (null until known).
   const dataDir = useConfig().data?.data_dir ?? null;
   // Module tabs: remembered per browser and data folder.
@@ -219,7 +222,11 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   );
   const selectedId = selection.moduleKey === moduleKey ? selection.id : null;
   const selectedRequirement = requirements.find((r) => r.id === selectedId) ?? null;
-  const views = useMemo(() => (projectId ? (viewsQuery.data ?? []) : []), [projectId, viewsQuery.data]);
+  // The views offered here: on a module page, only those that apply to the module.
+  const views = useMemo(
+    () => (projectId ? applicableViews(viewsQuery.data ?? [], moduleId) : []),
+    [projectId, moduleId, viewsQuery.data],
+  );
   const requestedViewId = activeView.projectId === projectId ? activeView.viewId : null;
   const activeViewId = views.some((v) => v.id === requestedViewId) ? requestedViewId : null;
 
@@ -282,6 +289,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       selectRequirement: (id) => setSelection({ moduleKey, id }),
       setActiveView: (viewId) => setActiveViewState({ projectId, viewId }),
       setViewColumnWidths: (viewId, columnWidths) => setViewColumnWidths.mutateAsync({ viewId, columnWidths }),
+      updateView: (viewId, changes) => updateView.mutateAsync({ viewId, changes }),
       setLeftPanelOpen: (open) => setPanelOpen('left', open),
       setDetailPanelOpen: (open) => setPanelOpen('right', open),
       setColorScheme,
@@ -451,6 +459,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       gitPush.mutateAsync,
       gitPull.mutateAsync,
       setViewColumnWidths.mutateAsync,
+      updateView.mutateAsync,
       unlinkRequirements.mutateAsync,
       reorderModule.mutateAsync,
       moveModule.mutateAsync,

@@ -28,7 +28,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from .config import (
     check_config_writable,
@@ -607,6 +607,26 @@ class CreateViewBody(BaseModel):
     # Optional shared column widths; validated by ProjectService (any JSON
     # shape is accepted here so REST and WebSocket report the same errors).
     column_widths: Any = None
+    # Optional single-line (no wrap) column keys; validated like column_widths.
+    single_line: Any = None
+    # Optional module ids the view applies to (absent/empty: every module).
+    modules: Any = None
+
+
+class UpdateViewBody(BaseModel):
+    # Only the fields sent are changed (``ProjectService.update_view``); any
+    # JSON shape and unknown keys are passed on, so REST and WebSocket report
+    # the same errors.
+    model_config = ConfigDict(extra="allow")
+    name: Any = None
+    attribute_ids: Any = None
+    column_widths: Any = None
+    single_line: Any = None
+    modules: Any = None
+
+    def changes(self) -> dict:
+        return {**{k: getattr(self, k) for k in self.model_fields_set if k in type(self).model_fields},
+                **(self.model_extra or {})}
 
 
 class ViewColumnWidthsBody(BaseModel):
@@ -1175,7 +1195,22 @@ async def remove_link_configuration(project_id: str, config_id: str):
 
 @app.post("/projects/{project_id}/views")
 async def create_view(project_id: str, body: CreateViewBody):
-    view = _wrap(service.create_view, project_id, body.name, body.attribute_ids, body.column_widths)
+    view = _wrap(
+        service.create_view,
+        project_id,
+        body.name,
+        body.attribute_ids,
+        body.column_widths,
+        body.single_line,
+        body.modules,
+    )
+    await manager.broadcast(project_id)
+    return view.to_dict()
+
+
+@app.put("/projects/{project_id}/views/{view_id}")
+async def update_view(project_id: str, view_id: str, body: UpdateViewBody):
+    view = _wrap(service.update_view, project_id, view_id, body.changes())
     await manager.broadcast(project_id)
     return view.to_dict()
 
@@ -1744,7 +1779,11 @@ RPC_METHODS = {
         {"id": p["id"], "removed": True},
     )[1],
     "view.create": lambda p: service.create_view(
-        p["project_id"], p["name"], p.get("attribute_ids", []), p.get("column_widths")
+        p["project_id"], p["name"], p.get("attribute_ids", []), p.get("column_widths"), p.get("single_line"),
+        p.get("modules"),
+    ),
+    "view.update": lambda p: service.update_view(
+        p["project_id"], p["id"], {k: v for k, v in p.items() if k not in ("project_id", "id")}
     ),
     "view.set_column_widths": lambda p: service.set_view_column_widths(
         p["project_id"], p["id"], p["column_widths"]
@@ -1839,7 +1878,7 @@ MUTATING_METHODS = {
     "module_folder.create", "module_folder.rename", "module_folder.delete", "module_folder.move",
     "module_folder.reorder",
     "link_configuration.create", "link_configuration.remove",
-    "view.create", "view.set_column_widths", "view.remove",
+    "view.create", "view.update", "view.set_column_widths", "view.remove",
     "requirement.add", "requirement.update", "requirement.remove", "requirement.move",
     "requirement.reorder", "requirement.copy", "requirement.import_csv", "requirement.import_test_results",
     "requirement.link", "requirement.unlink",

@@ -16,6 +16,8 @@ import type {
   Requirement,
   TemplateSummary,
   View,
+  ViewCreate,
+  ViewUpdate,
 } from '../api/types';
 import type { ColumnOrder, ResizableColumns } from '../hooks/columnLayout';
 import type { ModuleTabRef } from '../layout/moduleTabs';
@@ -209,6 +211,20 @@ export type DialogRequest =
    * the dialog was opened in: it closes (and the server refuses) when that changed.
    */
   | { kind: 'removeProject'; projectId: string; projectName: string; dataDir: string | null }
+  /**
+   * "Save current layout as new view": `layout` is the open table's columns
+   * (ordered), widths and single-line columns. `source` is the named view
+   * and table key it came from (its unsaved draft is dropped once saved), or
+   * null for "All attributes" (kept per browser).
+   */
+  | {
+      kind: 'saveLayoutAsView';
+      projectId: string;
+      layout: Pick<ViewCreate, 'attribute_ids' | 'column_widths' | 'single_line'>;
+      source: { tableKey: string; view: View } | null;
+    }
+  /** Edit a named view: name, ordered columns, wrap, module scope; or delete it. */
+  | { kind: 'editView'; projectId: string; viewId: string }
   | { kind: 'shortcuts' }
   | { kind: 'about' };
 
@@ -223,6 +239,8 @@ export interface AppCommands {
   setActiveView: (viewId: string | null) => void;
   /** Store (or, with null, remove) a view's shared column widths in project.json. */
   setViewColumnWidths: (viewId: string, widths: Record<string, number> | null) => Promise<View>;
+  /** Change a view's name, ordered columns, widths and/or single-line columns (project.json). */
+  updateView: (viewId: string, changes: ViewUpdate) => Promise<View>;
   /** Expand / collapse the left (navigation) and right (requirement detail) side panels; overlays on narrow screens. */
   setLeftPanelOpen: (open: boolean) => void;
   setDetailPanelOpen: (open: boolean) => void;

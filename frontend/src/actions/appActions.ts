@@ -1,8 +1,10 @@
 import {
+  IconArrowBackUp,
   IconBook,
   IconColumns,
   IconColumnsOff,
   IconDeviceFloppy,
+  IconEdit,
   IconCloudDownload,
   IconCloudPlus,
   IconCloudUpload,
@@ -13,6 +15,7 @@ import {
   IconHistory,
   IconInfoCircle,
   IconKeyboard,
+  IconLayoutColumns,
   IconLayoutSidebar,
   IconLayoutSidebarRight,
   IconLineHeight,
@@ -33,9 +36,12 @@ import {
   moduleTableKey,
   resetColumnOrder,
   resetColumnWidths,
+  readViewLayoutDraft,
   resetRowHeights,
-  viewColumnWidths,
+  browserLayoutAsView,
+  clearViewLayoutDraft,
 } from '../hooks/columnLayout';
+import { applicableAttributes } from '../api/applicability';
 import type { Action, ActionContext, DynamicMenuItem, ExportFormat } from './types';
 
 /** Application-wide actions: the File, View and Help menus. */
@@ -114,6 +120,13 @@ function openTableKey(ctx: AppContext): string | null {
 
 function activeView(ctx: AppContext) {
   return ctx.module ? (ctx.views.find((view) => view.id === ctx.activeViewId) ?? null) : null;
+}
+
+/** The active named view's layout as shown (saved + this browser's draft), or null. */
+function viewDraft(ctx: AppContext) {
+  const view = activeView(ctx);
+  const key = openTableKey(ctx);
+  return view && key ? readViewLayoutDraft(key, view) : null;
 }
 
 function showError(fallback: string) {
@@ -287,6 +300,20 @@ export const appActions: Action<'app'>[] = [
     items: viewItems,
   },
   {
+    // The active named view's name, columns (order), wrap and module scope; also delete it.
+    id: 'view.edit',
+    element: 'app',
+    edits: true,
+    label: 'Edit view',
+    icon: IconEdit,
+    opensDialog: true,
+    isAvailable: (ctx) => ctx.projectId !== null && activeView(ctx) !== null,
+    run: (ctx) => {
+      const view = activeView(ctx);
+      if (ctx.projectId && view) ctx.commands.openDialog({ kind: 'editView', projectId: ctx.projectId, viewId: view.id });
+    },
+  },
+  {
     // The computed, read-only Verification status column of requirements modules (per browser).
     id: 'view.verificationColumn',
     element: 'app',
@@ -364,25 +391,78 @@ export const appActions: Action<'app'>[] = [
     },
   },
   {
-    // Shares the current widths through the active view in project.json.
-    id: 'view.saveColumnWidths',
+    // Stores this browser's unsaved layout of the active named view (column
+    // order, widths, wrap) in the view in project.json, for every client.
+    id: 'view.saveLayout',
     element: 'app',
     edits: true,
-    label: 'Save column widths to view',
+    label: 'Save layout to view',
     icon: IconDeviceFloppy,
-    isAvailable: (ctx) => activeView(ctx) !== null && ctx.project !== null,
+    isAvailable: (ctx) => viewDraft(ctx)?.dirty === true,
     run: (ctx) => {
       const view = activeView(ctx);
       const key = openTableKey(ctx);
-      if (!view || !key || !ctx.project) return;
-      ctx.commands.setViewColumnWidths(view.id, viewColumnWidths(key, view, ctx.project.attributes)).then(
-        () => {
-          // The view now holds these widths; this browser's copies are redundant.
-          resetColumnWidths(key);
-          notifications.show({ message: `Column widths saved to view "${view.name}"`, color: 'green' });
-        },
-        showError('Failed to save the column widths'),
-      );
+      if (!view || !key) return;
+      const draft = readViewLayoutDraft(key, view);
+      ctx.commands
+        .updateView(view.id, {
+          attribute_ids: draft.attribute_ids,
+          column_widths: draft.column_widths,
+          single_line: draft.single_line,
+        })
+        .then(
+          (saved) => {
+            // The view now holds this layout: the browser's draft is redundant.
+            clearViewLayoutDraft(key, saved);
+            notifications.show({ message: `Layout saved to view "${saved.name}"`, color: 'green' });
+          },
+          showError('Failed to save the layout to the view'),
+        );
+    },
+  },
+  {
+    // Drops this browser's unsaved layout of the active named view.
+    id: 'view.revertLayout',
+    element: 'app',
+    label: 'Revert to saved view',
+    icon: IconArrowBackUp,
+    isAvailable: (ctx) => viewDraft(ctx)?.dirty === true,
+    run: (ctx) => {
+      const view = activeView(ctx);
+      const key = openTableKey(ctx);
+      if (view && key) clearViewLayoutDraft(key, view);
+    },
+  },
+  {
+    // A new named view from the open table as shown (columns in order, widths, wrap).
+    id: 'view.saveLayoutAsNewView',
+    element: 'app',
+    edits: true,
+    label: 'Save current layout as new view',
+    icon: IconLayoutColumns,
+    opensDialog: true,
+    isAvailable: (ctx) => ctx.projectId !== null && ctx.module !== null && ctx.project !== null,
+    run: (ctx) => {
+      const key = openTableKey(ctx);
+      if (!key || !ctx.projectId || !ctx.module || !ctx.project) return;
+      const view = activeView(ctx);
+      if (view) {
+        const { attribute_ids, column_widths, single_line } = readViewLayoutDraft(key, view);
+        ctx.commands.openDialog({
+          kind: 'saveLayoutAsView',
+          projectId: ctx.projectId,
+          layout: { attribute_ids, column_widths, single_line },
+          source: { tableKey: key, view },
+        });
+      } else {
+        const shown = applicableAttributes(ctx.project.attributes, ctx.module).map((a) => a.id);
+        ctx.commands.openDialog({
+          kind: 'saveLayoutAsView',
+          projectId: ctx.projectId,
+          layout: browserLayoutAsView(key, shown),
+          source: null,
+        });
+      }
     },
   },
   {

@@ -4,8 +4,8 @@ import type { Action, ActionContext } from './types';
 /**
  * Actions on one requirements table column header. Sorting, filtering,
  * hiding a column and "add to view" are not offered: the table has no
- * sort/filter yet and views cannot be edited (only created/removed); they
- * join here with those backlog items.
+ * sort/filter yet; they join here with those backlog items. In a named view,
+ * wrap, width and order changes are unsaved until "Save layout to view".
  */
 
 type ColumnContext = ActionContext<'column'>;

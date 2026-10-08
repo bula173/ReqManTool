@@ -16,6 +16,7 @@ import {
   ID_COLUMN,
   defaultColumnWidth,
   moduleTableKey,
+  treeColumnKey,
   useResizableColumns,
   useResizableRows,
 } from '../hooks/columnLayout';
@@ -66,6 +67,8 @@ export function BaselinePage() {
   const baselineQuery = useBaseline(projectId, commit ? undefined : baselineName);
   const commitQuery = useCommitSnapshot(projectId, commit);
   const [selectedModule, setSelectedModule] = useState<string | null>(null);
+  // A view of the snapshot's own project.json (views travel with the project): null = all attributes.
+  const [selectedView, setSelectedView] = useState<string | null>(null);
 
   const snapshotQuery = commit ? commitQuery : baselineQuery;
   const snapshot = snapshotQuery.data;
@@ -77,9 +80,11 @@ export function BaselinePage() {
   );
   const commitRequirements = useCommitRequirements(projectId, commit, moduleId ?? undefined);
   const requirementsQuery = commit ? commitRequirements : baselineRequirements;
-  // The module's own "All attributes" layout: a baseline looks like the module's table.
-  const tableKey = moduleTableKey(projectId ?? '', moduleId ?? '', null);
-  const columns = useResizableColumns(tableKey);
+  // The view as it was saved in the snapshot (order, widths, wrap); a baseline looks like the module's table
+  // and shares its per-browser layouts ("All attributes" and unsaved view changes).
+  const view = snapshot?.project.views?.find((v) => v.id === selectedView) ?? null;
+  const tableKey = moduleTableKey(projectId ?? '', moduleId ?? '', view?.id ?? null);
+  const columns = useResizableColumns(tableKey, view);
   const { tableRef, colRef } = columns;
   const rowSizes = useResizableRows(tableKey);
   const { tbodyRef } = rowSizes;
@@ -106,12 +111,22 @@ export function BaselinePage() {
   }
 
   const module = snapshot.modules.find((m) => m.id === moduleId);
-  // The attribute columns in this browser's order of the module's table; Id stays first.
+  // The attribute columns: a view's in its order, else the project's; then this
+  // browser's order of the module's table. Id stays first.
+  const applicable = applicableAttributes(snapshot.project.attributes, module ?? (moduleId ? { id: moduleId } : null));
+  const applicableById = new Map(applicable.map((a) => [a.id, a]));
   const attributes = columns.ordered(
-    applicableAttributes(snapshot.project.attributes, module ?? (moduleId ? { id: moduleId } : null)),
+    view
+      ? view.attribute_ids.flatMap((id) => {
+          const attr = applicableById.get(id);
+          return attr ? [attr] : [];
+        })
+      : applicable,
     (a) => a.id,
   );
   const columnOrder = columns.orderOf(attributes.map((a) => a.id));
+  // The hierarchy indent: in the Object Text column, wherever it is.
+  const treeColumn = treeColumnKey(attributes.map((a) => a.id));
   const rows = treeOrder(requirementsQuery.data ?? []);
   const tableWidth =
     columns.widthOf(ID_COLUMN, DEFAULT_ID_COLUMN_WIDTH) +
@@ -181,18 +196,32 @@ export function BaselinePage() {
       <Card withBorder className="reqman-card-table" style={{ flex: '0 1 auto', minHeight: 0 }}>
         <Group justify="space-between" mb="sm">
           <Title order={4}>{module ? `${module.name} (${module.prefix})` : 'Requirements'}</Title>
-          {snapshot.modules.length > 0 && (
-            <Select
-              size="xs"
-              w={260}
-              label={undefined}
-              aria-label="Module"
-              data={snapshot.modules.map((m) => ({ value: m.id, label: m.name }))}
-              value={moduleId}
-              onChange={setSelectedModule}
-              allowDeselect={false}
-            />
-          )}
+          <Group gap="xs">
+            {(snapshot.project.views ?? []).length > 0 && (
+              <Select
+                size="xs"
+                w={200}
+                aria-label="View"
+                placeholder="All attributes"
+                data={(snapshot.project.views ?? []).map((v) => ({ value: v.id, label: v.name }))}
+                value={view?.id ?? null}
+                onChange={setSelectedView}
+                clearable
+              />
+            )}
+            {snapshot.modules.length > 0 && (
+              <Select
+                size="xs"
+                w={260}
+                label={undefined}
+                aria-label="Module"
+                data={snapshot.modules.map((m) => ({ value: m.id, label: m.name }))}
+                value={moduleId}
+                onChange={setSelectedModule}
+                allowDeselect={false}
+              />
+            )}
+          </Group>
         </Group>
         {snapshot.modules.length === 0 && (
           <Text size="sm" c="dimmed">
@@ -268,7 +297,10 @@ export function BaselinePage() {
                       data-row-bold={appearance.bold || undefined}
                       style={{ ...rowSizes.rowStyle(requirement.id), ...appearance.style }}
                     >
-                      <Table.Td data-column-key={ID_COLUMN} style={{ paddingLeft: 12 + depth * 20 }}>
+                      <Table.Td
+                        data-column-key={ID_COLUMN}
+                        style={treeColumn === ID_COLUMN ? { paddingLeft: 12 + depth * 20 } : undefined}
+                      >
                         <div
                           className="reqman-cell-clip"
                           data-fade={columns.isSingleLine(ID_COLUMN) ? undefined : ''}
@@ -286,7 +318,11 @@ export function BaselinePage() {
                         const raw = requirement.attributes[attr.id];
                         const text = formatValue(raw);
                         return (
-                          <Table.Td key={attr.id} data-column-key={attr.id}>
+                          <Table.Td
+                            key={attr.id}
+                            data-column-key={attr.id}
+                            style={attr.id === treeColumn ? { paddingLeft: 12 + depth * 20 } : undefined}
+                          >
                             <div className="reqman-cell-clip" data-fade={columns.isSingleLine(attr.id) ? undefined : ''}>
                               {attr.type === 'text' && isRichText(raw) ? (
                                 <RichTextView value={raw} wrap={!columns.isSingleLine(attr.id)} />

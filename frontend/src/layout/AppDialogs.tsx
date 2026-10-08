@@ -32,6 +32,8 @@ import { RequirementFormModal } from '../components/RequirementFormModal';
 import { RowStylesModal } from '../components/RowStylesModal';
 import { SaveAsTemplateModal } from '../components/SaveAsTemplateModal';
 import { SaveModuleAsTemplateModal } from '../components/SaveModuleAsTemplateModal';
+import { SaveLayoutAsViewModal } from '../components/SaveLayoutAsViewModal';
+import { ViewEditorModal } from '../components/ViewEditorModal';
 
 type AddRequirementRequest = Extract<DialogRequest, { kind: 'addRequirement' }>;
 
@@ -243,6 +245,18 @@ export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; 
           onClose={onClose}
         />
       );
+    case 'saveLayoutAsView':
+      return (
+        <SaveLayoutAsViewModal
+          projectId={dialog.projectId}
+          layout={dialog.layout}
+          source={dialog.source}
+          onCreated={(view) => state.commands.setActiveView(view.id)}
+          onClose={onClose}
+        />
+      );
+    case 'editView':
+      return <ViewEditorModal projectId={dialog.projectId} viewId={dialog.viewId} onClose={onClose} />;
     case 'shortcuts':
       return <KeyboardShortcutsModal opened onClose={onClose} />;
     case 'about':

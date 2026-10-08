@@ -25,14 +25,23 @@ Format (``format_version`` 2; version 1 is read and migrated, see below)::
       "modules": [{"key", "name", "prefix", "description", "type"?, "module_template"?, "skeleton"?}],
       "module_tree"?: [{"module": "<key>"} | {"folder": "<key>", "name", "children": [...]}],
       "link_configurations": [{"key", "name", "source_module", "target_module"}],
-      "views": [{"name", "attribute_ids"}],
+      "views": [{"name", "attribute_ids", "column_widths"?, "single_line"?, "modules"?}],
       "row_styles"?: [{"attribute_id", "value", "font_color", "background_color", "bold"}]
     }
 
 ``attributes`` never lists the built-in ``object_text``: every project
 already has it. A view's ``attribute_ids`` entry is ``object_text``, a
 template attribute id, or ``link:<key>`` for the mirror attribute of the
-link configuration with that key.
+link configuration with that key. ``attribute_ids`` is ordered (the view's
+column order). A view's optional ``column_widths`` (column key to width in
+pixels) and ``single_line`` (column keys shown without wrapping) are keyed
+by ``"@id"`` (the Id column) or one of the view's ``attribute_ids``
+entries; like ``modules`` they were added without a ``format_version`` bump
+(an older ReqManTool creates the view without them) and are written only
+when set. Module template views take them too. A project template view's
+optional ``modules`` lists the module keys it applies to (absent or empty:
+every module), like an attribute's ``modules`` (no bump; written only when
+non-empty).
 
 An attribute's optional ``modules`` lists the module *keys* of this template
 the attribute applies to (absent or empty: every module). It was added
@@ -106,7 +115,7 @@ share a stem). Format (``format_version`` 1)::
       "description": "...",
       "module": {"name", "prefix", "description", "type"?},
       "attributes": [{"id", "name", "type", "default", "choices"}],
-      "view"?: {"name", "attribute_ids"},
+      "view"?: {"name", "attribute_ids", "column_widths"?, "single_line"?},
       "skeleton": [<heading node>, ...]
     }
 
@@ -297,10 +306,44 @@ class TemplateLinkConfiguration:
 @dataclass
 class TemplateView:
     name: str
+    # Ordered: the view's column order.
     attribute_ids: list[str] = field(default_factory=list)
+    # Optional shared layout, keyed by ``"@id"`` (the Id column) or an
+    # ``attribute_ids`` reference; written only when set (no version bump:
+    # an older ReqManTool ignores them).
+    column_widths: dict[str, int] | None = None
+    single_line: list[str] | None = None
+    # Project templates only: the module keys the view applies to (empty: every module).
+    modules: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return {"name": self.name, "attribute_ids": list(self.attribute_ids)}
+        data: dict[str, Any] = {"name": self.name, "attribute_ids": list(self.attribute_ids)}
+        if self.column_widths:
+            data["column_widths"] = dict(self.column_widths)
+        if self.single_line:
+            data["single_line"] = list(self.single_line)
+        if self.modules:
+            data["modules"] = list(self.modules)
+        return data
+
+
+def _parse_view_layout(raw: dict, where: str) -> tuple[dict[str, int] | None, list[str] | None]:
+    """The shape-checked optional ``column_widths`` and ``single_line`` of a template view.
+
+    Keys and width bounds are checked by ``ProjectService`` against the view's columns.
+    """
+    widths = raw.get("column_widths")
+    if widths is not None and (
+        not isinstance(widths, dict)
+        or not all(isinstance(k, str) and isinstance(v, int) and not isinstance(v, bool) for k, v in widths.items())
+    ):
+        raise ValueError(f"{where}: 'column_widths' must be an object mapping column keys to integer widths")
+    single_line = raw.get("single_line")
+    if single_line is not None and (
+        not isinstance(single_line, list) or not all(isinstance(k, str) for k in single_line)
+    ):
+        raise ValueError(f"{where}: 'single_line' must be a list of column keys")
+    return (dict(widths) if widths else None), (list(single_line) if single_line else None)
 
 
 @dataclass
@@ -730,7 +773,22 @@ def parse_template(data: Any, template_id: str) -> Template:
         if not isinstance(attribute_ids, list) or not all(isinstance(a, str) for a in attribute_ids):
             raise ValueError(f"{where}: 'attribute_ids' must be a list of strings")
         view_names.add(view_name.casefold())
-        views.append(TemplateView(name=view_name, attribute_ids=list(attribute_ids)))
+        widths, single_line = _parse_view_layout(raw, where)
+        view_modules = raw.get("modules", [])
+        if not isinstance(view_modules, list):
+            raise ValueError(f"{where}: 'modules' must be a list of module keys")
+        for key in view_modules:
+            if not isinstance(key, str) or key not in module_keys:
+                raise ValueError(f"{where}: 'modules' entry {key!r} is not a module key of this template")
+        views.append(
+            TemplateView(
+                name=view_name,
+                attribute_ids=list(attribute_ids),
+                column_widths=widths,
+                single_line=single_line,
+                modules=list(dict.fromkeys(view_modules)),
+            )
+        )
 
     row_styles: list[TemplateRowStyle] = []
     for index, raw in enumerate(_list_of_dicts(data, "row_styles")):
@@ -969,7 +1027,10 @@ def parse_module_template(data: Any, template_id: str) -> ModuleTemplate:
                 raise ValueError(
                     f"view: unknown attribute '{ref}' (expected 'object_text' or a template attribute id)"
                 )
-        view = TemplateView(name=view_name.strip(), attribute_ids=list(refs))
+        widths, single_line = _parse_view_layout(raw_view, "view")
+        view = TemplateView(
+            name=view_name.strip(), attribute_ids=list(refs), column_widths=widths, single_line=single_line
+        )
 
     return ModuleTemplate(
         id=template_id,

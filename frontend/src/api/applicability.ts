@@ -1,5 +1,5 @@
 import { MODULE_TYPE_LABELS, moduleTypeOf } from './moduleTypes';
-import type { AttributeDefinition, Module } from './types';
+import type { AttributeDefinition, Module, View } from './types';
 
 /** What applicability needs to know about a module: its id and (optional) type. */
 export type ModuleRef = Pick<Module, 'id' | 'type'>;
@@ -49,4 +49,15 @@ export function attributeScopeLabel(attr: AttributeDefinition, moduleLabel: (mod
     ...modules.map(moduleLabel),
     ...types.map((t) => `all ${MODULE_TYPE_LABELS[t].toLowerCase()} modules`),
   ].join(', ');
+}
+
+/** Whether a named view is offered on `moduleId`'s page: views without modules apply to every module. */
+export function viewAppliesTo(view: View, moduleId: string | null | undefined): boolean {
+  const modules = view.modules ?? [];
+  return !moduleId || modules.length === 0 || modules.includes(moduleId);
+}
+
+/** The views offered on a module's page (all of them without a module). */
+export function applicableViews(views: View[], moduleId: string | null | undefined): View[] {
+  return views.filter((view) => viewAppliesTo(view, moduleId));
 }

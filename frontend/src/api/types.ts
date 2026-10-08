@@ -110,13 +110,39 @@ export interface ProjectReferences {
 export interface View {
   id: string;
   name: string;
+  /** The view's attribute columns in display order (the Id column always comes first). */
   attribute_ids: string[];
   /**
    * Shared column widths in pixels, keyed by attribute id (and `'@id'` for
-   * the Id column). Omitted when the view stores none. Per-browser widths
-   * (localStorage) apply on top of them.
+   * the Id column). Omitted when the view stores none. Unsaved per-browser
+   * changes (localStorage) show on top of them until saved or reverted.
    */
   column_widths?: Record<string, number>;
+  /** Column keys shown on a single line (no wrap); omitted when every column wraps. */
+  single_line?: string[];
+  /** Module ids the view is offered on; omitted (or empty): every module. */
+  modules?: string[];
+}
+
+/**
+ * PUT /projects/{id}/views/{view_id} (WS `view.update`): only the fields
+ * given change; `column_widths`/`single_line` null clears them.
+ */
+export interface ViewUpdate {
+  name?: string;
+  attribute_ids?: string[];
+  column_widths?: Record<string, number> | null;
+  single_line?: string[] | null;
+  modules?: string[] | null;
+}
+
+/** POST /projects/{id}/views (WS `view.create`). */
+export interface ViewCreate {
+  name: string;
+  attribute_ids: string[];
+  column_widths?: Record<string, number> | null;
+  single_line?: string[] | null;
+  modules?: string[] | null;
 }
 
 /**

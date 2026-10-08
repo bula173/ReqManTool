@@ -385,6 +385,7 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
     label: 'View',
     entries: [
       action('view.attributeView'),
+      action('view.edit'),
       action('view.verificationColumn'),
       action('view.toggleLeftPanel'),
       action('view.toggleDetailPanel'),
@@ -394,7 +395,9 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
       divider,
       action('view.resetColumnWidths'),
       action('view.resetColumnOrder'),
-      action('view.saveColumnWidths'),
+      action('view.saveLayout'),
+      action('view.revertLayout'),
+      action('view.saveLayoutAsNewView'),
       action('view.removeViewColumnWidths'),
       action('view.resetRowHeights'),
       divider,
@@ -442,7 +445,10 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
 const TABLE_LAYOUT_ENTRIES: MenuEntry[] = [
   action('view.resetColumnWidths'),
   action('view.resetColumnOrder'),
-  action('view.saveColumnWidths'),
+  action('view.saveLayout'),
+  action('view.revertLayout'),
+  action('view.saveLayoutAsNewView'),
+  action('view.edit'),
   action('view.removeViewColumnWidths'),
   action('view.resetRowHeights'),
 ];

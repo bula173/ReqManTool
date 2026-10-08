@@ -133,16 +133,33 @@ def _column_widths(value: Any) -> dict[str, int] | None:
     return widths or None
 
 
+def _column_keys(value: Any) -> list[str] | None:
+    """The string entries of a hand-editable column-key list (first occurrence kept), or None."""
+    if not isinstance(value, list):
+        return None
+    keys = list(dict.fromkeys(k for k in value if isinstance(k, str)))
+    return keys or None
+
+
 @dataclass
 class View:
     id: str
     name: str
+    # The view's attribute columns, in display order (Id always comes first).
     attribute_ids: list[str] = field(default_factory=list)
     # Optional shared column widths in pixels, keyed by attribute id (plus
     # ``ProjectService.VIEW_ID_COLUMN`` for the Id column). None (the default)
     # means the view stores no widths; it is then not written at all, so a
     # view without widths keeps exactly the keys it had before.
     column_widths: dict[str, int] | None = None
+    # Optional column keys (as for ``column_widths``) shown on a single line
+    # (truncated) instead of wrapping. None (the default): every column
+    # wraps; then not written at all, like ``column_widths``.
+    single_line: list[str] | None = None
+    # Optional module ids the view applies to (offered on those modules'
+    # pages only), in module display order; empty (the default): every
+    # module. Written only when non-empty, like ``AttributeDefinition.modules``.
+    modules: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         data: dict[str, Any] = {
@@ -152,6 +169,10 @@ class View:
         }
         if self.column_widths:
             data["column_widths"] = dict(self.column_widths)
+        if self.single_line:
+            data["single_line"] = list(self.single_line)
+        if self.modules:
+            data["modules"] = list(self.modules)
         return data
 
     @staticmethod
@@ -161,6 +182,8 @@ class View:
             name=data["name"],
             attribute_ids=data.get("attribute_ids", []),
             column_widths=_column_widths(data.get("column_widths")),
+            single_line=_column_keys(data.get("single_line")),
+            modules=_column_keys(data.get("modules")) or [],
         )
 
 

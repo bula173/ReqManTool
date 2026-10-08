@@ -1589,3 +1589,40 @@ Newest entries are appended at the end.
       actions, created/modified by in `RequirementDetailPanel`. Not
       covered: LDAP and reverse-proxy providers, licence-file gate, tests;
       follow-ups in the backlog ("Server edition: follow-ups").
+- [x] **Views as portable project elements** (2026-10-08). A view's
+      column order, widths and wrap live in the view in `project.json`
+      instead of per browser, so they travel with the project. New optional
+      `View.single_line` (written only when set; no PROJECT_FORMAT bump,
+      like `column_widths`); `attribute_ids` is the column order.
+      `ProjectService.update_view` (name, ordered `attribute_ids`,
+      `column_widths`, `single_line`; any subset; validated before writing,
+      removed columns pruned); REST `PUT /projects/{p}/views/{v}`, WebSocket
+      `view.update`, broadcast `changed`; `view.create` / `POST .../views`
+      take `single_line` and reject duplicate columns. Project and module
+      templates (and Save as template) carry the order plus optional
+      `column_widths` / `single_line`. Frontend: module and baseline pages
+      show a view's columns in its order with its widths and wrap (baseline:
+      new view picker over the snapshot's views); local changes in a named
+      view are an "Unsaved layout" draft with "Save layout to view",
+      "Revert to saved view" and "Save current layout as new view…" (View
+      menu, column header menu, toolbar); "All attributes" stays per
+      browser; live sync shows saved changes to other clients. The tree
+      indent / expand arrow is always in the Object Text column. View
+      applicability: optional `View.modules` (module ids, written only when
+      non-empty, kept in module order; settable on create and update;
+      project templates carry it as module keys); module pages offer only
+      applicable views. View editor dialog (View ▸ Edit view, pencil by the
+      view selector, project page views list): rename, columns with up/down
+      order, per-column wrap, "Applies to modules", delete with
+      confirmation. Files:
+      `backend/reqman/{models.py, service.py, app.py, templates.py}`,
+      `backend/tests/test_view_update.py` (new),
+      `frontend/src/hooks/columnLayout.ts`, `pages/{ModulePage.tsx,
+      BaselinePage.tsx, ProjectPage.tsx}`,
+      `components/{SaveLayoutAsViewModal.tsx, ViewEditorModal.tsx}` (new),
+      `api/applicability.ts`,
+      `actions/{appActions.ts, registry.ts, types.ts, columnActions.ts,
+      AppActionsProvider.tsx}`, `layout/AppDialogs.tsx`, `api/{types.ts,
+      queries.ts}`, `docs/ARCHITECTURE.md`. Not covered: no frontend tests
+      (no test runner); no browser smoke test; "Save column widths to
+      view" was replaced by "Save layout to view".

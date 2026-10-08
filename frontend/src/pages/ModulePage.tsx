@@ -21,6 +21,7 @@ import {
   IconLink,
   IconPlus,
   IconArrowsMove,
+  IconPencil,
   IconTrash,
 } from '@tabler/icons-react';
 import { useEffect, useRef, useState } from 'react';
@@ -40,7 +41,7 @@ import {
   moduleNeedsCheckout,
 } from '../actions/registry';
 import { contextMenuTargetProps } from '../actions/shortcuts';
-import { applicableAttributes } from '../api/applicability';
+import { applicableAttributes, applicableViews } from '../api/applicability';
 import { ApiError } from '../api/client';
 import { moduleTypeOf } from '../api/moduleTypes';
 import {
@@ -74,6 +75,7 @@ import {
   VERIFICATION_COLUMN,
   defaultColumnWidth,
   moduleTableKey,
+  treeColumnKey,
   useResizableColumns,
   useResizableRows,
 } from '../hooks/columnLayout';
@@ -140,11 +142,12 @@ export function ModulePage() {
   // the menu bar and keyboard shortcuts through the action registry.
   const { state: appState, run, isAvailable, openMenu } = useAppActions();
   const { commands } = appState;
-  // Column widths, wrap toggles and row heights: per browser, per project +
-  // module + view; a view's shared widths (project.json) are the defaults.
+  // Column layout: a named view's saved order, widths and wrap (project.json)
+  // with this browser's unsaved changes on top; "All attributes" and row
+  // heights are per browser (per project + module + view).
   const viewForColumns = (viewsQuery.data ?? []).find((v) => v.id === appState.activeViewId) ?? null;
   const tableKey = moduleTableKey(projectId ?? '', moduleId ?? '', viewForColumns?.id ?? null);
-  const columns = useResizableColumns(tableKey, viewForColumns?.column_widths);
+  const columns = useResizableColumns(tableKey, viewForColumns);
   const { tableRef, colRef } = columns;
   const rowSizes = useResizableRows(tableKey);
   const { tbodyRef } = rowSizes;
@@ -233,15 +236,27 @@ export function ModulePage() {
   const requirements = requirementsQuery.data;
   const module = moduleQuery.data;
   const rows = flattenTree(requirements, collapsed);
-  const views = viewsQuery.data ?? [];
+  // Only the views that apply to this module are offered.
+  const views = applicableViews(viewsQuery.data ?? [], moduleId);
   const activeViewId = appState.activeViewId;
   const activeView = views.find((v) => v.id === activeViewId) ?? null;
-  // The attribute columns in this browser's order (dragged headers, Move column left/right); Id stays first.
+  // The attribute columns: a named view's in the view's order, else the
+  // project's; then this browser's (unsaved) order (dragged headers, Move
+  // column left/right). Id stays first.
+  const attributeById = new Map(attributes.map((a) => [a.id, a]));
   const visibleAttributes = columns.ordered(
-    activeView ? attributes.filter((a) => activeView.attribute_ids.includes(a.id)) : attributes,
+    activeView
+      ? activeView.attribute_ids.flatMap((id) => {
+          const attr = attributeById.get(id);
+          return attr ? [attr] : [];
+        })
+      : attributes,
     (a) => a.id,
   );
   const columnOrder = columns.orderOf(visibleAttributes.map((a) => a.id));
+  // The hierarchy indent and expand arrow: in the Object Text column, wherever it is.
+  const treeColumn = treeColumnKey(visibleAttributes.map((a) => a.id));
+  const unsavedLayout = columns.viewDraft?.dirty === true;
   const columnWidth = (key: string, fallback: number) => columns.widthOf(key, fallback);
   const showVerification = isRequirementsModule && appState.verificationColumn;
   const statuses = verificationQuery.data?.statuses;
@@ -390,15 +405,47 @@ export function ModulePage() {
             )}
           </Group>
         )}
-        <Select
-          placeholder="All attributes"
-          data={views.map((v) => ({ value: v.id, label: v.name }))}
-          value={activeViewId}
-          onChange={commands.setActiveView}
-          clearable
-          w={200}
-          ml="auto"
-        />
+        <Group gap="xs" ml="auto" wrap="nowrap">
+          {unsavedLayout && (
+            <>
+              <Tooltip label="This browser shows column changes (order, widths, wrap) not saved to the view">
+                <Badge color="orange" variant="light">
+                  Unsaved layout
+                </Badge>
+              </Tooltip>
+              <Button
+                size="xs"
+                variant="light"
+                disabled={!isAvailable('view.saveLayout')}
+                onClick={() => run('view.saveLayout')}
+              >
+                Save to view
+              </Button>
+              <Button size="xs" variant="subtle" onClick={() => run('view.revertLayout')}>
+                Revert
+              </Button>
+            </>
+          )}
+          <Select
+            placeholder="All attributes"
+            aria-label="View"
+            data={views.map((v) => ({ value: v.id, label: v.name }))}
+            value={activeViewId}
+            onChange={commands.setActiveView}
+            clearable
+            w={200}
+          />
+          <Tooltip label="Edit view (columns, order, wrap, modules)">
+            <ActionIcon
+              variant="subtle"
+              aria-label="Edit view"
+              disabled={!isAvailable('view.edit')}
+              onClick={() => run('view.edit')}
+            >
+              <IconPencil size={16} />
+            </ActionIcon>
+          </Tooltip>
+        </Group>
       </Group>
 
       <Group align="stretch" wrap="nowrap" gap="md" style={{ flex: 1, minHeight: 0 }}>
@@ -522,7 +569,10 @@ export function ModulePage() {
                     openMenu({ x: e.clientX, y: e.clientY, label: req.id, entries: REQUIREMENT_CONTEXT_MENU, targets: { requirement: req } });
                   }}
                 >
-                  <Table.Td data-column-key={ID_COLUMN}>
+                  <Table.Td
+                    data-column-key={ID_COLUMN}
+                    style={treeColumn === ID_COLUMN ? { paddingLeft: 12 + depth * 20 } : undefined}
+                  >
                     {/* Left click on the Id: the navigation menu (the row is selected too). */}
                     <div
                       className="reqman-cell-clip"
@@ -542,17 +592,31 @@ export function ModulePage() {
                         })
                       }
                     >
-                      <Text fw={600} truncate={columns.isSingleLine(ID_COLUMN) ? 'end' : undefined}>
-                        {req.id}
-                      </Text>
+                      <Group gap={4} wrap="nowrap">
+                        {treeColumn === ID_COLUMN && hasChildren && (
+                          <ActionIcon
+                            variant="subtle"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleExpanded(req.id);
+                            }}
+                          >
+                            {collapsed.has(req.id) ? <IconChevronRight size={14} /> : <IconChevronDown size={14} />}
+                          </ActionIcon>
+                        )}
+                        <Text fw={600} truncate={columns.isSingleLine(ID_COLUMN) ? 'end' : undefined} style={{ minWidth: 0 }}>
+                          {req.id}
+                        </Text>
+                      </Group>
                     </div>
                     <RowResizeHandle rowId={req.id} rows={rowSizes} focusable />
                   </Table.Td>
-                  {visibleAttributes.map((attr, attrIdx) => (
+                  {visibleAttributes.map((attr) => (
                     <Table.Td key={attr.id} data-column-key={attr.id}>
                       <div className="reqman-cell-clip" data-fade={columns.isSingleLine(attr.id) ? undefined : ''}>
-                        <Group gap={4} wrap="nowrap" pl={attrIdx === 0 ? depth * 20 : 0}>
-                          {attrIdx === 0 && hasChildren && (
+                        <Group gap={4} wrap="nowrap" pl={attr.id === treeColumn ? depth * 20 : 0}>
+                          {attr.id === treeColumn && hasChildren && (
                             <ActionIcon variant="subtle" size="sm" onClick={() => toggleExpanded(req.id)}>
                               {collapsed.has(req.id) ? (
                                 <IconChevronRight size={14} />

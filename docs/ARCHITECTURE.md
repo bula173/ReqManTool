@@ -134,7 +134,8 @@ persistence" below.
   counter per module *prefix*, shared across modules that use the same
   prefix), `link_configurations: list[LinkConfiguration]`,
   `views: list[View]` (view names are unique per project, compared
-  case-insensitively after stripping, like template view names),
+  case-insensitively after stripping, like template view names; see
+  "Views" below),
   `module_order` (the module tree in display order: `{"module": id}` and
   `{"folder": id, "name", "children": [...]}` entries since project format
   7, module id strings before; written only when non-empty — see "Module
@@ -1058,6 +1059,61 @@ modules, and save-as-template writes no `modules` for it.
   be protected anyway; from this release on, new keys bump the version
   (module folders did: project format 7). A project migration that changes
   module, requirement or link-pair files must upgrade those files too.
+
+### Views
+
+A view is a project element in `project.json`, so it travels with the
+project (git, copies, templates, baselines). `View` keys, in written
+order: `id`, `name`, `attribute_ids` (the view's attribute columns *in
+display order*; the Id column always comes first), and, written only when
+set, `column_widths` (column key to pixels, 40..4000; keys `"@id"` or one
+of `attribute_ids`), `single_line` (column keys shown on one line
+instead of wrapping; every other column wraps) and `modules` (the module
+ids the view is offered on, in module display order; empty: every module,
+like `AttributeDefinition.modules`). `column_widths`, `single_line` and
+`modules` were added without a `PROJECT_FORMAT` bump: they are display
+settings, absent keys mean the old behaviour, and an older ReqManTool that
+rewrites the project only drops them (the view itself, its columns and
+their order survive; a scoped view is then offered on every module).
+Modules are never deleted (purge removes requirements only) and renames
+keep ids, so scopes need no cleanup. Both are stored in the view's column order whatever
+order a client sends.
+
+`ProjectService.update_view(project_id, view_id, changes)` (REST `PUT
+/projects/{p}/views/{v}`, WebSocket `view.update` with `project_id`, `id`
+and the fields) changes any non-empty subset of `name` (same uniqueness
+rule; a view may keep its own name in another case), `attribute_ids`
+(defined attributes, no duplicates), `column_widths` and `single_line`
+(null or empty clears; keys must be columns of the resulting view) and
+`modules` (known module ids; null or empty: every module).
+Fields not given keep their value; when only `attribute_ids` changes,
+widths and single-line entries of removed columns are dropped. Unknown
+fields, an empty change set or any invalid value raise `ValueError`
+(400 / -32602) before anything is written; a missing view is 404 /
+-32001; success broadcasts `changed`. `create_view` (`POST
+/projects/{p}/views`, `view.create`) also takes `single_line` and
+`modules` and now rejects duplicate columns. Views are listed unfiltered;
+the client offers on a module page only the views that apply to it
+(`applicableViews`, `frontend/src/api/applicability.ts`). `PUT .../views/{v}/column-widths` and `DELETE
+.../views/{v}` are unchanged. Project and module templates carry a view's
+ordered columns and, optionally, its `column_widths` / `single_line` keyed
+by template references (see `templates.py`); project template views also
+carry `modules` as module keys.
+
+In the UI the saved view is the source of truth on the module and
+baseline pages: its columns appear in `attribute_ids` order with its
+widths and wrap. Column drags, resizes and wrap toggles in a named view
+are an unsaved per-browser draft (`frontend/src/hooks/columnLayout.ts`,
+`viewLayoutDraft`), flagged "Unsaved layout"; View menu and column header
+menu: "Save layout to view", "Revert to saved view" and "Save current
+layout as new view…". The view editor dialog (View ▸ "Edit view", the
+pencil next to the view selector, the project page's views list) renames
+a view, picks its columns and their order (up/down), per-column wrap and
+"Applies to modules", and deletes it (with confirmation). "All attributes"
+stays a per-browser layout. Row
+heights and the Verification status column are always per browser. The
+hierarchy indent and expand arrow sit in the Object Text column wherever
+it is ordered (else the first column).
 
 ### Row styles
 

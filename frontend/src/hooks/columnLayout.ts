@@ -4,13 +4,21 @@ import type { AttributeDefinition, View } from '../api/types';
 /**
  * Resizable table columns and rows: per-browser column widths, the
  * per-column wrap / single-line toggle and per-requirement row heights, kept
- * in localStorage (never in the git-tracked project data). A named view may also carry shared widths in project.json
- * (`View.column_widths`); those are the defaults and the browser's own
- * widths apply on top of them.
+ * in localStorage (never in the git-tracked project data).
  *
  * One layout per table key: project + module + view (or `default` for "All
  * attributes"). It also holds this browser's order of the attribute
- * columns. The baseline page shares its module's `default` layout.
+ * columns. The baseline page shares its module's layouts.
+ *
+ * "All attributes" is a per-browser layout. A named view is a project
+ * element (project.json): its `attribute_ids` order, `column_widths` and
+ * `single_line` are the source of truth, and this browser's entries for its
+ * columns are an *unsaved draft* on top of it (`viewLayoutDraft`): widths
+ * replace the view's, `singleLine` lists the columns whose wrap is toggled
+ * relative to the view, and `order` reorders the view's columns. "Save
+ * layout to view" stores the draft in the view and drops it
+ * (`clearViewLayoutDraft`); "Revert to saved view" only drops it. Row
+ * heights and the Verification status column are always per browser.
  */
 
 /** Column key of the Id column (the backend's `VIEW_ID_COLUMN`). Attribute ids name the other columns. */
@@ -204,6 +212,104 @@ export function applyColumnOrder<T>(items: T[], keyOf: (item: T) => string, orde
     .map(({ item }) => item);
 }
 
+/**
+ * `items` (a named view's columns, in the view's order) in a stored column
+ * order: the listed keys take the listed items' positions in the listed
+ * order, every other item keeps its position (e.g. a view column not shown
+ * in this module, or one added to the view by another client).
+ */
+export function applyColumnOrderInPlace<T>(items: T[], keyOf: (item: T) => string, order: string[]): T[] {
+  if (order.length === 0) return items;
+  const rank = new Map(order.map((key, index) => [key, index]));
+  const listed = items
+    .filter((item) => rank.has(keyOf(item)))
+    .sort((a, b) => rank.get(keyOf(a))! - rank.get(keyOf(b))!);
+  let next = 0;
+  return items.map((item) => (rank.has(keyOf(item)) ? listed[next++] : item));
+}
+
+/** The column that carries the requirement hierarchy (indent and expand arrow) when it is shown. */
+export const TREE_COLUMN = 'object_text';
+
+/**
+ * The tree column of a requirements table: the hierarchy indent and expand
+ * arrow sit in the Object Text column wherever it is ordered; without it, in
+ * the first attribute column (or the Id column when there is none).
+ */
+export function treeColumnKey(attributeKeys: string[]): string {
+  return attributeKeys.includes(TREE_COLUMN) ? TREE_COLUMN : (attributeKeys[0] ?? ID_COLUMN);
+}
+
+/** A named view's layout as this browser shows it (saved view + unsaved draft); see the module comment. */
+export interface ViewLayoutDraft {
+  attribute_ids: string[];
+  column_widths: Record<string, number> | null;
+  single_line: string[] | null;
+  /** Whether it differs from the saved view (order, widths or wrap). */
+  dirty: boolean;
+}
+
+export function viewLayoutDraft(layout: ColumnLayout, view: View): ViewLayoutDraft {
+  const attributeIds = applyColumnOrderInPlace(view.attribute_ids, (id) => id, layout.order);
+  const keys = [ID_COLUMN, ...attributeIds];
+  const savedWidths = view.column_widths ?? {};
+  const savedSingle = view.single_line ?? [];
+  const widths: Record<string, number> = {};
+  const singleLine: string[] = [];
+  let dirty = attributeIds.some((id, index) => id !== view.attribute_ids[index]);
+  for (const key of keys) {
+    const local = layout.widths[key];
+    if (local !== undefined && local !== savedWidths[key]) dirty = true;
+    const width = local ?? savedWidths[key];
+    if (width !== undefined) widths[key] = clampColumnWidth(width);
+    const toggled = layout.singleLine.includes(key);
+    if (toggled) dirty = true;
+    if (savedSingle.includes(key) !== toggled) singleLine.push(key);
+  }
+  return {
+    attribute_ids: attributeIds,
+    column_widths: Object.keys(widths).length > 0 ? widths : null,
+    single_line: singleLine.length > 0 ? singleLine : null,
+    dirty,
+  };
+}
+
+export function readViewLayoutDraft(key: string, view: View): ViewLayoutDraft {
+  return viewLayoutDraft(readColumnLayout(key), view);
+}
+
+/** Drops this browser's draft of a named view (its columns' widths and wrap toggles, the column order); row heights stay. */
+export function clearViewLayoutDraft(key: string, view: View): void {
+  const columns = new Set([ID_COLUMN, ...view.attribute_ids]);
+  updateColumnLayout(key, (layout) => ({
+    ...layout,
+    widths: Object.fromEntries(Object.entries(layout.widths).filter(([column]) => !columns.has(column))),
+    singleLine: layout.singleLine.filter((column) => !columns.has(column)),
+    order: [],
+  }));
+}
+
+/**
+ * The "All attributes" layout of a table as a new view: the shown attribute
+ * columns (`attributeIds`, natural order) in this browser's order, with this
+ * browser's widths and single-line columns.
+ */
+export function browserLayoutAsView(key: string, attributeIds: string[]): Omit<ViewLayoutDraft, 'dirty'> {
+  const layout = readColumnLayout(key);
+  const ordered = applyColumnOrder(attributeIds, (id) => id, layout.order);
+  const keys = [ID_COLUMN, ...ordered];
+  const widths: Record<string, number> = {};
+  for (const k of keys) {
+    if (layout.widths[k] !== undefined) widths[k] = layout.widths[k];
+  }
+  const singleLine = keys.filter((k) => layout.singleLine.includes(k));
+  return {
+    attribute_ids: ordered,
+    column_widths: Object.keys(widths).length > 0 ? widths : null,
+    single_line: singleLine.length > 0 ? singleLine : null,
+  };
+}
+
 /** The reorderable columns of a table as shown (`keys`) and a way to move one of them. */
 export interface ColumnOrder {
   keys: string[];
@@ -218,25 +324,6 @@ export function resetRowHeights(key: string): void {
 
 export function hasRowHeightOverrides(key: string): boolean {
   return Object.keys(readColumnLayout(key).rowHeights).length > 0;
-}
-
-/**
- * The widths to store in a view: every column of the view (Id first, then
- * its attributes), as this browser currently shows them.
- */
-export function viewColumnWidths(
-  key: string,
-  view: View,
-  attributes: AttributeDefinition[],
-): Record<string, number> {
-  const layout = readColumnLayout(key);
-  const widthOf = (columnKey: string, fallback: number) =>
-    clampColumnWidth(layout.widths[columnKey] ?? view.column_widths?.[columnKey] ?? fallback);
-  const widths: Record<string, number> = { [ID_COLUMN]: widthOf(ID_COLUMN, DEFAULT_ID_COLUMN_WIDTH) };
-  for (const attr of attributes) {
-    if (view.attribute_ids.includes(attr.id)) widths[attr.id] = widthOf(attr.id, defaultColumnWidth(attr));
-  }
-  return widths;
 }
 
 function subscribe(listener: () => void): () => void {
@@ -302,8 +389,10 @@ function measureColumn(table: HTMLTableElement, key: string): number | null {
  * fixed`, and mark every cell of a column with `data-column-key` (for
  * auto-fit).
  */
-export function useResizableColumns(storageKey: string, viewWidths?: Record<string, number> | null) {
+export function useResizableColumns(storageKey: string, savedView?: View | null) {
   const layout = useColumnLayout(storageKey);
+  const viewWidths = savedView?.column_widths;
+  const viewSingleLine = savedView?.single_line ?? [];
   const tableElement = useRef<HTMLTableElement | null>(null);
   const colRefs = useRef(new Map<string, HTMLTableColElement>());
   // The rendered col width and table min-width while a drag previews a new width.
@@ -359,10 +448,15 @@ export function useResizableColumns(storageKey: string, viewWidths?: Record<stri
     if (natural !== null) setWidth(key, Math.min(natural, AUTO_FIT_MAX_WIDTH));
   };
 
-  const isSingleLine = (key: string) => layout.singleLine.includes(key);
+  // A named view's single-line columns, with this browser's (unsaved) toggles applied.
+  const isSingleLine = (key: string) => viewSingleLine.includes(key) !== layout.singleLine.includes(key);
 
-  /** `items` (the reorderable columns, in their natural order) in this browser's column order. */
-  const ordered = <T,>(items: T[], keyOf: (item: T) => string): T[] => applyColumnOrder(items, keyOf, layout.order);
+  /**
+   * `items` (the reorderable columns, in their natural order: a named view's
+   * own order, else the project's) in this browser's column order.
+   */
+  const ordered = <T,>(items: T[], keyOf: (item: T) => string): T[] =>
+    savedView ? applyColumnOrderInPlace(items, keyOf, layout.order) : applyColumnOrder(items, keyOf, layout.order);
 
   /** The order controls of the reorderable columns shown as `keys` (already ordered by `ordered`). */
   const orderOf = (keys: string[]): ColumnOrder => ({
@@ -405,6 +499,8 @@ export function useResizableColumns(storageKey: string, viewWidths?: Record<stri
     orderOf,
     resetOrder: () => resetColumnOrder(storageKey),
     hasOrderOverride: layout.order.length > 0,
+    /** A named view's layout as shown, and whether it has unsaved changes; null for "All attributes". */
+    viewDraft: savedView ? viewLayoutDraft(layout, savedView) : null,
   };
 }
 
