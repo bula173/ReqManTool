@@ -76,13 +76,15 @@ etc/start-public.sh reqman.mksystemdesign.org --dir ~/ReqManData
 The script:
 - starts the backend on `localhost:8899`; the arguments after the host name are passed to the backend, so `--dir` selects your data directory;
 - builds the frontend so that API calls stay on the page's own address (an empty `VITE_API_BASE_URL`) and live sync uses `wss://reqman.mksystemdesign.org/ws`;
-- serves the build on `localhost:4173`, with `/projects`, `/config`, `/fs`, `/version` and `/ws` proxied to the backend (see `frontend/vite.config.ts`).
+- serves the build on `localhost:4173`, with the API paths (`/projects`, `/config`, `/fs`, `/version`, `/templates`, `/module-templates`, `/prompts`, `/providers`, `/docs`) and `/ws` proxied to the backend (see `frontend/vite.config.ts`).
 
 Opening or refreshing the address of a project or module page in the browser still loads the app, because the proxy only passes non-HTML requests on those paths to the backend.
 
 Keep both services bound to `localhost`, which is the default. Do not start the backend with `--host 0.0.0.0`. The tunnel is the only way in.
 
-The script runs in the foreground and stops when you close the terminal. A per-user background service (`reqman service install`) is planned in the "Distribution package + user-space install" backlog item.
+The script runs in the foreground and stops when you close the terminal.
+
+With an installed release package (see the README) you do not need the script or the preview server: `reqman serve` serves the built frontend and the API from one origin, and the build already uses the page's own address for API calls and `wss://<public host>/ws` for live sync. Point the tunnel's service at `HTTP` `localhost:8899` instead of `localhost:4173`, and run `reqman service install` to keep it running in the background as a per-user service.
 
 ## 5. Verify
 

@@ -6,11 +6,13 @@
 - ``build`` identifies the running backend code:
   1. ``REQMAN_BUILD`` environment variable, if set and non-blank (for
      packaged releases or CI, where there is no git checkout);
-  2. otherwise ``"<short commit> (<commit date YYYY-MM-DD>)"`` from the git
+  2. otherwise the ``BUILD`` file inside the package, written by the release
+     build (``etc/build-dist.sh``) — an installed package has no checkout;
+  3. otherwise ``"<short commit> (<commit date YYYY-MM-DD>)"`` from the git
      checkout this package lives in, computed once per process. The Python
      backend has no build step, so the *commit* date is used — it is stable
      across server restarts and names the code actually running;
-  3. otherwise ``"dev"`` (git missing, not a checkout, or git failed).
+  4. otherwise ``"dev"`` (git missing, not a checkout, or git failed).
 """
 
 from __future__ import annotations
@@ -54,9 +56,20 @@ def _git_build() -> str:
     return f"{commit} ({date})"
 
 
+BUILD_FILE = Path(__file__).resolve().parent / "BUILD"
+
+
+@lru_cache(maxsize=1)
+def _packaged_build() -> str:
+    try:
+        return BUILD_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def build_id() -> str:
     override = os.environ.get(BUILD_ENV_VAR, "").strip()
-    return override or _git_build()
+    return override or _packaged_build() or _git_build()
 
 
 def version_info() -> dict[str, str]:

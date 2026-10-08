@@ -16,16 +16,18 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .config import DEFAULT_DATA_DIR, check_config_writable, connections_file, load_saved_data_dir, save_data_dir
+from .config import check_config_writable, connections_file, frontend_dir, load_settings, save_data_dir
 from .csv_import import MAX_CSV_IMPORT_BYTES
 from .test_results_import import MAX_TEST_RESULTS_IMPORT_BYTES
 from .formats import NewerFormatError
@@ -39,20 +41,14 @@ from .version import build_id, version_info
 
 logger = logging.getLogger("reqman.app")
 
-CORS_ORIGINS = os.environ.get("REQMAN_CORS_ORIGINS", "http://localhost:5173").split(",")
+# Effective settings: env (CLI flags are applied as env vars by cli.py) >
+# config file > default; see config.py.
+SETTINGS = load_settings()
+CORS_ORIGINS = SETTINGS.cors_origins
+# The built frontend served from this origin (release package), or None (API only).
+FRONTEND_DIR = frontend_dir()
 
-
-def _initial_data_dir() -> Path:
-    env_value = os.environ.get("REQMAN_DATA_DIR")
-    if env_value:
-        return Path(env_value).resolve()
-    saved = load_saved_data_dir()
-    if saved:
-        return Path(saved).resolve()
-    return DEFAULT_DATA_DIR.resolve()
-
-
-DATA_DIR = _initial_data_dir()
+DATA_DIR = SETTINGS.data_dir
 store = ProjectStore(DATA_DIR)
 # Per-project git history (REQMAN_GIT*, see git_repo.GitSettings); shared across data directory switches.
 history = GitHistory(GitSettings.from_env())
@@ -63,6 +59,9 @@ providers = ProviderService.from_env(connections_file())
 service = ProjectService(store, history=history, providers=providers)
 
 logger.info("Requirements data directory: %s", DATA_DIR)
+logger.info("Config file: %s", SETTINGS.config_file)
+if FRONTEND_DIR is not None:
+    logger.info("Serving the frontend from: %s", FRONTEND_DIR)
 
 
 @asynccontextmanager
@@ -82,6 +81,60 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# --- bundled frontend (single origin) ----------------------------------------
+#
+# Client-side routes of the SPA (frontend/src/App.tsx). Several are also API
+# paths (`/projects/{id}`, `/projects/{id}/modules/{mid}`, baselines,
+# traceability report), so a browser *page load* — GET/HEAD whose Accept
+# header names text/html — of exactly these paths gets index.html, while
+# fetch() calls (Accept: */* or application/json), `/ws`, and downloads
+# (`.../export/...`, never a client route) reach the API unchanged.
+SPA_ROUTE = re.compile(
+    r"^/(?:projects/[^/]+"
+    r"(?:/modules/[^/]+|/baselines/[^/]+|/commits(?:/[^/]+(?:/browse)?)?"
+    r"|/reports/(?:traceability|verification/[^/]+|execution/[^/]+))?"
+    r"|detached/projects/[^/]+/modules/[^/]+)?/?$"
+)
+
+
+def _accepts_html(headers: list[tuple[bytes, bytes]]) -> bool:
+    for name, value in headers:
+        if name == b"accept" and b"text/html" in value:
+            return True
+    return False
+
+
+def _index_response() -> FileResponse:
+    assert FRONTEND_DIR is not None
+    # index.html names the hashed assets of this build: never cache it.
+    return FileResponse(FRONTEND_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+
+
+class SpaNavigationMiddleware:
+    """Serve index.html for a browser page load of a client-side route (see ``SPA_ROUTE``)."""
+
+    def __init__(self, asgi_app) -> None:
+        self.app = asgi_app
+
+    async def __call__(self, scope, receive, send):
+        if (
+            scope["type"] == "http"
+            and FRONTEND_DIR is not None
+            and scope["method"] in ("GET", "HEAD")
+            and SPA_ROUTE.match(scope["path"])
+            and _accepts_html(scope["headers"])
+        ):
+            await _index_response()(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+if FRONTEND_DIR is not None:
+    app.add_middleware(SpaNavigationMiddleware)
+    if (FRONTEND_DIR / "assets").is_dir():
+        app.mount("/assets", StaticFiles(directory=FRONTEND_DIR / "assets"), name="frontend-assets")
 
 
 class ConnectionManager:
@@ -138,6 +191,8 @@ manager = ConnectionManager()
 
 @app.get("/", include_in_schema=False)
 def root():
+    if FRONTEND_DIR is not None:
+        return _index_response()
     return RedirectResponse(url="/docs")
 
 
@@ -1731,20 +1786,29 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.discard(websocket)
 
 
+# Registered last so it never shadows an API route: top-level files of the
+# bundled frontend (favicon.svg, icons.svg, ...). Only single-segment paths
+# no API route claimed reach it; anything else is a 404 as before.
+if FRONTEND_DIR is not None:
+
+    @app.get("/{name}", include_in_schema=False)
+    def frontend_file(name: str, request: Request):
+        assert FRONTEND_DIR is not None
+        candidate = (FRONTEND_DIR / name).resolve()
+        if candidate.parent == FRONTEND_DIR.resolve() and candidate.is_file():
+            if candidate.name == "index.html":
+                return _index_response()
+            return FileResponse(candidate)
+        if "text/html" in request.headers.get("accept", ""):
+            return _index_response()
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
 if __name__ == "__main__":
-    import argparse
+    # `python -m reqman.app [--dir PATH] [--host H] [--port N]` (etc/start-backend.sh)
+    # is `reqman serve`; see cli.py.
+    import sys
 
-    import uvicorn
+    from .cli import main
 
-    parser = argparse.ArgumentParser(description="ReqManTool server")
-    parser.add_argument(
-        "--dir", default=None, help="Requirements storage directory (overrides any saved setting)"
-    )
-    parser.add_argument("--host", default="localhost")
-    parser.add_argument("--port", type=int, default=8899)
-    args = parser.parse_args()
-
-    if args.dir:
-        os.environ["REQMAN_DATA_DIR"] = args.dir
-    logging.basicConfig(level=logging.INFO)
-    uvicorn.run("reqman.app:app", host=args.host, port=args.port)
+    sys.exit(main(["serve", *sys.argv[1:]]))

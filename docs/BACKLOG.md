@@ -1398,6 +1398,58 @@
       `providerActions.ts` (new). Not covered: part (4) issue links,
       tests, browser verification; follow-ups in the backlog
       ("GitLab/GitHub: follow-ups").
+- [x] **Distribution package + user-space install** (2026-10-08;
+      requested 2026-10-04). Packaging: `backend/pyproject.toml`
+      (setuptools, distribution `reqmantool`, `license =
+      "AGPL-3.0-only"`, version from `reqman.__version__`,
+      `requires-python = ">=3.11"`, console script `reqman`, `test` extra
+      with pytest/httpx; package data: templates, prompts, `static/**`,
+      `BUILD`); `backend/requirements.txt` is runtime only (uvicorn now
+      listed), pytest/httpx moved to `backend/requirements-dev.txt`. CLI
+      (`reqman`, `python -m reqman`): `reqman [serve] [--dir|--data-dir]
+      [--host] [--port] [--cors-origins] [--config]`, `reqman init`
+      (per-user config file and data dir, no root/admin), `reqman config`
+      (effective settings with their sources), `reqman service
+      install|uninstall [--dry-run] [--no-activate]` (systemd `--user`
+      unit on Linux, launchd agent `io.github.reqmantool.reqman` on
+      macOS), `--version`; `etc/start-backend.sh` runs `python -m reqman
+      serve`. Config: precedence CLI > env (`REQMAN_CONFIG_FILE`,
+      `REQMAN_DATA_DIR`, `REQMAN_CORS_ORIGINS`, new `REQMAN_HOST`,
+      `REQMAN_PORT`, `REQMAN_FRONTEND_DIR`) > config file > platform
+      default; keys `data_dir`, `host`, `port`, `cors_origins`;
+      `save_data_dir` keeps the other keys in stable order. Config lookup:
+      `REQMAN_CONFIG_FILE`/`--config`, else the checkout's
+      `.reqman/config.json` when running from a git checkout and it exists
+      (backward compatible, no migration), else the per-user file (Linux
+      `$XDG_CONFIG_HOME/reqman/config.json`, macOS `~/Library/Application
+      Support/ReqManTool/config.json`, Windows `%APPDATA%\ReqManTool\`);
+      data defaults: checkout `example_database/`, installed the per-user
+      data dir (Linux `$XDG_DATA_HOME/reqman`, macOS `…/ReqManTool/data`,
+      Windows `%APPDATA%\ReqManTool\data`). No CONFIG_FORMAT bump
+      (optional keys). Same-origin serving: the bundled frontend
+      (`reqman/static`) is served by FastAPI with an SPA fallback
+      middleware (HTML navigations only; API, `/ws` and downloads are
+      never shadowed); a checkout backend does not auto-serve
+      `frontend/dist`; the frontend API/WS base defaults to the page
+      origin in production builds, `localhost:8899` in the Vite dev
+      server, `VITE_*` overrides kept; Vite preview proxy extended.
+      Version: build id from env, packaged `reqman/BUILD`, git, or `dev`
+      (existing `GET /version` and footer). GitHub Actions:
+      `.github/workflows/ci.yml` (pytest on Python 3.11 and 3.14, frontend
+      npm ci/build/lint on Node 24), `.github/workflows/release.yml` (on a
+      `v*` tag that must equal `v<__version__>`: `etc/build-dist.sh`,
+      wheel smoke install, `gh release create` with wheel + sdist);
+      `etc/build-dist.sh` new. Backend: `backend/reqman/{cli.py,
+      __main__.py, service_unit.py, config.py, app.py, version.py,
+      formats.py}`; design in `docs/ARCHITECTURE.md` ("Packaging,
+      configuration and install"); install section in `README.md`,
+      `docs/CLOUDFLARE.md` updated. UI: no new screen (frontend API/WS
+      base URL in `frontend/src/api/client.ts`, `frontend/vite.config.ts`).
+      Smoke-checked: wheel built and installed in a temp venv with a temp
+      HOME (init/config/serve, SPA served, `/version`); plist passes
+      `plutil`; no service actually installed. Not covered: tests, CI
+      never run on GitHub; follow-ups in the backlog ("Distribution
+      package: follow-ups").
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -1495,34 +1547,6 @@ item first (phase A), then test, review and fix by area (phase B).
       (BroadcastChannel/localStorage) and cleared after success, Esc or
       "Cancel link". Shared action-registry actions (right-click menu and
       Edit menu). Frontend only (uses the existing link API).
-- [ ] Distribution package + user-space install. Requested 2026-10-04.
-      (1) Packaging: a `pyproject.toml` for the backend with a `reqman`
-      console script; the built frontend (`npm run build` → `dist/`) is
-      bundled inside the Python package and served by FastAPI from the
-      same origin (API under its current paths, SPA fallback to
-      `index.html`), so the frontend's API/WS base URL defaults to the page
-      origin instead of `localhost:8899` (`VITE_*` overrides kept for dev).
-      Test-only deps (`pytest`, `httpx`) move out of runtime requirements.
-      (2) GitHub Actions: CI on push/PR (backend `pytest`, frontend build +
-      lint); on a `v*` tag, build the frontend, build the wheel/sdist, and
-      attach them to a GitHub Release. Install with
-      `pipx install <release wheel URL>` (or `uv tool install`).
-      (3) User-space setup: `reqman init` creates the per-user config file
-      and data directory — no root/admin needed. Defaults follow the
-      platform: config in `~/.config/reqman/config.json` (Linux, honouring
-      `XDG_CONFIG_HOME`), `~/Library/Application Support/ReqManTool/` (macOS),
-      `%APPDATA%\ReqManTool\` (Windows); data in the matching user data dir
-      (or a path the user chooses at `init`). Optional
-      `reqman service install|uninstall` registers a per-user background
-      service (systemd `--user` unit on Linux, launchd agent on macOS).
-      (4) Own JSON config file: replaces today's repo-relative
-      `.reqman/config.json`. Keys: `data_dir` (storage root), `host`,
-      `port`, `cors_origins`; precedence CLI flag > env var
-      (`REQMAN_DATA_DIR`, `REQMAN_CONFIG_FILE`, …) > config file > platform
-      default. The in-app data-folder switcher writes `data_dir` back to the
-      same file (stable key order, two-space indent, trailing newline).
-      Running from a git checkout (`etc/start*.sh`) keeps working. Default
-      bind stays `localhost`.
 - [ ] AGPL compliance in the app. Follow-up of the 2026-10-06 licence
       change. AGPL §13: users interacting with the app over a network must
       be offered the corresponding source — add a "Source code" link (repo
@@ -1588,8 +1612,9 @@ area by area once phase A is complete.
       and linked worktrees are refused (`foreign`), supporting them is
       open; Windows: with no private hooks dir it falls back to
       `/dev/null`, which resolves under the drive root (report an error
-      instead?), and `os.path.isjunction` needs Python 3.12+ (no
-      `requires-python` pin); a settings UI and config keys for the git
+      instead?), and `os.path.isjunction` needs Python 3.12+ (the
+      `requires-python` pin is now `>=3.11` in `backend/pyproject.toml`,
+      so 3.11 is still allowed); a settings UI and config keys for the git
       settings (needs a CONFIG_FORMAT bump with migration); raw
       `git blame` fallback; author from Cloudflare Access once user
       handling exists (remotes/push: done, see "Git remotes" in Done).
@@ -1895,6 +1920,18 @@ area by area once phase A is complete.
       (2026-10-04). List the user templates in `_templates/` (with invalid
       ones and their error) and delete them; today they can only be added
       (Save as template, Load template ▸ import template file).
+- [ ] Distribution package: follow-ups (2026-10-08). (1) Tests pending
+      (phase B): config precedence and lookup, `save_data_dir` key
+      preservation, SPA fallback and its non-shadowing of API/`/ws`/
+      downloads, the CLI, systemd/launchd unit generation. (2) The CI
+      and release workflows have never run on GitHub. (3) Windows has no
+      `reqman service` support. (4) The sdist build warns that there is no
+      README. (5) `/config` does not report which config file is in use.
+      (6) No migration command from the checkout's `.reqman/config.json`
+      to the per-user file. (7) The OS keychain (`keyring`) under a
+      systemd user unit without a secret service is not handled. (8) An
+      older version's data-folder switcher would drop `host`, `port` and
+      `cors_origins` when saving the config file.
 
 ### Open decisions
 

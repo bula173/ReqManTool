@@ -1,0 +1,50 @@
+name: Release
+
+# Push a tag `vX.Y.Z` matching `__version__` in backend/reqman/__init__.py:
+# builds the frontend, bundles it into the Python package, builds the wheel
+# and sdist, and attaches them to a GitHub Release. Install with
+#   pipx install <wheel URL>   (or: uv tool install <wheel URL>)
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Check the tag matches the package version
+        run: |
+          version="$(python -c "import ast, pathlib; tree = ast.parse(pathlib.Path('backend/reqman/__init__.py').read_text()); print(next(n.value.value for n in tree.body if isinstance(n, ast.Assign) and n.targets[0].id == '__version__'))")"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match __version__ $version"
+            exit 1
+          fi
+      - name: Install build tooling
+        run: python -m pip install build
+      - name: Build frontend, wheel and sdist
+        env:
+          # Shown in the app footer and by GET /version.
+          REQMAN_BUILD: ${{ github.ref_name }}
+        run: etc/build-dist.sh dist
+      - name: Smoke-test the wheel
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install dist/*.whl
+          /tmp/smoke/bin/reqman --version
+          /tmp/smoke/bin/python -c "import reqman.config as c; assert c.frontend_dir() is not None, 'frontend not bundled'"
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "ReqManTool $GITHUB_REF_NAME" --generate-notes

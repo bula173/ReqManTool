@@ -5,8 +5,9 @@ Two kinds of file carry an integer ``format_version`` as their first key:
 - ``project.json`` (``PROJECT_FORMAT``). A project's module, requirement and
   link-pair files carry no version of their own: they are governed by their
   project's version.
-- the app config file, ``.reqman/config.json`` (``CONFIG_FORMAT``).
-- the provider connections file, ``.reqman/connections.json``
+- the app config file, ``config.json`` (``CONFIG_FORMAT``; location: see
+  ``config.config_file()``).
+- the provider connections file, ``connections.json`` beside it
   (``CONNECTIONS_FORMAT``).
 
 Project templates keep their own, independent ``format_version`` (see

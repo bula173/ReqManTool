@@ -37,3 +37,8 @@ venv/
 /example_database/
 /backend/data/
 /.reqman/
+
+# Release build (etc/build-dist.sh): frontend and licence copies bundled into the package
+/backend/reqman/static/
+/backend/reqman/BUILD
+/backend/LICENSE

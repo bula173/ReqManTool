@@ -11,4 +11,4 @@ if [ ! -d .venv ]; then
     .venv/bin/pip install -q -r requirements.txt
 fi
 
-exec .venv/bin/python -m reqman.app "$@"
+exec .venv/bin/python -m reqman serve "$@"

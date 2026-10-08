@@ -75,6 +75,11 @@ the relevant queries and refetches. Switching the data directory broadcasts
 Saving a project as a template broadcasts `{"event": "templates_changed"}`,
 which refetches the template list.
 
+The diagram is the development setup (Vite dev server + backend). In a
+release package the backend also serves the built frontend from the same
+origin (`reqman serve`, default `localhost:8899`), so there is one process
+and one port; see "Packaging, configuration and install".
+
 ## Data model and disk layout
 
 All persisted types are plain Python `@dataclass`es in
@@ -948,7 +953,8 @@ into any AI chat and pastes the CSV answer back into the CSV import.
 
 ### Format versions
 
-`project.json` and the app config file (`.reqman/config.json`) start with
+`project.json` and the app config file (`config.json`, see "Packaging,
+configuration and install") start with
 an integer `format_version` (`reqman/formats.py`: `PROJECT_FORMAT`,
 `CONFIG_FORMAT`; project currently 8, config 1). Module, requirement and
 link-pair files have no version of their own; they are governed by their
@@ -1308,7 +1314,7 @@ so a project's repository never contains another project's files.
   `GitSettings.from_env`): `REQMAN_GIT=off` turns history off,
   `REQMAN_GIT_SQUASH_MINUTES` sets the window (`0` never squashes),
   `REQMAN_GIT_AUTHOR_NAME`/`_EMAIL` the author, `REQMAN_GIT_EXECUTABLE`
-  the git command. They are deliberately not keys of `.reqman/config.json`:
+  the git command. They are deliberately not keys of the config file:
   a new persisted key needs a `CONFIG_FORMAT` bump, after which an older
   ReqManTool refuses to start with that config file, which is too high a
   price for settings that have good defaults; a settings UI (later) can
@@ -1587,6 +1593,74 @@ provider and never receives a token.
 - Not yet: issue links (issue URL attribute, create an issue from a
   requirement), the server edition's OAuth login.
 
+## Packaging, configuration and install
+
+ReqManTool ships as one Python package (`backend/pyproject.toml`,
+distribution `reqmantool`, SPDX licence `AGPL-3.0-only`) with a `reqman`
+console script (`reqman/cli.py`). The version comes from
+`reqman.__version__` only.
+
+- **Release build** (`etc/build-dist.sh`, run by
+  `.github/workflows/release.yml` on a `v*` tag that must equal
+  `v<__version__>`): `npm run build` without `VITE_*` overrides, copy
+  `frontend/dist` to `backend/reqman/static`, write the build id to
+  `backend/reqman/BUILD`, copy `LICENSE`, then `python -m build` (wheel +
+  sdist, attached to a GitHub Release). The copies are removed again
+  afterwards and are gitignored, so a checkout never serves a stale bundle by
+  accident. `.github/workflows/ci.yml` runs pytest and the frontend build +
+  lint on every push and pull request.
+- **Single origin.** When a built frontend is available (`reqman/static`,
+  or `REQMAN_FRONTEND_DIR`; an empty value turns it off), `app.py` serves
+  it: `/` and top-level files (`/favicon.svg`, ...) from the bundle,
+  `/assets/*` as static files, and a browser page load of a client-side
+  route gets `index.html`. Several client routes are also API paths
+  (`/projects/{id}`, `/projects/{id}/modules/{mid}`, baselines, the
+  traceability report), so the fallback (`SpaNavigationMiddleware`) only
+  applies to GET/HEAD requests whose `Accept` header names `text/html` *and*
+  whose path matches `SPA_ROUTE` (the routes of `frontend/src/App.tsx`).
+  `fetch()` calls, `/ws`, and downloads (`.../export/...`, never a client
+  route) always reach the API; the top-level file route is registered last,
+  so it never shadows an API route. `frontend/vite.config.ts` mirrors the
+  same pattern for `vite preview`. Without a bundle (a plain checkout) the
+  backend is API-only as before and `/` redirects to `/docs`.
+- **Frontend base URL** (`frontend/src/api/client.ts`): `VITE_API_BASE_URL`
+  / `VITE_WS_URL` win; otherwise the dev server (`npm run dev`) uses
+  `http://localhost:8899` / `ws://localhost:8899/ws` and a production build
+  uses the page origin (`''` and `ws(s)://<host>/ws`).
+- **Settings** (`config.py`): `data_dir`, `host`, `port`, `cors_origins`,
+  each resolved as CLI flag > env var (`REQMAN_DATA_DIR`, `REQMAN_HOST`,
+  `REQMAN_PORT`, `REQMAN_CORS_ORIGINS`) > config file > default
+  (`localhost`, `8899`, `http://localhost:5173`; data: `example_database/`
+  in a checkout, the per-user data directory in an installed package).
+  `reqman config` prints the effective values and their sources.
+- **Which config file**: `REQMAN_CONFIG_FILE` / `--config`; else, when
+  running from a git checkout whose `.reqman/config.json` exists, that file
+  (the pre-package location, kept so existing checkouts keep their data
+  folder — there is no migration step); else the per-user file
+  (`$XDG_CONFIG_HOME/reqman/config.json`, `~/Library/Application
+  Support/ReqManTool/config.json`, `%APPDATA%\ReqManTool\config.json`).
+  `connections.json` lives beside whichever file is in use.
+- **Writing the config file**: `save_data_dir` (the in-app folder switcher)
+  and `reqman init` keep every key — known keys in `CONFIG_KEYS` order,
+  unknown keys after them — with two-space indentation and a trailing
+  newline, and never overwrite a file with a newer `format_version`.
+  `host`, `port` and `cors_origins` were added without a `CONFIG_FORMAT`
+  bump: they are optional, and an older ReqManTool ignores them (it only
+  reads `data_dir`), though its folder switcher would drop them on save.
+- **`reqman init`** writes the per-user config file (or `--config`), fills
+  missing keys with defaults, and creates the data directory; no root/admin
+  rights. **`reqman service install|uninstall`** (`service_unit.py`) writes
+  a systemd `--user` unit (`~/.config/systemd/user/reqman.service`) or a
+  launchd agent (`~/Library/LaunchAgents/io.github.reqmantool.reqman.plist`)
+  running `<python> -m reqman serve --config <config file>` and activates it
+  with `systemctl --user enable --now` / `launchctl bootstrap gui/<uid>`;
+  `--dry-run` prints everything and changes nothing, `--no-activate` only
+  writes or removes the file.
+- **Dependencies**: runtime in `pyproject.toml` `dependencies` and
+  `backend/requirements.txt` (kept in sync, used by `etc/start-backend.sh`);
+  test-only (`pytest`, `httpx`) in the `test` extra and
+  `backend/requirements-dev.txt`.
+
 ## Backend layering
 
 ```
@@ -1648,15 +1722,25 @@ backend/reqman/
   history.py       Pure functions, duck-typed like csv_export.py: commit
                    message entries from changed files, and a requirement's
                    change list + attribute blame from its file revisions.
-  config.py        Where the *chosen data directory itself* is persisted
-                   (`.reqman/config.json` next to the repo, or
-                   REQMAN_DATA_DIR/--dir override) — deliberately
-                   separate from ProjectStore, which only knows how to
-                   read/write *inside* whatever directory it's given.
+  config.py        App settings (data_dir, host, port, cors_origins):
+                   config file lookup, platform default locations,
+                   env > file > default resolution (load_settings), and
+                   save_data_dir for the in-app folder switcher (keeps the
+                   other keys) — deliberately separate from ProjectStore,
+                   which only knows how to read/write *inside* whatever
+                   directory it's given. Also frontend_dir(): the bundled
+                   frontend to serve, if any.
+  cli.py           The `reqman` console script: serve (default), init,
+                   config, service install|uninstall. Flags are applied as
+                   env vars before the app is imported.
+  service_unit.py  Per-user service definitions: systemd --user unit
+                   (Linux), launchd agent plist (macOS); dry-run/no-activate
+                   modes.
   version.py       version_info() → {version, build} for GET /version and
                    WS version.get. version = reqman.__version__ (the one
                    version source; frontend/vite.config.ts parses it at
-                   build time). build = REQMAN_BUILD env var, else
+                   build time). build = REQMAN_BUILD env var, else the
+                   package's BUILD file (release builds), else
                    "<short commit> (<commit date>)" from git (computed once
                    per process, pre-warmed in the FastAPI lifespan at
                    start-up; the backend has no build step, so the commit

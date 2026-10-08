@@ -12,7 +12,10 @@ const apiTarget = process.env.REQMAN_API_TARGET ?? 'http://localhost:8899'
 
 // `/projects/...` is both a backend route and a client-side route. A browser
 // page load of a client route (Accept: text/html) gets the SPA instead.
-const SPA_ROUTE = /^\/projects\/[^/]+(\/modules\/[^/]+)?\/?$/
+// Mirrors the client routes in src/App.tsx and SPA_ROUTE in backend/reqman/app.py
+// (the backend serves the built frontend itself in a release package).
+const SPA_ROUTE =
+  /^\/projects\/[^/]+(\/modules\/[^/]+|\/baselines\/[^/]+|\/commits(\/[^/]+(\/browse)?)?|\/reports\/(traceability|verification\/[^/]+|execution\/[^/]+))?\/?$/
 
 function spaBypass(req: IncomingMessage): string | undefined {
   const path = (req.url ?? '').split('?')[0]
@@ -25,6 +28,12 @@ const apiProxy: Record<string, ProxyOptions> = {
   '/config': { target: apiTarget },
   '/fs': { target: apiTarget },
   '/version': { target: apiTarget },
+  '/templates': { target: apiTarget },
+  '/module-templates': { target: apiTarget },
+  '/prompts': { target: apiTarget },
+  '/providers': { target: apiTarget },
+  '/docs': { target: apiTarget },
+  '/openapi.json': { target: apiTarget },
   '/ws': { target: apiTarget.replace(/^http/, 'ws'), ws: true },
 }
 

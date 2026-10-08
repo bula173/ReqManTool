@@ -1,9 +1,22 @@
 import type { ApiErrorBody } from './types';
 
-export const API_BASE_URL: string =
-  import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8899';
+// Where the API lives. `VITE_API_BASE_URL` / `VITE_WS_URL` always win (an
+// empty base URL means "same origin"). Without them, the Vite dev server
+// (`npm run dev`, :5173) talks to the dev backend on localhost:8899, and a
+// production build talks to the page origin — the backend that serves it
+// (`reqman serve`, see backend/reqman/config.py `frontend_dir`).
+const DEV_BACKEND = 'localhost:8899';
 
-export const WS_URL: string = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8899/ws';
+function sameOriginWsUrl(): string {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/ws`;
+}
+
+export const API_BASE_URL: string =
+  import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.DEV ? `http://${DEV_BACKEND}` : '');
+
+export const WS_URL: string =
+  import.meta.env.VITE_WS_URL ?? (import.meta.env.DEV ? `ws://${DEV_BACKEND}/ws` : sameOriginWsUrl());
 
 export class ApiError extends Error {
   status: number;
