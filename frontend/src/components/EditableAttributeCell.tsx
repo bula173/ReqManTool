@@ -2,6 +2,7 @@ import { Badge, Checkbox, Group, NumberInput, Select, Text, TextInput, Tooltip }
 import { IconCheck } from '@tabler/icons-react';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, Ref } from 'react';
+import { parseLinkValue, type LinkEntry } from '../actions/links';
 import { useFindRequirement } from '../api/queries';
 import type { AttributeDefinition } from '../api/types';
 import { LazyRichTextField } from './LazyRichTextField';
@@ -16,6 +17,12 @@ interface EditableAttributeCellProps {
   projectId?: string;
   onNavigateToLinked?: (targetId: string) => void;
   /**
+   * Opens a link badge's menu: `navigate` on left click, `edit` on right
+   * click (the requirements table). Without it, badges only navigate on
+   * double-click.
+   */
+  onLinkMenu?: LinkMenuHandler;
+  /**
    * Table column display mode: true wraps the full value inside the column
    * width, false keeps it on one line (truncated). Omitted: the compact
    * default (text clamped to two lines).
@@ -23,18 +30,22 @@ interface EditableAttributeCellProps {
   wrap?: boolean;
 }
 
+type LinkMenuHandler = (link: LinkEntry, kind: 'navigate' | 'edit', position: { x: number; y: number }) => void;
+
 function LinkBadge({
-  entry,
+  link,
   projectId,
   onNavigate,
+  onLinkMenu,
 }: {
-  entry: string;
+  link: LinkEntry;
   projectId?: string;
   onNavigate?: (targetId: string) => void;
+  onLinkMenu?: LinkMenuHandler;
 }) {
   const [hovered, setHovered] = useState(false);
-  const outgoing = entry.startsWith('>');
-  const targetId = entry.slice(1).trim();
+  const outgoing = link.direction === 'out';
+  const targetId = link.otherId;
   const findQuery = useFindRequirement(projectId, targetId, hovered);
   const tooltipLabel = findQuery.data
     ? richTextToPlain(findQuery.data.requirement.attributes.object_text ?? targetId)
@@ -48,13 +59,26 @@ function LinkBadge({
         variant="light"
         color={outgoing ? 'green' : 'blue'}
         onMouseEnter={() => setHovered(true)}
+        onClick={
+          onLinkMenu ? (e) => onLinkMenu(link, 'navigate', { x: e.clientX, y: e.clientY }) : undefined
+        }
+        onContextMenu={
+          onLinkMenu
+            ? (e) => {
+                // The badge's own menu, not the row's.
+                e.preventDefault();
+                e.stopPropagation();
+                onLinkMenu(link, 'edit', { x: e.clientX, y: e.clientY });
+              }
+            : undefined
+        }
         onDoubleClick={(e) => {
           e.stopPropagation();
           onNavigate?.(targetId);
         }}
-        style={{ cursor: onNavigate ? 'pointer' : undefined }}
+        style={{ cursor: onNavigate || onLinkMenu ? 'pointer' : undefined }}
       >
-        {entry}
+        {outgoing ? '>' : '<'} {targetId}
       </Badge>
     </Tooltip>
   );
@@ -64,24 +88,23 @@ function LinkEntries({
   value,
   projectId,
   onNavigate,
+  onLinkMenu,
   wrap,
 }: {
   value: unknown;
   projectId?: string;
   onNavigate?: (targetId: string) => void;
+  onLinkMenu?: LinkMenuHandler;
   wrap?: boolean;
 }) {
-  if (value === null || value === undefined || value === '') {
+  const entries = parseLinkValue(value === null || value === undefined ? '' : String(value));
+  if (entries.length === 0) {
     return <Text c="dimmed">—</Text>;
   }
-  const entries = String(value)
-    .split(';')
-    .map((e) => e.trim())
-    .filter(Boolean);
   return (
     <Group gap={4} wrap={wrap === false ? 'nowrap' : 'wrap'} style={wrap === false ? { overflow: 'hidden' } : undefined}>
-      {entries.map((entry, idx) => (
-        <LinkBadge key={idx} entry={entry} projectId={projectId} onNavigate={onNavigate} />
+      {entries.map((link, idx) => (
+        <LinkBadge key={idx} link={link} projectId={projectId} onNavigate={onNavigate} onLinkMenu={onLinkMenu} />
       ))}
     </Group>
   );
@@ -92,16 +115,20 @@ function DisplayValue({
   value,
   projectId,
   onNavigate,
+  onLinkMenu,
   wrap,
 }: {
   attr: AttributeDefinition;
   value: unknown;
   projectId?: string;
   onNavigate?: (targetId: string) => void;
+  onLinkMenu?: LinkMenuHandler;
   wrap?: boolean;
 }) {
   if (attr.system) {
-    return <LinkEntries value={value} projectId={projectId} onNavigate={onNavigate} wrap={wrap} />;
+    return (
+      <LinkEntries value={value} projectId={projectId} onNavigate={onNavigate} onLinkMenu={onLinkMenu} wrap={wrap} />
+    );
   }
   if (value === null || value === undefined || value === '') {
     return <Text c="dimmed">—</Text>;
@@ -156,6 +183,7 @@ export function EditableAttributeCell({
   disabled,
   projectId,
   onNavigateToLinked,
+  onLinkMenu,
   wrap,
 }: EditableAttributeCellProps) {
   const [editing, setEditing] = useState(false);
@@ -172,7 +200,14 @@ export function EditableAttributeCell({
 
   if (disabled || attr.system) {
     return (
-      <DisplayValue attr={attr} value={value} projectId={projectId} onNavigate={onNavigateToLinked} wrap={wrap} />
+      <DisplayValue
+        attr={attr}
+        value={value}
+        projectId={projectId}
+        onNavigate={onNavigateToLinked}
+        onLinkMenu={onLinkMenu}
+        wrap={wrap}
+      />
     );
   }
 

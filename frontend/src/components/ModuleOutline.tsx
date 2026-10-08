@@ -1,4 +1,4 @@
-import { ActionIcon, Badge, Center, CloseButton, Group, Loader, Menu, ScrollArea, Stack, Text, TextInput, Tooltip } from '@mantine/core';
+import { ActionIcon, Badge, Center, CloseButton, Group, Loader, ScrollArea, Stack, Text, TextInput, Tooltip } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import {
   IconBook,
@@ -16,12 +16,11 @@ import {
 } from '@tabler/icons-react';
 import { useEffect, useRef, useState, type ComponentType, type DragEvent, type KeyboardEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ActionMenuEntries } from '../actions/ActionMenuEntries';
 import { useAppActions } from '../actions/context';
 import { REQUIREMENT_CONTEXT_MENU } from '../actions/registry';
+import { contextMenuTargetProps } from '../actions/shortcuts';
 import { ApiError } from '../api/client';
 import { useModule, useMoveRequirement, useProject, useRequirements } from '../api/queries';
-import type { Requirement } from '../api/types';
 import {
   ancestorIdsOf,
   buildOutlineRows,
@@ -87,7 +86,7 @@ export function ModuleOutline({ projectId, moduleId }: { projectId: string; modu
   const moduleQuery = useModule(projectId, moduleId);
   const requirementsQuery = useRequirements(projectId, moduleId);
   const moveRequirement = useMoveRequirement(projectId, moduleId);
-  const { state } = useAppActions();
+  const { state, openMenu } = useAppActions();
   const [, setSearchParams] = useSearchParams();
 
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -95,7 +94,6 @@ export function ModuleOutline({ projectId, moduleId }: { projectId: string; modu
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [busy, setBusy] = useState(false);
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; requirement: Requirement } | null>(null);
   const nodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const pendingScrollRef = useRef<string | null>(null);
   // Row styling rules (font/background color, bold) by enum attribute value.
@@ -349,10 +347,17 @@ export function ModuleOutline({ projectId, moduleId }: { projectId: string; modu
                 draggable={canDrag}
                 onClick={() => reveal(req.id)}
                 onKeyDown={(event) => handleKeyDown(event, row)}
+                {...contextMenuTargetProps}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   state.commands.selectRequirement(req.id);
-                  setContextMenu({ x: event.clientX, y: event.clientY, requirement: req });
+                  openMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                    label: req.id,
+                    entries: REQUIREMENT_CONTEXT_MENU,
+                    targets: { requirement: req },
+                  });
                 }}
                 onDragStart={(event) => {
                   event.dataTransfer.setData('application/x-reqman-requirement', req.id);
@@ -436,18 +441,6 @@ export function ModuleOutline({ projectId, moduleId }: { projectId: string; modu
         </div>
       </ScrollArea>
 
-      <Menu opened={contextMenu !== null} onClose={() => setContextMenu(null)} withinPortal shadow="md">
-        <Menu.Target>
-          <div
-            style={{ position: 'fixed', top: contextMenu?.y ?? 0, left: contextMenu?.x ?? 0, width: 1, height: 1 }}
-          />
-        </Menu.Target>
-        <Menu.Dropdown>
-          {contextMenu && (
-            <ActionMenuEntries entries={REQUIREMENT_CONTEXT_MENU} targets={{ requirement: contextMenu.requirement }} />
-          )}
-        </Menu.Dropdown>
-      </Menu>
     </Stack>
   );
 }

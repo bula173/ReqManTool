@@ -128,18 +128,6 @@ export const appActions: Action<'app'>[] = [
     run: (ctx) => ctx.commands.openDialog({ kind: 'newProject' }),
   },
   {
-    // A new project whose parent is the open project (the project page's button).
-    id: 'project.newSubproject',
-    element: 'app',
-    label: 'New subproject',
-    icon: IconFolderPlus,
-    opensDialog: true,
-    isAvailable: (ctx) => ctx.project !== null,
-    run: (ctx) => {
-      if (ctx.project) ctx.commands.openDialog({ kind: 'newProject', parentProjectId: ctx.project.id });
-    },
-  },
-  {
     // Clones a remote git repository into the data directory as a project.
     id: 'file.addProjectFromRemote',
     element: 'app',
@@ -166,6 +154,8 @@ export const appActions: Action<'app'>[] = [
     isAvailable: () => true,
     run: (ctx) => ctx.commands.openDialog({ kind: 'newProject' }),
     items: templateItems,
+    // The list is fetched only once this submenu (or a template picker) opens.
+    onItemsShown: (ctx) => ctx.commands.requestTemplates(),
   },
   {
     id: 'file.importTemplate',
@@ -175,17 +165,6 @@ export const appActions: Action<'app'>[] = [
     opensDialog: true,
     isAvailable: () => true,
     run: (ctx) => ctx.commands.openDialog({ kind: 'importTemplate' }),
-  },
-  {
-    id: 'file.saveAsTemplate',
-    element: 'app',
-    label: 'Save as template',
-    icon: IconTemplate,
-    opensDialog: true,
-    isAvailable: (ctx) => ctx.project !== null,
-    run: (ctx) => {
-      if (ctx.project) ctx.commands.openDialog({ kind: 'saveAsTemplate', project: ctx.project });
-    },
   },
   {
     // Creates the open project's git repository (or its `current` branch);

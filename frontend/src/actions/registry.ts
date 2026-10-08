@@ -1,5 +1,8 @@
 import { IconFileExport, IconFileImport, IconTemplate } from '@tabler/icons-react';
 import { appActions } from './appActions';
+import { columnActions } from './columnActions';
+import { linkActions } from './linkActions';
+import { moduleActions, projectActions } from './projectActions';
 import { purgeActions } from './purgeActions';
 import { requirementActions } from './requirementActions';
 import { matchesShortcut } from './shortcuts';
@@ -23,7 +26,15 @@ import type {
  * case, and describe its context menu as a `MenuEntry[]` layout rendered
  * with `targets={{ <element>: clicked }}`.
  */
-export const ACTIONS: Action[] = [...appActions, ...purgeActions, ...requirementActions];
+export const ACTIONS: Action[] = [
+  ...appActions,
+  ...purgeActions,
+  ...requirementActions,
+  ...projectActions,
+  ...moduleActions,
+  ...columnActions,
+  ...linkActions,
+] as Action[];
 
 const ACTIONS_BY_ID = new Map<string, Action>(ACTIONS.map((action) => [action.id, action]));
 if (ACTIONS_BY_ID.size !== ACTIONS.length) {
@@ -39,15 +50,29 @@ export function getAction(id: string): Action {
 /**
  * What an action applies to when no element was clicked (menu bar,
  * shortcut, toolbar button): the selected requirement for requirement
- * actions.
+ * actions, the open project / module for project / module actions. Columns
+ * and links have no default: only their own menus target them.
  */
 export function resolveTarget<E extends ElementType>(element: E, state: AppState): ActionTargets[E] {
   switch (element) {
     case 'requirement':
       return state.selectedRequirement as ActionTargets[E];
+    case 'project':
+      return state.project as ActionTargets[E];
+    case 'module':
+      return (
+        state.projectId && state.module
+          ? { projectId: state.projectId, module: state.module, moduleIds: state.modules.map((m) => m.id) }
+          : null
+      ) as ActionTargets[E];
     default:
       return null as ActionTargets[E];
   }
+}
+
+/** Whether the target supports the action (see `Action.isSupported`); unsupported ones are hidden and never run. */
+export function isSupported<E extends ElementType>(action: Action<E>, ctx: ActionContext<E>): boolean {
+  return action.isSupported ? action.isSupported(ctx) : true;
 }
 
 /**
@@ -79,7 +104,7 @@ export function shortcutAction(event: KeyboardEvent, state: AppState): Action | 
     const bound = action.shortcuts?.some(
       (shortcut) => matchesShortcut(event, shortcut) && !(shortcut.whenNoTarget && ctx.target !== null),
     );
-    if (bound && action.isAvailable(ctx)) return action;
+    if (bound && isSupported(action, ctx) && action.isAvailable(ctx)) return action;
   }
   return null;
 }
@@ -139,10 +164,18 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
       action('requirement.cut'),
       action('requirement.copy'),
       action('requirement.pasteAsChild'),
+      action('requirement.pasteAsSibling'),
       action('requirement.pasteAtRoot'),
+      divider,
+      action('requirement.addTopLevel'),
+      action('requirement.addChild'),
+      action('requirement.addSibling'),
       divider,
       action('requirement.moveUp'),
       action('requirement.moveDown'),
+      action('requirement.moveTo'),
+      divider,
+      action('requirement.link'),
       divider,
       action('requirement.delete'),
       // Destructive bulk deletes, kept apart from the requirement entries.
@@ -172,26 +205,94 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
   },
 ];
 
-/**
- * The table-wide part of a requirements table column header menu (after the
- * column's own Wrap text / Auto-fit width entries).
- */
-export const COLUMN_HEADER_MENU: MenuEntry[] = [
+// Context menus: one layout per element type and click kind. Left click
+// opens the navigation/view menu, right click (Shift+F10, the menu key) the
+// editing menu. Entries a place does not support are left out of its layout
+// (or hidden through `isSupported`); unavailable ones are disabled.
+
+/** The table-wide part of a requirements table column header menu. */
+const TABLE_LAYOUT_ENTRIES: MenuEntry[] = [
   action('view.resetColumnWidths'),
   action('view.saveColumnWidths'),
   action('view.removeViewColumnWidths'),
   action('view.resetRowHeights'),
 ];
 
-/** Right-click menu of a requirement row. */
+/** Left click / ⋮ button of a column header: how the column is shown. */
+export const COLUMN_HEADER_VIEW_MENU: MenuEntry[] = [
+  action('column.wrapText'),
+  action('column.autoFit'),
+  divider,
+  ...TABLE_LAYOUT_ENTRIES,
+];
+
+/** Right click of a column header: the attribute's properties, then the view entries. */
+export const COLUMN_HEADER_EDIT_MENU: MenuEntry[] = [
+  action('column.attributeModules'),
+  divider,
+  ...COLUMN_HEADER_VIEW_MENU,
+];
+
+/** Right-click (editing) menu of a requirement row, outline node or table cell. */
 export const REQUIREMENT_CONTEXT_MENU: MenuEntry[] = [
   action('requirement.cut'),
   action('requirement.copy'),
   action('requirement.pasteAsChild'),
+  action('requirement.pasteAsSibling'),
   action('requirement.pasteAtRoot'),
+  divider,
+  action('requirement.addChild'),
+  action('requirement.addSibling'),
   divider,
   action('requirement.moveUp'),
   action('requirement.moveDown'),
+  action('requirement.moveTo'),
+  divider,
+  action('requirement.link'),
   divider,
   action('requirement.delete'),
+];
+
+/**
+ * Left-click (navigation/view) menu of a requirement (its Id cell). "Open in
+ * new tab" and "Detach" join it with the module tabs item.
+ */
+export const REQUIREMENT_NAVIGATION_MENU: MenuEntry[] = [
+  action('requirement.showDetails'),
+  action('requirement.showInTree'),
+  action('requirement.goToLinked'),
+];
+
+/** Left click of a `>`/`<` link badge. */
+export const LINK_NAVIGATION_MENU: MenuEntry[] = [action('link.goTo')];
+
+/** Right click of a `>`/`<` link badge. */
+export const LINK_CONTEXT_MENU: MenuEntry[] = [action('link.goTo'), divider, action('link.remove')];
+
+/**
+ * Right-click menu of a project / subproject node in the sidebar (left click
+ * opens it). Rename, references, "open in tab" and "detach" join it with their
+ * backlog items.
+ */
+export const PROJECT_NODE_MENU: MenuEntry[] = [
+  action('project.open'),
+  divider,
+  action('project.newSubproject'),
+  action('project.newModule'),
+  divider,
+  action('file.saveAsTemplate'),
+];
+
+/**
+ * Right-click menu of a module node in the sidebar (left click opens it); the
+ * module's project is passed as the `project` target for "New module".
+ * Rename, folders, "open in tab" and "detach" join it with their items.
+ */
+export const MODULE_NODE_MENU: MenuEntry[] = [
+  action('module.open'),
+  divider,
+  action('module.moveUp'),
+  action('module.moveDown'),
+  divider,
+  action('project.newModule'),
 ];

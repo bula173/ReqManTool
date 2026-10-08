@@ -7,6 +7,13 @@ interface KeyboardShortcutsModalProps {
   onClose: () => void;
 }
 
+/** Keys handled by the menus themselves (menu bar, context menus), not by registry actions. */
+const MENU_KEYS: { label: string; keys: string[] }[] = [
+  { label: 'Go to the menu bar (again: back)', keys: ['F10', 'Alt'] },
+  { label: 'Open the editing menu of the focused element or selected requirement', keys: ['Shift+F10', 'Menu key'] },
+  { label: 'Close a menu', keys: ['Esc'] },
+];
+
 /** Help ▸ Keyboard shortcuts, generated from the action registry so it never drifts from the real bindings. */
 export function KeyboardShortcutsModal({ opened, onClose }: KeyboardShortcutsModalProps) {
   const actions = actionsWithShortcuts();
@@ -40,11 +47,27 @@ export function KeyboardShortcutsModal({ opened, onClose }: KeyboardShortcutsMod
                 </Table.Td>
               </Table.Tr>
             ))}
+            {MENU_KEYS.map((entry) => (
+              <Table.Tr key={entry.label}>
+                <Table.Td>{entry.label}</Table.Td>
+                <Table.Td>
+                  {entry.keys.map((key, index) => (
+                    <span key={key}>
+                      {index > 0 && <Text span size="xs" c="dimmed">{' or '}</Text>}
+                      <Kbd>{key}</Kbd>
+                    </span>
+                  ))}
+                </Table.Td>
+              </Table.Tr>
+            ))}
           </Table.Tbody>
         </Table>
         <Text size="xs" c="dimmed">
           Edit shortcuts act on the selected requirement of the open module. Ctrl/Cmd+V pastes as a child of the
-          selected requirement (not onto itself), or at the module root only when none is selected. Shortcuts are inactive while a text
+          selected requirement; with the copied requirement itself selected it pastes the copy as a sibling right after
+          it; with nothing selected it pastes at the module root. Delete asks before removing. Click a requirement's Id
+          for its navigation menu and right-click a row, cell, link badge, column header or sidebar entry for its
+          editing menu. Shortcuts are inactive while a text
           field, a select, the inline cell editor, a menu or a dialog has the focus, and Ctrl/Cmd+C/X copy selected
           page text as usual. Double-click a cell to edit it in place (Enter or leaving the cell saves, Escape
           cancels).

@@ -870,6 +870,63 @@
       reqif_export.py, richtext.py, service.py}`, `docs/ARCHITECTURE.md`.
       Not covered: tests pending (see backlog follow-ups); no ReqIF
       importer for XHTML; tables/images in a later slice.
+- [x] **Left-click and right-click menus everywhere** (2026-10-08;
+      requested 2026-10-04). Frontend only; no backend, API or data
+      format change. Shared action registry in `frontend/src/actions/`
+      with element types app, requirement, project, module, column and
+      link; menu layouts `REQUIREMENT_CONTEXT_MENU` /
+      `REQUIREMENT_NAVIGATION_MENU`, `LINK_CONTEXT_MENU` /
+      `LINK_NAVIGATION_MENU`, `COLUMN_HEADER_VIEW_MENU` /
+      `COLUMN_HEADER_EDIT_MENU`, `PROJECT_NODE_MENU`, `MODULE_NODE_MENU`
+      and an extended Edit menu. `isSupported` hides entries,
+      `isAvailable` disables them. One app-wide `ContextMenuHost` (Esc,
+      outside click or item click closes; focus returns). Requirement
+      rows, cells and outline, right click: Cut, Copy, Paste as child,
+      Paste as sibling, Paste at root, Add child, Add sibling, Move
+      Up/Down, Move to parent, Link to, Delete. Left click on the Id cell
+      opens a navigation menu: Show details, Show in tree, Go to linked
+      requirement ▸; elsewhere left click still selects and double-click
+      still edits. The page-local Add child / Move / Link dialogs became
+      registry actions (`AppDialogs`). Link badges: left click Go to;
+      right click Go to + Remove link… (confirm; existing links DELETE
+      route). Sidebar / Project tab, right click: project, subproject and
+      stub — Open, New subproject, New module, Save as template; module —
+      Open, Move Up/Down (`module.reorder`), New module. Column headers:
+      left click opens the view menu (Wrap text, Auto-fit, width and
+      row-height entries); right click is a superset adding "Attribute
+      modules…" (hidden for Id/link/object_text, disabled for required).
+      Keyboard: Delete and Cmd/Ctrl+Backspace delete (with confirm); F10
+      or an Alt tap focuses the menu bar; Shift+F10 / menu key opens the
+      editing menu of the focused element or selected row; Help ▸
+      Keyboard shortcuts updated. Decisions: left-click menus only on the
+      Id cell and link badges; `project.newSubproject` and
+      `file.saveAsTemplate` became project actions. Endpoints unchanged
+      (existing requirement, link and module routes). Files:
+      `frontend/src/actions/{ContextMenuHost.tsx (new), columnActions.ts
+      (new), linkActions.tsx (new), links.ts (new), projectActions.ts
+      (new), ActionMenuEntries.tsx, AppActionsProvider.tsx,
+      appActions.ts, context.ts, registry.ts, requirementActions.tsx,
+      shortcuts.ts, types.ts}`, `frontend/src/layout/{leftPanel.ts (new),
+      AppDialogs.tsx, MenuBar.tsx}`, `frontend/src/components/
+      {EditableAttributeCell.tsx, KeyboardShortcutsModal.tsx,
+      ModuleOutline.tsx, ProjectTab.tsx, RequirementFormModal.tsx,
+      ResizableHeaderCell.tsx, Sidebar.tsx}`, `frontend/src/pages/
+      {ModulePage.tsx, ProjectPage.tsx}`, `frontend/src/api/queries.ts`.
+      Not covered: no frontend tests (no runner), no browser verification
+      yet; follow-ups in the backlog ("Context menus: follow-ups").
+- [x] **Menu bar product decisions + template list loading** (2026-10-08;
+      follow-up of the menu bar item, 2026-10-04). (1) Ctrl/Cmd+V with
+      the copied requirement itself selected pastes a copy as a sibling
+      right after it (copy + move with index through the existing server
+      operations); "Add sibling" works the same way. Two server calls and
+      two commits, not atomic — a warning is shown if the move fails.
+      (2) Export ▸ on the project page was already done 2026-10-06 with
+      the toolbar → menu item. (3) The templates list is loaded lazily,
+      when the template submenu opens or `NewProjectModal` mounts
+      (`useTemplates(enabled)` in `frontend/src/api/queries.ts`), instead
+      of on every app load. Frontend only; endpoints unchanged. UI: Edit
+      menu / requirement context menu, File ▸ Load template ▸, New
+      project dialog.
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -1088,30 +1145,20 @@ to the categories above.
       `AGPL-3.0-only` in `frontend/package.json` and (with the
       distribution item) `pyproject.toml`; a third-party licence list
       generated at build time; `CONTRIBUTING.md` with the CLA requirement.
-- [ ] Left-click and right-click menus everywhere. Requested 2026-10-04.
-      Two distinct menus, adapted to what was clicked: **left click** opens
-      a navigation/view menu (open, open in new tab, detach, show links,
-      go to linked requirement, show in tree, …); **right click** opens an
-      editing menu (cut/copy/paste, add child/sibling, move up/down, move
-      to folder, delete, link to…, rename, properties, …). Places and
-      their entries: requirement rows and cells (incl. `>`/`<` link
-      badges: go to / remove link), sidebar tree (project, subproject,
-      module folder, module: new module, new subproject, rename,
-      references, save as template, open in tab, detach), column headers
-      (sort, filter, hide, add to view, attribute properties), and module
-      tabs (close, close others, detach, split view). One shared menu
-      registry per element type so the menu bar, both context menus and
-      keyboard shortcuts call the same actions; entries the place does not
-      support are hidden, unavailable ones disabled. Left click still
-      selects; double-click keeps inline editing; Esc / outside click
-      closes; keyboard-accessible (Shift+F10 / menu key opens the editing
-      menu). Builds on the menu bar item; tab, folder and reference
-      entries appear as those items land. Sidebar module entries also get
-      Move Up/Down (today only on the project page module cards, via
-      `module.reorder`). Menu bar follow-ups (2026-10-04): lift the
-      page-local Add child / Link / Move to parent dialogs into registry
-      actions (`frontend/src/actions/`); add a Delete key shortcut and
-      F10 / Alt access to the menu bar.
+- [ ] Context menus: follow-ups (2026-10-08). (1) Module tab entries
+      (close, close others, detach, split view), "Open in new tab" /
+      "Detach", module folder and project reference entries arrive with
+      those items (hooks in `ActionTargets` and the menu layouts).
+      (2) Project/module Rename needs backend APIs. (3) Column header
+      Sort / Filter / Hide / Add to view need their own features.
+      (4) Detail-panel link badges and module-outline nodes have no
+      left-click navigation menu. (5) ProjectPage module-card Move Up/Down
+      and "Change parent" are still page-local, not registry actions.
+      (6) Purge module/project is not in the sidebar menus. (7) Alt+letter
+      menu mnemonics. (8) Paste as sibling / Add sibling are two server
+      calls and two commits (not atomic) — consider a server-side
+      copy-with-index. (9) No frontend tests (no runner) and no browser
+      verification yet.
 - [ ] AI prompt library (copy → external AI chat → CSV → import).
       Requested 2026-10-04. No AI service is called by ReqManTool; the
       user copies a generated prompt into any AI chat and imports the CSV
@@ -1541,14 +1588,6 @@ to the categories above.
       (save as template, template import) gives a 500; a template module
       name gives a 500 while staging (nothing published). Reject them
       with REST 400 / WebSocket -32602 and write nothing.
-- [ ] Menu bar product decisions + template list loading. Follow-up of the
-      menu bar item (2026-10-04). Decided 2026-10-04: (1) Ctrl/Cmd+V with
-      the copied requirement itself selected pastes it as a sibling right
-      after it (today it does nothing). (2) Export ▸ is enabled only while a module is open, although
-      exports cover the whole project; enable it on the project page —
-      done 2026-10-06 with the toolbar → menu item.
-      (3) The templates list is fetched on every app load; load it lazily
-      (when a template picker or the Load template menu opens).
 - [ ] User-template management dialog. Follow-up of the menu bar item
       (2026-10-04). List the user templates in `_templates/` (with invalid
       ones and their error) and delete them; today they can only be added

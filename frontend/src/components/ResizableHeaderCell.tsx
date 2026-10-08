@@ -1,6 +1,7 @@
 import { ActionIcon, Menu, Table } from '@mantine/core';
 import { IconArrowsHorizontal, IconCheck, IconDotsVertical } from '@tabler/icons-react';
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
+import { contextMenuTargetProps } from '../actions/shortcuts';
 import {
   MAX_COLUMN_WIDTH,
   MIN_COLUMN_WIDTH,
@@ -8,6 +9,9 @@ import {
   endBodyDrag,
   type ResizableColumns,
 } from '../hooks/columnLayout';
+
+/** `view`: the navigation/view menu (left click, ⋮ button); `edit`: the editing menu (right click, Shift+F10). */
+export type ColumnMenuKind = 'view' | 'edit';
 
 interface ResizableHeaderCellProps {
   columnKey: string;
@@ -17,6 +21,12 @@ interface ResizableHeaderCellProps {
   columns: ResizableColumns;
   /** Extra entries of the column header menu, after a divider (e.g. Reset column widths / row heights). */
   menuExtra?: ReactNode;
+  /**
+   * Opens the column's registry menus instead of the built-in one (module
+   * page): left click on the label and the ⋮ button open the view menu,
+   * right click the editing menu, at the given screen position.
+   */
+  onOpenMenu?: (kind: ColumnMenuKind, position: { x: number; y: number }) => void;
 }
 
 const KEYBOARD_STEP = 10;
@@ -31,7 +41,14 @@ const KEYBOARD_STEP_LARGE = 50;
  * ArrowLeft / ArrowRight (Shift for bigger steps). Widths stay within
  * MIN_COLUMN_WIDTH..MAX_COLUMN_WIDTH, so a column never disappears.
  */
-export function ResizableHeaderCell({ columnKey, label, defaultWidth, columns, menuExtra }: ResizableHeaderCellProps) {
+export function ResizableHeaderCell({
+  columnKey,
+  label,
+  defaultWidth,
+  columns,
+  menuExtra,
+  onOpenMenu,
+}: ResizableHeaderCellProps) {
   const width = columns.widthOf(columnKey, defaultWidth);
   const singleLine = columns.isSingleLine(columnKey);
   const [menuOpened, setMenuOpened] = useState(false);
@@ -93,48 +110,72 @@ export function ResizableHeaderCell({ columnKey, label, defaultWidth, columns, m
     // absolutely placed handle (index.css makes a non-sticky header's `th` relative).
     <Table.Th
       data-column-key={columnKey}
+      {...(onOpenMenu ? contextMenuTargetProps : {})}
       onContextMenu={(event) => {
         event.preventDefault();
-        setMenuOpened(true);
+        if (onOpenMenu) onOpenMenu('edit', { x: event.clientX, y: event.clientY });
+        else setMenuOpened(true);
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-        <span className="reqman-col-label" title={label}>
+        <span
+          className="reqman-col-label"
+          title={label}
+          style={onOpenMenu ? { cursor: 'pointer' } : undefined}
+          onClick={onOpenMenu ? (event) => onOpenMenu('view', { x: event.clientX, y: event.clientY }) : undefined}
+        >
           {label}
         </span>
-        <Menu opened={menuOpened} onChange={setMenuOpened} position="bottom-end" shadow="md" withinPortal>
-          <Menu.Target>
-            <ActionIcon
-              variant="subtle"
-              color="gray"
-              size="xs"
-              aria-label={`Column menu: ${label}`}
-              className="reqman-col-menu-button"
-            >
-              <IconDotsVertical size={12} />
-            </ActionIcon>
-          </Menu.Target>
-          <Menu.Dropdown>
-            <Menu.Label>{label}</Menu.Label>
-            <Menu.Item
-              leftSection={
-                singleLine ? <span style={{ display: 'inline-block', width: 14 }} /> : <IconCheck size={14} />
-              }
-              onClick={() => columns.toggleSingleLine(columnKey)}
-            >
-              Wrap text
-            </Menu.Item>
-            <Menu.Item leftSection={<IconArrowsHorizontal size={14} />} onClick={() => columns.autoFit(columnKey)}>
-              Auto-fit width
-            </Menu.Item>
-            {menuExtra && (
-              <>
-                <Menu.Divider />
-                {menuExtra}
-              </>
-            )}
-          </Menu.Dropdown>
-        </Menu>
+        {onOpenMenu ? (
+          <ActionIcon
+            variant="subtle"
+            color="gray"
+            size="xs"
+            aria-label={`Column menu: ${label}`}
+            aria-haspopup="menu"
+            className="reqman-col-menu-button"
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              onOpenMenu('view', { x: rect.left, y: rect.bottom });
+            }}
+          >
+            <IconDotsVertical size={12} />
+          </ActionIcon>
+        ) : (
+          <Menu opened={menuOpened} onChange={setMenuOpened} position="bottom-end" shadow="md" withinPortal>
+            <Menu.Target>
+              <ActionIcon
+                variant="subtle"
+                color="gray"
+                size="xs"
+                aria-label={`Column menu: ${label}`}
+                className="reqman-col-menu-button"
+              >
+                <IconDotsVertical size={12} />
+              </ActionIcon>
+            </Menu.Target>
+            <Menu.Dropdown>
+              <Menu.Label>{label}</Menu.Label>
+              <Menu.Item
+                leftSection={
+                  singleLine ? <span style={{ display: 'inline-block', width: 14 }} /> : <IconCheck size={14} />
+                }
+                onClick={() => columns.toggleSingleLine(columnKey)}
+              >
+                Wrap text
+              </Menu.Item>
+              <Menu.Item leftSection={<IconArrowsHorizontal size={14} />} onClick={() => columns.autoFit(columnKey)}>
+                Auto-fit width
+              </Menu.Item>
+              {menuExtra && (
+                <>
+                  <Menu.Divider />
+                  {menuExtra}
+                </>
+              )}
+            </Menu.Dropdown>
+          </Menu>
+        )}
       </div>
       <div
         className="reqman-col-resize-handle"

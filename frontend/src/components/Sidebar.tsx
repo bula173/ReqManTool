@@ -13,8 +13,11 @@ import {
 import { useEffect, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAppActions } from '../actions/context';
+import { PROJECT_NODE_MENU } from '../actions/registry';
+import { contextMenuTargetProps } from '../actions/shortcuts';
 import { useProjects } from '../api/queries';
 import { isProjectStub, type Project, type ProjectListEntry, type ProjectStub } from '../api/types';
+import { LEFT_PANEL_TAB_STORAGE_KEY, LEFT_PANEL_TABS, type LeftPanelTab } from '../layout/leftPanel';
 import { ModuleOutline } from './ModuleOutline';
 import { ProjectTab } from './ProjectTab';
 import { ancestorIds, buildProjectForest, type ProjectForest } from './projectTree';
@@ -56,6 +59,19 @@ function ExpandToggle({ name, opened, onToggle }: { name: string; opened: boolea
   );
 }
 
+/** Right click (Shift+F10, the menu key) on a project node: its editing menu. */
+function useProjectNodeMenu(project: ProjectListEntry) {
+  const { openMenu } = useAppActions();
+  return {
+    ...contextMenuTargetProps,
+    onContextMenu: (event: MouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openMenu({ x: event.clientX, y: event.clientY, label: project.name, entries: PROJECT_NODE_MENU, targets: { project } });
+    },
+  };
+}
+
 /** A project, or a read-only stub for a project that cannot be loaded. */
 function ProjectTreeNode({ project, ...context }: NodeContext & { project: ProjectListEntry }) {
   return isProjectStub(project) ? (
@@ -80,6 +96,7 @@ function StubProjectNode({
   onPickProject,
 }: NodeContext & { project: ProjectStub }) {
   const [opened, setOpened] = useState(activeAncestorIds.includes(project.id));
+  const menuProps = useProjectNodeMenu(project);
   // Nested only if it has subprojects: otherwise there is nothing to expand.
   const subprojects = forest.childrenOf.get(project.id) ?? [];
 
@@ -107,6 +124,7 @@ function StubProjectNode({
         c="dimmed"
         style={{ opacity: 0.6 }}
         onClick={() => onPickProject(project.id)}
+        {...menuProps}
         active={activeProjectId === project.id}
         opened={opened}
         onChange={setOpened}
@@ -148,6 +166,7 @@ function ProjectNode({
 }: NodeContext & { project: Project }) {
   const projectId = project.id;
   const [opened, setOpened] = useState(activeAncestorIds.includes(projectId));
+  const menuProps = useProjectNodeMenu(project);
   const subprojects = forest.childrenOf.get(projectId) ?? [];
 
   return (
@@ -158,6 +177,7 @@ function ProjectNode({
       opened={opened}
       onChange={setOpened}
       onClick={() => onPickProject(projectId)}
+      {...menuProps}
       rightSection={
         subprojects.length > 0 ? (
           <ExpandToggle name={project.name} opened={opened} onToggle={() => setOpened((o) => !o)} />
@@ -245,10 +265,6 @@ function WorkspaceTab({
   );
 }
 
-type LeftPanelTab = 'workspace' | 'project' | 'module';
-
-const LEFT_PANEL_TABS: LeftPanelTab[] = ['workspace', 'project', 'module'];
-const TAB_STORAGE_KEY = 'reqman.leftPanel.tab';
 const PROJECT_STORAGE_KEY = 'reqman.leftPanel.projectId';
 
 /**
@@ -266,7 +282,7 @@ export function Sidebar() {
   const params = useParams<{ projectId?: string; moduleId?: string }>();
   const navigate = useNavigate();
   const [storedTab, setTab] = useLocalStorage<LeftPanelTab>({
-    key: TAB_STORAGE_KEY,
+    key: LEFT_PANEL_TAB_STORAGE_KEY,
     defaultValue: 'workspace',
     getInitialValueInEffect: false,
   });

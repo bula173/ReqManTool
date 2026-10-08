@@ -1,7 +1,13 @@
 import { Button, Group, Menu } from '@mantine/core';
-import { useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { ActionMenuEntries } from '../actions/ActionMenuEntries';
 import { MENU_BAR } from '../actions/registry';
+import { isShortcutBlockedTarget } from '../actions/shortcuts';
+
+/** Keys inside a dialog belong to the dialog. */
+function inDialog(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest('[role="dialog"]') !== null;
+}
 
 /**
  * The desktop-style application menu bar (File / Edit / View / Help). Every
@@ -14,6 +20,11 @@ import { MENU_BAR } from '../actions/registry';
  * to the first/last, ArrowDown opens the focused menu. With a menu open,
  * ArrowLeft/ArrowRight open the adjacent menu (ArrowRight on a submenu item
  * opens the submenu instead), and Escape closes it, returning to its title.
+ *
+ * Reaching the bar (desktop convention): F10, or pressing and releasing Alt
+ * alone, moves focus to the first menu title; again (or Escape on a title)
+ * gives focus back to where it was. Inactive inside dialogs; the Alt tap is
+ * also inactive while typing in a field.
  */
 export function MenuBar() {
   const count = MENU_BAR.length;
@@ -22,6 +33,9 @@ export function MenuBar() {
   const triggerRefs = useRef<(HTMLButtonElement | null)[]>([]);
   // Submenu dropdowns are not portalled, so they are inside these elements.
   const dropdownRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const barRef = useRef<HTMLDivElement>(null);
+  // Where focus was before F10 / Alt moved it to the bar.
+  const previousFocusRef = useRef<HTMLElement | null>(null);
 
   const focusTrigger = (index: number): number => {
     const next = (index + count) % count;
@@ -35,10 +49,79 @@ export function MenuBar() {
     setOpenIndex(focusTrigger(from + delta));
   };
 
+  /** Gives focus back to where it was before the bar was reached by keyboard. */
+  const leaveBar = () => {
+    const previous = previousFocusRef.current;
+    previousFocusRef.current = null;
+    if (previous?.isConnected) previous.focus();
+    else (document.activeElement as HTMLElement | null)?.blur();
+  };
+
+  /** F10 / Alt tap: focus the bar's first menu title, or leave the bar if it has focus. */
+  const toggleBarFocus = () => {
+    const active = document.activeElement;
+    if (active && barRef.current?.contains(active)) {
+      setOpenIndex(null);
+      leaveBar();
+      return;
+    }
+    previousFocusRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
+    focusTrigger(0);
+  };
+  const toggleBarFocusRef = useRef(toggleBarFocus);
+  useEffect(() => {
+    toggleBarFocusRef.current = toggleBarFocus;
+  });
+
+  useEffect(() => {
+    // Alt pressed and released with nothing else in between.
+    let altArmed = false;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Alt') {
+        altArmed = !event.repeat && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+        return;
+      }
+      altArmed = false;
+      if (event.key !== 'F10' || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.defaultPrevented || inDialog(event.target)) return;
+      event.preventDefault();
+      toggleBarFocusRef.current();
+    };
+    const onKeyUp = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Alt' || !altArmed) return;
+      altArmed = false;
+      const target = event.target;
+      const onBar = target instanceof Element && barRef.current?.contains(target);
+      if (inDialog(target) || (!onBar && isShortcutBlockedTarget(target))) return;
+      event.preventDefault();
+      toggleBarFocusRef.current();
+    };
+    const disarm = () => {
+      altArmed = false;
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('mousedown', disarm, true);
+    window.addEventListener('blur', disarm);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('mousedown', disarm, true);
+      window.removeEventListener('blur', disarm);
+    };
+  }, []);
+
   const onTriggerKeyDown = (index: number, event: KeyboardEvent<HTMLButtonElement>) => {
     // A modified key (e.g. Alt+ArrowDown = Move Down) is an app shortcut, not menu navigation.
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
     switch (event.key) {
+      case 'Escape':
+        // No menu is open (Mantine handles Escape inside an open one): leave the bar.
+        if (openIndex === null) {
+          event.preventDefault();
+          leaveBar();
+        }
+        break;
       case 'ArrowRight':
       case 'ArrowLeft': {
         event.preventDefault();
@@ -95,7 +178,7 @@ export function MenuBar() {
   };
 
   return (
-    <Group gap={0} component="nav" aria-label="Application menu" role="menubar" wrap="nowrap">
+    <Group ref={barRef} gap={0} component="nav" aria-label="Application menu (F10)" role="menubar" wrap="nowrap">
       {MENU_BAR.map((menu, index) => (
         <Menu
           key={menu.label}

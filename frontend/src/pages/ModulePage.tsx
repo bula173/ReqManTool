@@ -6,7 +6,6 @@ import {
   Center,
   Group,
   Loader,
-  Menu,
   Select,
   Stack,
   Table,
@@ -25,26 +24,24 @@ import {
   IconTrash,
 } from '@tabler/icons-react';
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { ActionMenuEntries } from '../actions/ActionMenuEntries';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { useAppActions } from '../actions/context';
-import { COLUMN_HEADER_MENU, REQUIREMENT_CONTEXT_MENU } from '../actions/registry';
-import { applicableAttributes } from '../api/applicability';
-import { api, ApiError } from '../api/client';
+import type { LinkEntry } from '../actions/links';
 import {
-  useModule,
-  useProject,
-  useRequirements,
-  useUpdateRequirement,
-  useViews,
-} from '../api/queries';
-import type { FindRequirementResult } from '../api/queries';
+  COLUMN_HEADER_EDIT_MENU,
+  COLUMN_HEADER_VIEW_MENU,
+  LINK_CONTEXT_MENU,
+  LINK_NAVIGATION_MENU,
+  REQUIREMENT_CONTEXT_MENU,
+  REQUIREMENT_NAVIGATION_MENU,
+} from '../actions/registry';
+import { contextMenuTargetProps } from '../actions/shortcuts';
+import { applicableAttributes } from '../api/applicability';
+import { ApiError } from '../api/client';
+import { useModule, useProject, useRequirements, useUpdateRequirement, useViews } from '../api/queries';
 import { EditableAttributeCell } from '../components/EditableAttributeCell';
-import { LinkModal } from '../components/LinkModal';
-import { MoveRequirementModal } from '../components/MoveRequirementModal';
 import { RequirementDetailPanel } from '../components/RequirementDetailPanel';
-import { RequirementFormModal } from '../components/RequirementFormModal';
-import { ResizableHeaderCell } from '../components/ResizableHeaderCell';
+import { ResizableHeaderCell, type ColumnMenuKind } from '../components/ResizableHeaderCell';
 import { RowResizeHandle } from '../components/RowResizeHandle';
 import { useRowAppearance } from '../components/rowStyles';
 import {
@@ -55,7 +52,7 @@ import {
   useResizableColumns,
   useResizableRows,
 } from '../hooks/columnLayout';
-import type { Requirement } from '../api/types';
+import type { AttributeDefinition, Requirement } from '../api/types';
 
 interface TreeRow {
   requirement: Requirement;
@@ -102,15 +99,8 @@ function ancestorIds(requirements: Requirement[], requirementId: string): string
 /** The Actions column is not resizable; it takes the table's remaining width, at least this much. */
 const ACTIONS_COLUMN_MIN_WIDTH = 150;
 
-interface ContextMenuState {
-  x: number;
-  y: number;
-  requirement: Requirement;
-}
-
 export function ModulePage() {
   const { projectId, moduleId } = useParams<{ projectId: string; moduleId: string }>();
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const projectQuery = useProject(projectId);
   const moduleQuery = useModule(projectId, moduleId);
@@ -119,7 +109,7 @@ export function ModulePage() {
   const updateRequirement = useUpdateRequirement(projectId ?? '', moduleId ?? '');
   // Selection, clipboard, active view and the detail panel are shared with
   // the menu bar and keyboard shortcuts through the action registry.
-  const { state: appState, run, isAvailable } = useAppActions();
+  const { state: appState, run, isAvailable, openMenu } = useAppActions();
   const { commands } = appState;
   // Column widths, wrap toggles and row heights: per browser, per project +
   // module + view; a view's shared widths (project.json) are the defaults.
@@ -132,11 +122,7 @@ export function ModulePage() {
   // Row styling rules (font/background color, bold) by enum attribute value.
   const rowAppearance = useRowAppearance(projectQuery.data?.row_styles, projectQuery.data?.attributes);
 
-  const [addParentId, setAddParentId] = useState<string | null | undefined>(undefined);
-  const [linkSource, setLinkSource] = useState<Requirement | null>(null);
-  const [moveSource, setMoveSource] = useState<Requirement | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const rowRefs = useRef<Map<string, HTMLTableRowElement>>(new Map());
   // A row to scroll to once it is rendered (its ancestors may just have been expanded).
   const scrollTargetRef = useRef<string | null>(null);
@@ -215,7 +201,34 @@ export function ModulePage() {
     columnWidth(ID_COLUMN, DEFAULT_ID_COLUMN_WIDTH) +
     visibleAttributes.reduce((sum, attr) => sum + columnWidth(attr.id, defaultColumnWidth(attr)), 0) +
     ACTIONS_COLUMN_MIN_WIDTH;
-  const columnMenu = <ActionMenuEntries entries={COLUMN_HEADER_MENU} />;
+  // Column header menus: left click / ⋮ = view menu, right click = editing menu.
+  const openColumnMenu = (
+    columnKey: string,
+    label: string,
+    attribute: AttributeDefinition | null,
+    kind: ColumnMenuKind,
+    position: { x: number; y: number },
+  ) =>
+    openMenu({
+      ...position,
+      label,
+      entries: kind === 'edit' ? COLUMN_HEADER_EDIT_MENU : COLUMN_HEADER_VIEW_MENU,
+      targets: { column: { columnKey, label, attribute, columns } },
+    });
+  // Link badges: left click = go to, right click = go to / remove link.
+  const openLinkMenu = (
+    requirement: Requirement,
+    configId: string,
+    link: LinkEntry,
+    kind: 'navigate' | 'edit',
+    position: { x: number; y: number },
+  ) =>
+    openMenu({
+      ...position,
+      label: `${link.direction === 'out' ? '>' : '<'} ${link.otherId}`,
+      entries: kind === 'edit' ? LINK_CONTEXT_MENU : LINK_NAVIGATION_MENU,
+      targets: { link: { requirement, configId, ...link }, requirement },
+    });
   const selectedId = appState.selectedRequirement?.id ?? null;
   const selectedRequirement = requirements.find((r) => r.id === selectedId) ?? null;
 
@@ -228,26 +241,14 @@ export function ModulePage() {
     });
   };
 
-  const handleNavigateToLinked = async (targetId: string) => {
-    try {
-      const result = await api.get<FindRequirementResult>(`/projects/${projectId}/requirements/${targetId}`);
-      if (result.module_id === moduleId) {
-        setCollapsed((prev) => {
-          const next = new Set(prev);
-          for (const ancestorId of ancestorIds(requirements, targetId)) next.delete(ancestorId);
-          return next;
-        });
-        commands.selectRequirement(targetId);
-        scrollTargetRef.current = targetId;
-      } else {
-        navigate(`/projects/${projectId}/modules/${result.module_id}?highlight=${targetId}`);
-      }
-    } catch (err) {
+  // The shared "go to requirement" command (it reveals the row via `?highlight=`).
+  const handleNavigateToLinked = (targetId: string) => {
+    commands.goToRequirement(targetId).catch((err) =>
       notifications.show({
         message: err instanceof ApiError ? err.message : 'Failed to locate linked requirement',
         color: 'red',
-      });
-    }
+      }),
+    );
   };
 
   const handleCellSave = (requirement: Requirement, attrId: string, value: unknown) => {
@@ -277,7 +278,11 @@ export function ModulePage() {
       </div>
 
       <Group>
-        <Button leftSection={<IconPlus size={16} />} onClick={() => setAddParentId(null)}>
+        <Button
+          leftSection={<IconPlus size={16} />}
+          disabled={!isAvailable('requirement.addTopLevel')}
+          onClick={() => run('requirement.addTopLevel')}
+        >
           Add Requirement
         </Button>
         <Button
@@ -330,7 +335,7 @@ export function ModulePage() {
                 label="Id"
                 defaultWidth={DEFAULT_ID_COLUMN_WIDTH}
                 columns={columns}
-                menuExtra={columnMenu}
+                onOpenMenu={(kind, position) => openColumnMenu(ID_COLUMN, 'Id', null, kind, position)}
               />
               {visibleAttributes.map((attr) => (
                 <ResizableHeaderCell
@@ -339,7 +344,7 @@ export function ModulePage() {
                   label={attr.name}
                   defaultWidth={defaultColumnWidth(attr)}
                   columns={columns}
-                  menuExtra={columnMenu}
+                  onOpenMenu={(kind, position) => openColumnMenu(attr.id, attr.name, attr, kind, position)}
                 />
               ))}
               <Table.Th>Actions</Table.Th>
@@ -365,6 +370,8 @@ export function ModulePage() {
                     if (el) rowRefs.current.set(req.id, el);
                     else rowRefs.current.delete(req.id);
                   }}
+                  data-requirement-row={req.id}
+                  {...contextMenuTargetProps}
                   onClick={() => commands.selectRequirement(req.id)}
                   bg={selected ? 'var(--mantine-color-blue-light)' : undefined}
                   data-row-height={rowSizes.heightOf(req.id)}
@@ -378,11 +385,25 @@ export function ModulePage() {
                   onContextMenu={(e) => {
                     e.preventDefault();
                     commands.selectRequirement(req.id);
-                    setContextMenu({ x: e.clientX, y: e.clientY, requirement: req });
+                    openMenu({ x: e.clientX, y: e.clientY, label: req.id, entries: REQUIREMENT_CONTEXT_MENU, targets: { requirement: req } });
                   }}
                 >
                   <Table.Td data-column-key={ID_COLUMN}>
-                    <div className="reqman-cell-clip" data-fade={columns.isSingleLine(ID_COLUMN) ? undefined : ''}>
+                    {/* Left click on the Id: the navigation menu (the row is selected too). */}
+                    <div
+                      className="reqman-cell-clip"
+                      data-fade={columns.isSingleLine(ID_COLUMN) ? undefined : ''}
+                      title="Click for navigation, right-click for editing"
+                      onClick={(e) =>
+                        openMenu({
+                          x: e.clientX,
+                          y: e.clientY,
+                          label: req.id,
+                          entries: REQUIREMENT_NAVIGATION_MENU,
+                          targets: { requirement: req },
+                        })
+                      }
+                    >
                       <Text fw={600} truncate={columns.isSingleLine(ID_COLUMN) ? 'end' : undefined}>
                         {req.id}
                       </Text>
@@ -410,6 +431,7 @@ export function ModulePage() {
                               disabled={updateRequirement.isPending}
                               projectId={projectId}
                               onNavigateToLinked={handleNavigateToLinked}
+                              onLinkMenu={(link, kind, position) => openLinkMenu(req, attr.id, link, kind, position)}
                               wrap={!columns.isSingleLine(attr.id)}
                             />
                           </div>
@@ -422,17 +444,17 @@ export function ModulePage() {
                     <div className="reqman-cell-clip">
                       <Group gap={4} wrap="nowrap">
                         <Tooltip label="Add child">
-                          <ActionIcon variant="subtle" onClick={() => setAddParentId(req.id)}>
+                          <ActionIcon variant="subtle" onClick={() => run('requirement.addChild', { requirement: req })}>
                             <IconPlus size={16} />
                           </ActionIcon>
                         </Tooltip>
-                        <Tooltip label="Move">
-                          <ActionIcon variant="subtle" onClick={() => setMoveSource(req)}>
+                        <Tooltip label="Move to parent">
+                          <ActionIcon variant="subtle" onClick={() => run('requirement.moveTo', { requirement: req })}>
                             <IconArrowsMove size={16} />
                           </ActionIcon>
                         </Tooltip>
-                        <Tooltip label="Link">
-                          <ActionIcon variant="subtle" onClick={() => setLinkSource(req)}>
+                        <Tooltip label="Link to">
+                          <ActionIcon variant="subtle" onClick={() => run('requirement.link', { requirement: req })}>
                             <IconLink size={16} />
                           </ActionIcon>
                         </Tooltip>
@@ -470,51 +492,6 @@ export function ModulePage() {
       )}
       </Group>
 
-      <Menu
-        opened={contextMenu !== null}
-        onClose={() => setContextMenu(null)}
-        withinPortal
-        shadow="md"
-      >
-        <Menu.Target>
-          <div
-            style={{
-              position: 'fixed',
-              top: contextMenu?.y ?? 0,
-              left: contextMenu?.x ?? 0,
-              width: 1,
-              height: 1,
-            }}
-          />
-        </Menu.Target>
-        <Menu.Dropdown>
-          {contextMenu && (
-            <ActionMenuEntries entries={REQUIREMENT_CONTEXT_MENU} targets={{ requirement: contextMenu.requirement }} />
-          )}
-        </Menu.Dropdown>
-      </Menu>
-
-      <RequirementFormModal
-        projectId={projectId}
-        moduleId={moduleId}
-        attributes={attributes}
-        opened={addParentId !== undefined}
-        parentId={addParentId ?? null}
-        onClose={() => setAddParentId(undefined)}
-      />
-      <LinkModal
-        projectId={projectId}
-        moduleId={moduleId}
-        source={linkSource}
-        onClose={() => setLinkSource(null)}
-      />
-      <MoveRequirementModal
-        projectId={projectId}
-        moduleId={moduleId}
-        source={moveSource}
-        allRequirements={requirements}
-        onClose={() => setMoveSource(null)}
-      />
     </Stack>
   );
 }

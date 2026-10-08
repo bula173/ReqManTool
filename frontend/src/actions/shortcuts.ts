@@ -21,6 +21,7 @@ const KEY_LABELS: Record<string, string> = {
   ArrowLeft: '←',
   ArrowRight: '→',
   Delete: 'Del',
+  Backspace: IS_MAC ? '⌫' : 'Backspace',
 };
 
 /** Display form: `⌘C`, `⇧⌘V`, `⌥↑` on macOS; `Ctrl+C`, `Ctrl+Shift+V`, `Alt+↑` elsewhere. */
@@ -60,4 +61,18 @@ export function isShortcutBlockedTarget(target: EventTarget | null): boolean {
 export function hasTextSelection(): boolean {
   const selection = typeof window !== 'undefined' ? window.getSelection() : null;
   return selection !== null && !selection.isCollapsed && selection.toString().trim().length > 0;
+}
+
+/**
+ * Marks an element that has an editing (right-click) menu, so Shift+F10 and
+ * the context menu key open it for the focused element (inside it). Spread
+ * `contextMenuTargetProps` onto the element.
+ */
+export const CONTEXT_MENU_TARGET_ATTRIBUTE = 'data-context-menu-target';
+export const contextMenuTargetProps = { [CONTEXT_MENU_TARGET_ATTRIBUTE]: '' } as const;
+
+/** A context-menu position for a menu opened from an element by keyboard or button: just below its top-left corner. */
+export function menuPositionOf(element: Element): { x: number; y: number } {
+  const rect = element.getBoundingClientRect();
+  return { x: rect.left, y: rect.bottom };
 }

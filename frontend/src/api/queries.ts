@@ -617,6 +617,25 @@ export function useReorderModule(projectId: string) {
 }
 
 /**
+ * Moves a module of any project one place up or down (sidebar module menus):
+ * like `useReorderModule`, but the project id is a mutation variable.
+ */
+export function useReorderAnyModule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, moduleId, direction }: { projectId: string; moduleId: string; direction: 'up' | 'down' }) =>
+      api.post<Module>(
+        `/projects/${encodeURIComponent(projectId)}/modules/${encodeURIComponent(moduleId)}/reorder`,
+        { direction },
+      ),
+    onSuccess: (_module, { projectId }) => {
+      qc.invalidateQueries({ queryKey: queryKeys.modules(projectId), exact: true });
+      qc.invalidateQueries({ queryKey: queryKeys.project(projectId), exact: true });
+    },
+  });
+}
+
+/**
  * Purge (hard-delete) every requirement of one module. The ids are mutation
  * variables, not hook arguments, so a confirmation dialog purges the module
  * it was opened for even if the route changed meanwhile.

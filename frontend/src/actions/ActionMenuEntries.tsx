@@ -1,10 +1,10 @@
 import { Menu, Text } from '@mantine/core';
 import { IconCheck } from '@tabler/icons-react';
-import { useRef, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
 import { useAppActions } from './context';
-import { contextFor, getAction } from './registry';
+import { contextFor, getAction, isSupported } from './registry';
 import { formatShortcut } from './shortcuts';
-import type { Action, ActionIcon, ActionTargetOverrides, MenuEntry } from './types';
+import type { Action, ActionIcon, ActionTargetOverrides, AppState, MenuEntry } from './types';
 
 const ICON_SIZE = 14;
 
@@ -48,6 +48,36 @@ function SubMenu({ label, leftSection, children }: { label: ReactNode; leftSecti
   );
 }
 
+/** Calls `onShown` once when mounted: submenu dropdowns mount only while open. */
+function ShownSignal({ onShown }: { onShown: () => void }) {
+  const onShownRef = useRef(onShown);
+  useEffect(() => {
+    onShownRef.current();
+  }, []);
+  return null;
+}
+
+/**
+ * The layout without the entries the targets do not support: unsupported
+ * actions, submenus left empty, and leading, trailing or repeated dividers.
+ */
+function supportedEntries(list: MenuEntry[], state: AppState, targets?: ActionTargetOverrides): MenuEntry[] {
+  const kept: MenuEntry[] = [];
+  for (const entry of list) {
+    if (entry.kind === 'action') {
+      const action = getAction(entry.id);
+      if (isSupported(action, contextFor(action, state, targets))) kept.push(entry);
+    } else if (entry.kind === 'submenu') {
+      const entries = supportedEntries(entry.entries, state, targets);
+      if (entries.length > 0) kept.push({ ...entry, entries });
+    } else if (kept.length > 0 && kept[kept.length - 1].kind !== 'divider') {
+      kept.push(entry);
+    }
+  }
+  while (kept.length > 0 && kept[kept.length - 1].kind === 'divider') kept.pop();
+  return kept;
+}
+
 /**
  * Renders a menu layout (`MenuEntry[]`) as Mantine menu items, inside a
  * `Menu.Dropdown`. Every item runs its registry action; availability,
@@ -55,7 +85,8 @@ function SubMenu({ label, leftSection, children }: { label: ReactNode; leftSecti
  * bar and context menus can never disagree. `targets` holds the clicked
  * element of a context menu keyed by element type (e.g. `{ requirement: row }`),
  * so each action gets a target of its own element type; actions without an
- * entry (and the whole menu bar) use their default target.
+ * entry (and the whole menu bar) use their default target. Actions the
+ * targets do not support are hidden; unavailable ones are disabled.
  */
 export function ActionMenuEntries({ entries, targets }: { entries: MenuEntry[]; targets?: ActionTargetOverrides }) {
   const { state, run } = useAppActions();
@@ -79,6 +110,7 @@ export function ActionMenuEntries({ entries, targets }: { entries: MenuEntry[]; 
       const items = action.items(ctx);
       return (
         <SubMenu key={key} label={action.label} leftSection={leftSection}>
+          {action.onItemsShown && <ShownSignal onShown={() => action.onItemsShown?.(ctx)} />}
           {items.map((item) => (
             <Menu.Item
               key={item.key}
@@ -133,5 +165,5 @@ export function ActionMenuEntries({ entries, targets }: { entries: MenuEntry[]; 
       );
     });
 
-  return <>{renderEntries(entries, '')}</>;
+  return <>{renderEntries(supportedEntries(entries, state, targets), '')}</>;
 }

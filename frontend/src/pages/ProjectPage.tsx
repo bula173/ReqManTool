@@ -46,7 +46,6 @@ import { AddAttributeModal } from '../components/AddAttributeModal';
 import { AttributeModulesModal } from '../components/AttributeModulesModal';
 import { GitStatusPanel } from '../components/GitStatusPanel';
 import { LinkConfigurationModal } from '../components/LinkConfigurationModal';
-import { NewModuleModal } from '../components/NewModuleModal';
 import { ProjectParentModal } from '../components/ProjectParentModal';
 import { richTextToPlain } from '../components/richText';
 import { ViewModal } from '../components/ViewModal';
@@ -69,7 +68,6 @@ export function ProjectPage() {
   const reorderModule = useReorderModule(projectId ?? '');
   const [addAttributeOpened, setAddAttributeOpened] = useState(false);
   const [scopedAttribute, setScopedAttribute] = useState<AttributeDefinition | null>(null);
-  const [newModuleOpened, setNewModuleOpened] = useState(false);
   const [newLinkConfigOpened, setNewLinkConfigOpened] = useState(false);
   const [newViewOpened, setNewViewOpened] = useState(false);
   const [parentOpened, setParentOpened] = useState(false);
@@ -389,7 +387,7 @@ export function ProjectPage() {
       <Card withBorder>
         <Group justify="space-between" mb="sm">
           <Title order={4}>Modules</Title>
-          <Button size="xs" leftSection={<IconPlus size={14} />} onClick={() => setNewModuleOpened(true)}>
+          <Button size="xs" leftSection={<IconPlus size={14} />} onClick={() => run('project.newModule')}>
             New module
           </Button>
         </Group>
@@ -460,7 +458,6 @@ export function ProjectPage() {
         attribute={scopedAttribute}
         onClose={() => setScopedAttribute(null)}
       />
-      <NewModuleModal projectId={newModuleOpened ? projectId : null} onClose={() => setNewModuleOpened(false)} />
       <LinkConfigurationModal
         projectId={projectId}
         opened={newLinkConfigOpened}

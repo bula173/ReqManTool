@@ -1,10 +1,12 @@
 import { Center, Loader, NavLink, ScrollArea, Stack, Text } from '@mantine/core';
 import { IconAlertTriangle, IconCornerLeftUp, IconFileText, IconFolderPlus, IconFolders, IconPlus } from '@tabler/icons-react';
-import { useState } from 'react';
+import type { MouseEvent } from 'react';
 import { useAppActions } from '../actions/context';
+import { MODULE_NODE_MENU, PROJECT_NODE_MENU } from '../actions/registry';
+import { contextMenuTargetProps } from '../actions/shortcuts';
+import type { ActionTargetOverrides, MenuEntry } from '../actions/types';
 import { useModules, useProjects } from '../api/queries';
 import { isProjectStub } from '../api/types';
-import { NewModuleModal } from './NewModuleModal';
 import { buildProjectForest } from './projectTree';
 
 interface ProjectTabProps {
@@ -26,12 +28,13 @@ function SectionLabel({ children }: { children: string }) {
 /**
  * The Project tab of the left panel: the chosen project's parent (to go up),
  * subprojects (picking one drills down) and modules (picking one opens it in
- * the Module tab), plus "New module" / "New subproject".
+ * the Module tab), plus "New module" / "New subproject". Right click (or
+ * Shift+F10) on the project, a subproject or a module opens its editing menu
+ * from the action registry; left click opens it.
  */
 export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenModule }: ProjectTabProps) {
   const projectsQuery = useProjects();
-  const { state, run, isAvailable } = useAppActions();
-  const [newModuleProjectId, setNewModuleProjectId] = useState<string | null>(null);
+  const { state, run, isAvailable, openMenu } = useAppActions();
 
   const projects = projectsQuery.data ?? [];
   const project = projectId ? projects.find((p) => p.id === projectId) : undefined;
@@ -72,13 +75,20 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
   const forest = buildProjectForest(projects);
   const parent = projects.find((p) => forest.childrenOf.get(p.id)?.some((child) => child.id === projectId));
   const subprojects = forest.childrenOf.get(projectId) ?? [];
-  // "New subproject" works on the open project (the route's).
-  const canAddSubproject = state.projectId === projectId && isAvailable('project.newSubproject');
+  const canAddSubproject = isAvailable('project.newSubproject', { project });
+  const moduleIds = (modulesQuery.data ?? []).map((m) => m.id);
+  const menuProps = (label: string, entries: MenuEntry[], targets: ActionTargetOverrides) => ({
+    ...contextMenuTargetProps,
+    onContextMenu: (event: MouseEvent) => {
+      event.preventDefault();
+      openMenu({ x: event.clientX, y: event.clientY, label, entries, targets });
+    },
+  });
 
   return (
     <Stack gap={0} h="100%">
       <Stack gap={0} px="xs" pt="xs">
-        <Text fw={600} size="sm" px="sm" truncate="end">
+        <Text fw={600} size="sm" px="sm" truncate="end" {...menuProps(project.name, PROJECT_NODE_MENU, { project })}>
           {project.name}
         </Text>
         {parent && (
@@ -106,13 +116,14 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
             c={isProjectStub(child) ? 'dimmed' : undefined}
             title={isProjectStub(child) ? `Cannot be opened: ${child.error}` : undefined}
             onClick={() => onPickProject(child.id)}
+            {...menuProps(child.name, PROJECT_NODE_MENU, { project: child })}
           />
         ))}
         {canAddSubproject && (
           <NavLink
             label="New subproject"
             leftSection={<IconFolderPlus size={14} />}
-            onClick={() => run('project.newSubproject')}
+            onClick={() => run('project.newSubproject', { project })}
             c="dimmed"
           />
         )}
@@ -143,18 +154,21 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
                 leftSection={<IconFileText size={14} />}
                 active={state.projectId === projectId && activeModuleId === module.id}
                 onClick={() => onOpenModule(projectId, module.id)}
+                {...menuProps(module.name, MODULE_NODE_MENU, {
+                  module: { projectId, module, moduleIds },
+                  project,
+                })}
               />
             ))}
             <NavLink
               label="New module"
               leftSection={<IconPlus size={14} />}
-              onClick={() => setNewModuleProjectId(projectId)}
+              onClick={() => run('project.newModule', { project })}
               c="dimmed"
             />
           </>
         )}
       </ScrollArea>
-      <NewModuleModal projectId={newModuleProjectId} onClose={() => setNewModuleProjectId(null)} />
     </Stack>
   );
 }

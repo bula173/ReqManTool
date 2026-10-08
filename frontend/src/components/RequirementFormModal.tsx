@@ -2,7 +2,7 @@ import { Button, Checkbox, Group, Input, Modal, NumberInput, Select, Stack, Text
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import { useEffect, useState } from 'react';
-import { useAddRequirement } from '../api/queries';
+import { useAddRequirement, useMoveRequirement } from '../api/queries';
 import { ApiError } from '../api/client';
 import type { AttributeDefinition } from '../api/types';
 import { LazyRichTextField } from './LazyRichTextField';
@@ -15,6 +15,14 @@ interface RequirementFormModalProps {
   opened: boolean;
   onClose: () => void;
   parentId?: string | null;
+  /**
+   * Places the new requirement at this 0-based position among its siblings
+   * (Add sibling: right after the clicked one) with the server's move after
+   * creating it. Omitted: the server appends it as the last child.
+   */
+  insertIndex?: number;
+  /** The sibling the new requirement is placed after (dialog title only). */
+  afterId?: string;
 }
 
 interface FormValues {
@@ -110,9 +118,12 @@ export function RequirementFormModal({
   opened,
   onClose,
   parentId = null,
+  insertIndex,
+  afterId,
 }: RequirementFormModalProps) {
   const editableAttributes = attributes.filter((a) => !a.system);
   const addRequirement = useAddRequirement(projectId, moduleId);
+  const moveRequirement = useMoveRequirement(projectId, moduleId);
   const form = useForm<FormValues>({
     initialValues: buildInitialValues(editableAttributes),
     // The server rejects a blank required attribute; block submitting it here.
@@ -146,7 +157,23 @@ export function RequirementFormModal({
       {
         onSuccess: (requirement) => {
           notifications.show({ message: `Requirement "${requirement.id}" created`, color: 'green' });
-          onClose();
+          if (insertIndex === undefined) {
+            onClose();
+            return;
+          }
+          // Then placed among its siblings (the dialog stays open, busy, meanwhile).
+          moveRequirement
+            .mutateAsync({ id: requirement.id, parentId, index: insertIndex })
+            .catch((error) =>
+              notifications.show({
+                message:
+                  error instanceof ApiError
+                    ? `"${requirement.id}" was added as the last sibling: ${error.message}`
+                    : `"${requirement.id}" was added as the last sibling`,
+                color: 'yellow',
+              }),
+            )
+            .finally(onClose);
         },
         onError: (error) => {
           notifications.show({
@@ -162,7 +189,7 @@ export function RequirementFormModal({
     <Modal
       opened={opened}
       onClose={onClose}
-      title={parentId ? `New child of ${parentId}` : 'New requirement'}
+      title={afterId ? `New requirement after ${afterId}` : parentId ? `New child of ${parentId}` : 'New requirement'}
       centered
       size="lg"
     >
@@ -214,7 +241,7 @@ export function RequirementFormModal({
             <Button variant="default" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" loading={addRequirement.isPending}>
+            <Button type="submit" loading={addRequirement.isPending || moveRequirement.isPending}>
               Create
             </Button>
           </Group>

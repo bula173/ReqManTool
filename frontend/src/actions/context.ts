@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import type { ActionTargetOverrides, AppState } from './types';
+import type { ActionTargetOverrides, AppState, MenuRequest } from './types';
 
 export interface AppActionsValue {
   state: AppState;
@@ -13,6 +13,12 @@ export interface AppActionsValue {
   run: (id: string, targets?: ActionTargetOverrides) => boolean;
   /** Whether `run` would run the action now (for enabling buttons). */
   isAvailable: (id: string, targets?: ActionTargetOverrides) => boolean;
+  /**
+   * Shows a context menu (a `MenuEntry[]` layout with its clicked targets) at
+   * a screen position. One menu at a time: it closes on Escape, an outside
+   * click or an item click, and gives focus back to where it was.
+   */
+  openMenu: (request: MenuRequest) => void;
 }
 
 export const AppActionsContext = createContext<AppActionsValue | null>(null);

@@ -2,6 +2,7 @@ import { useComputedColorScheme, useMantineColorScheme } from '@mantine/core';
 import { useLocalStorage } from '@mantine/hooks';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { api } from '../api/client';
 import {
   subscribeDatasetCleared,
   useConfig,
@@ -11,32 +12,64 @@ import {
   useGitPush,
   useGitStatus,
   useModule,
+  useModules,
   useMoveRequirement,
   useProject,
   usePurgeModule,
   usePurgeProject,
   useRemoveRequirement,
+  useReorderAnyModule,
   useReorderRequirement,
   useRequirements,
   useSetViewColumnWidths,
   useTemplates,
+  useUnlinkRequirements,
   useViews,
+  type FindRequirementResult,
 } from '../api/queries';
 import { AppDialogs } from '../layout/AppDialogs';
+import { LEFT_PANEL_TAB_STORAGE_KEY, type LeftPanelTab } from '../layout/leftPanel';
 import { AppActionsContext, type AppActionsValue } from './context';
-import { contextFor, getAction, shortcutAction } from './registry';
-import { hasTextSelection, isShortcutBlockedTarget } from './shortcuts';
-import type { ActionTargetOverrides, AppCommands, AppState, DialogRequest, RequirementClipboard } from './types';
+import { ContextMenuHost } from './ContextMenuHost';
+import { contextFor, getAction, isSupported, shortcutAction } from './registry';
+import { CONTEXT_MENU_TARGET_ATTRIBUTE, hasTextSelection, isShortcutBlockedTarget } from './shortcuts';
+import type {
+  ActionTargetOverrides,
+  AppCommands,
+  AppState,
+  DialogRequest,
+  MenuRequest,
+  RequirementClipboard,
+} from './types';
 
 const DETAIL_PANEL_STORAGE_KEY = 'reqman.detailPanelOpen';
+
+/** Shift+F10 or the context menu key: "open the editing menu". */
+function isContextMenuKey(event: KeyboardEvent): boolean {
+  if (event.ctrlKey || event.metaKey || event.altKey) return false;
+  return event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey);
+}
+
+/**
+ * The element whose editing menu Shift+F10 opens: the focused element's menu
+ * target, else the selected requirement's table row.
+ */
+function keyboardMenuTarget(selectedRequirementId: string | null): Element | null {
+  const active = document.activeElement;
+  const focused = active instanceof Element ? active.closest(`[${CONTEXT_MENU_TARGET_ATTRIBUTE}]`) : null;
+  if (focused) return focused;
+  if (!selectedRequirementId) return null;
+  return document.querySelector(`[data-requirement-row="${CSS.escape(selectedRequirementId)}"]`);
+}
 
 /**
  * Owns the state the action registry works on — route ids and their loaded
  * project/module/requirements, the requirement selection and clipboard, the
  * active attribute view, the detail panel and colour scheme — plus the
- * dialogs actions open and the global keyboard shortcuts. Mounted once in
- * the app shell, so the menu bar, the module page and its context menu all
- * see the same state.
+ * dialogs actions open, the one context menu (`openMenu`) and the global
+ * keyboard shortcuts (incl. Shift+F10 / the menu key for the editing menu).
+ * Mounted once in the app shell, so the menu bar, the pages, the sidebar and
+ * every context menu see the same state.
  */
 export function AppActionsProvider({ children }: { children: ReactNode }) {
   const params = useParams<{ projectId?: string; moduleId?: string }>();
@@ -48,8 +81,11 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const projectQuery = useProject(projectId ?? undefined);
   const moduleQuery = useModule(projectId ?? undefined, moduleId ?? undefined);
   const requirementsQuery = useRequirements(projectId ?? undefined, moduleId ?? undefined);
+  const modulesQuery = useModules(projectId ?? undefined);
   const viewsQuery = useViews(projectId ?? undefined);
-  const templatesQuery = useTemplates();
+  // The templates list is fetched lazily: only once a template menu or picker opened.
+  const [templatesRequested, setTemplatesRequested] = useState(false);
+  const templatesQuery = useTemplates(templatesRequested);
   const gitStatusQuery = useGitStatus(projectId ?? undefined);
   const enableHistory = useEnableHistory(projectId ?? '');
   const gitPush = useGitPush(projectId ?? '');
@@ -62,6 +98,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const moveRequirement = useMoveRequirement(projectId ?? '', moduleId ?? '');
   const reorderRequirement = useReorderRequirement(projectId ?? '', moduleId ?? '');
   const removeRequirement = useRemoveRequirement(projectId ?? '', moduleId ?? '');
+  const unlinkRequirements = useUnlinkRequirements(projectId ?? '');
+  const reorderModule = useReorderAnyModule();
   const purgeModule = usePurgeModule();
   const purgeProject = usePurgeProject();
 
@@ -73,6 +111,13 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     // Read synchronously so a hidden panel does not flash open on reload.
     getInitialValueInEffect: false,
   });
+  // The sidebar's active tab (shared with `Sidebar` through the same storage key).
+  const [, setLeftPanelTab] = useLocalStorage<LeftPanelTab>({
+    key: LEFT_PANEL_TAB_STORAGE_KEY,
+    defaultValue: 'workspace',
+    getInitialValueInEffect: false,
+  });
+  const [menu, setMenu] = useState<MenuRequest | null>(null);
 
   // Project, module and requirement ids repeat across data folders (clones,
   // projects created from one template), so the clipboard remembers the data
@@ -137,10 +182,38 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       purgeProject: (purgeProjectId) => purgeProject.mutateAsync(purgeProjectId),
       requirements: {
         copy: (id, targetParentId) => copyRequirement.mutateAsync({ id, targetParentId }),
-        move: (id, parentId) => moveRequirement.mutateAsync({ id, parentId }),
+        move: (id, parentId, index) => moveRequirement.mutateAsync({ id, parentId, index }),
         reorder: (id, direction) => reorderRequirement.mutateAsync({ id, direction }),
         remove: (id) => removeRequirement.mutateAsync(id),
       },
+      unlink: (configId, sourceId, targetId) =>
+        unlinkRequirements.mutateAsync({ config_id: configId, source_id: sourceId, target_id: targetId }),
+      reorderModule: (reorderProjectId, reorderModuleId, direction) =>
+        reorderModule.mutateAsync({ projectId: reorderProjectId, moduleId: reorderModuleId, direction }),
+      goToRequirement: async (requirementId) => {
+        if (!projectId) throw new Error('No project is open');
+        const result = await api.get<FindRequirementResult>(
+          `/projects/${encodeURIComponent(projectId)}/requirements/${encodeURIComponent(requirementId)}`,
+        );
+        // The module page opens the row's ancestors, selects it, scrolls to it and drops `highlight`.
+        navigate(
+          `/projects/${encodeURIComponent(projectId)}/modules/${encodeURIComponent(result.module_id)}?highlight=${encodeURIComponent(requirementId)}`,
+          { replace: result.module_id === moduleId },
+        );
+      },
+      showInTree: (requirementId) => {
+        setSelection({ moduleKey, id: requirementId });
+        setLeftPanelTab('module');
+      },
+      openProject: (openProjectId) => {
+        navigate(`/projects/${encodeURIComponent(openProjectId)}`);
+        setLeftPanelTab('project');
+      },
+      openModule: (openProjectId, openModuleId) => {
+        navigate(`/projects/${encodeURIComponent(openProjectId)}/modules/${encodeURIComponent(openModuleId)}`);
+        setLeftPanelTab('module');
+      },
+      requestTemplates: () => setTemplatesRequested(true),
     }),
     // The mutation objects change identity on every state change; their
     // `mutateAsync` functions are stable.
@@ -150,7 +223,9 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       dataDir,
       moduleKey,
       projectId,
+      moduleId,
       setDetailPanelOpen,
+      setLeftPanelTab,
       setColorScheme,
       copyRequirement.mutateAsync,
       moveRequirement.mutateAsync,
@@ -162,6 +237,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       gitPush.mutateAsync,
       gitPull.mutateAsync,
       setViewColumnWidths.mutateAsync,
+      unlinkRequirements.mutateAsync,
+      reorderModule.mutateAsync,
     ],
   );
 
@@ -170,6 +247,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     moduleId,
     project: projectQuery.data ?? null,
     module: moduleId ? (moduleQuery.data ?? null) : null,
+    modules: projectId ? (modulesQuery.data ?? []) : [],
     requirements,
     selectedRequirement,
     clipboard,
@@ -180,7 +258,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     colorScheme,
     templates: {
       data: templatesQuery.data ?? [],
-      isLoading: templatesQuery.isLoading,
+      isLoading: !templatesRequested || templatesQuery.isLoading,
       isError: templatesQuery.isError,
     },
     commands,
@@ -195,6 +273,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  // When Shift+F10 / the menu key last opened a menu (see the keydown handler).
+  const keyboardMenuAt = useRef(-Infinity);
   // Event handlers (shortcuts, menu clicks) read the latest state through a ref.
   const stateRef = useRef(state);
   useEffect(() => {
@@ -204,7 +284,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const run = useCallback((id: string, targets?: ActionTargetOverrides): boolean => {
     const action = getAction(id);
     const ctx = contextFor(action, stateRef.current, targets);
-    if (!action.isAvailable(ctx)) return false;
+    if (!isSupported(action, ctx) || !action.isAvailable(ctx)) return false;
     action.run(ctx);
     return true;
   }, []);
@@ -212,6 +292,24 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || isShortcutBlockedTarget(event.target)) return;
+      if (isContextMenuKey(event)) {
+        // Opens the editing menu of the focused element (or the selected row)
+        // through its own contextmenu handler, as a right click would.
+        const element = keyboardMenuTarget(stateRef.current.selectedRequirement?.id ?? null);
+        if (!element) return;
+        event.preventDefault();
+        const rect = element.getBoundingClientRect();
+        keyboardMenuAt.current = performance.now();
+        element.dispatchEvent(
+          new MouseEvent('contextmenu', {
+            bubbles: true,
+            cancelable: true,
+            clientX: rect.left + Math.min(24, rect.width / 2),
+            clientY: rect.top + Math.min(rect.height, 28),
+          }),
+        );
+        return;
+      }
       // With page text selected, Ctrl/Cmd+C/X copy that text as usual.
       const key = event.key.toLowerCase();
       if ((key === 'c' || key === 'x') && hasTextSelection()) return;
@@ -220,20 +318,36 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       event.preventDefault();
       action.run(contextFor(action, stateRef.current));
     };
+    // The browser may still send its own contextmenu event for the key (the
+    // menu key on Windows): it would reopen the menu at another position.
+    const onNativeContextMenu = (event: MouseEvent) => {
+      if (event.isTrusted && performance.now() - keyboardMenuAt.current < 500) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    window.addEventListener('contextmenu', onNativeContextMenu, true);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('contextmenu', onNativeContextMenu, true);
+    };
   }, []);
 
   const isAvailable = (id: string, targets?: ActionTargetOverrides): boolean => {
     const action = getAction(id);
-    return action.isAvailable(contextFor(action, state, targets));
+    const ctx = contextFor(action, state, targets);
+    return isSupported(action, ctx) && action.isAvailable(ctx);
   };
 
-  const value: AppActionsValue = { state, run, isAvailable };
+  const openMenu = useCallback((request: MenuRequest) => setMenu(request), []);
+
+  const value: AppActionsValue = { state, run, isAvailable, openMenu };
 
   return (
     <AppActionsContext.Provider value={value}>
       {children}
+      <ContextMenuHost request={menu} onClose={() => setMenu(null)} />
       <AppDialogs dialog={dialog} onClose={() => setDialog(null)} />
     </AppActionsContext.Provider>
   );
