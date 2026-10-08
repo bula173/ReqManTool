@@ -106,6 +106,27 @@ item first (phase A), then test, review and fix by area (phase B).
       user's OAuth token); the local edition is unaffected. REST + WS
       parity; errors name the missing role and its source ("needs
       Developer on gitlab.example.com/rbc/rbc-gp").
+- [ ] Server edition: more identity providers and group-based roles.
+      Requested 2026-10-08 (after the repository-permission item). Login
+      providers, all pluggable through the existing server auth extension
+      point and configurable side by side: (1) LDAP / Active Directory —
+      bind with the user's credentials (LDAPS/StartTLS only), user and
+      group lookup, nested AD groups; (2) generic OIDC presets — Keycloak,
+      Microsoft Entra ID (Azure AD), Okta, Google Workspace, Authentik —
+      using the `groups` claim; (3) SAML 2.0 SP for corporate IdPs (ADFS,
+      Entra, Okta); (4) trusted reverse-proxy header (Cloudflare Access,
+      oauth2-proxy) with signature/JWT verification; (5) optional SCIM 2.0
+      endpoint so the IdP provisions/deprovisions users and groups.
+      Authorisation for projects not governed by repository permissions:
+      admin-defined mappings "IdP group → role per project" (or all
+      projects), evaluated with the same roles (viewer / reviewer /
+      editor / project-admin); repository permissions keep precedence
+      where they apply. MFA and password policy stay with the IdP;
+      ReqManTool never stores passwords. Admin UI to configure providers
+      and mappings, with "Test connection"; secrets only in the server
+      config/env, never in project data. Server-only code in
+      `backend/reqman_server/`.
+
 ### Phase B — tests, review and follow-ups of delivered items
 
 Collected review findings and leftovers of the items in Done; handled
