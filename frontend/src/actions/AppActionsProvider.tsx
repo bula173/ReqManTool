@@ -30,6 +30,17 @@ import {
 import { AppDialogs } from '../layout/AppDialogs';
 import { LEFT_PANEL_TAB_STORAGE_KEY, type LeftPanelTab } from '../layout/leftPanel';
 import {
+  ATTACH_MESSAGE_TYPE,
+  isAttachMessage,
+  isDetachedPath,
+  modulePath,
+  openDetachedWindow,
+  projectPath,
+  tabKey,
+  useModuleTabs,
+  type AttachMessage,
+} from '../layout/moduleTabs';
+import {
   DETAIL_PANEL_OPEN_STORAGE_KEY,
   LEFT_PANEL_OPEN_STORAGE_KEY,
   NARROW_LAYOUT_QUERY,
@@ -81,6 +92,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const moduleId = params.projectId ? (params.moduleId ?? null) : null;
   const navigate = useNavigate();
   const { pathname } = useLocation();
+  // A detached module window (minimal chrome, no tab bar).
+  const detached = isDetachedPath(pathname);
 
   // Same query keys as the pages use, so these share the pages' cache entries.
   const projectQuery = useProject(projectId ?? undefined);
@@ -98,6 +111,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const setViewColumnWidths = useSetViewColumnWidths(projectId ?? '');
   // The data folder the clipboard and selection belong to (null until known).
   const dataDir = useConfig().data?.data_dir ?? null;
+  // Module tabs: remembered per browser and data folder.
+  const moduleTabs = useModuleTabs(dataDir);
 
   const copyRequirement = useCopyRequirement(projectId ?? '', moduleId ?? '');
   const moveRequirement = useMoveRequirement(projectId ?? '', moduleId ?? '');
@@ -172,6 +187,28 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const requestedViewId = activeView.projectId === projectId ? activeView.viewId : null;
   const activeViewId = views.some((v) => v.id === requestedViewId) ? requestedViewId : null;
 
+  // Opening a module (in a main window) adds its tab.
+  const addTab = moduleTabs.add;
+  useEffect(() => {
+    if (detached || !projectId || !moduleId) return;
+    addTab({ projectId, moduleId });
+  }, [detached, projectId, moduleId, addTab]);
+
+  // A detached window re-attaches its module through its opener (this window).
+  useEffect(() => {
+    if (detached) return;
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin || !isAttachMessage(event.data)) return;
+      const { projectId: attachProjectId, moduleId: attachModuleId } = event.data;
+      addTab({ projectId: attachProjectId, moduleId: attachModuleId });
+      navigate(modulePath(attachProjectId, attachModuleId));
+      setLeftPanelTab('module');
+      window.focus();
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [detached, addTab, navigate, setLeftPanelTab]);
+
   const setPanelOpen = useCallback(
     (panel: SidePanel, open: boolean) => {
       if (narrowLayout) {
@@ -186,8 +223,23 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     [narrowLayout, pathname, setStoredLeftPanelOpen, setStoredDetailPanelOpen],
   );
 
-  const commands: AppCommands = useMemo(
-    () => ({
+  const commands: AppCommands = useMemo(() => {
+    const closeTabs = (keys: string[]) => {
+      const tabs = moduleTabs.tabs;
+      moduleTabs.remove(keys);
+      // Closing the active tab: show its right (else left) neighbour, else the project page.
+      if (detached || !moduleKey || !projectId || !keys.includes(moduleKey)) return;
+      const index = tabs.findIndex((t) => tabKey(t) === moduleKey);
+      const isKept = (t: (typeof tabs)[number]) => !keys.includes(tabKey(t));
+      const next =
+        (index >= 0 ? tabs.slice(index + 1).find(isKept) : undefined) ??
+        tabs
+          .slice(0, Math.max(index, 0))
+          .reverse()
+          .find(isKept);
+      navigate(next ? modulePath(next.projectId, next.moduleId) : projectPath(projectId));
+    };
+    return {
       navigate: (path) => navigate(path),
       openDialog: (request) => setDialog(request),
       setClipboard: (entry) => setClipboardEntry(entry ? { dataDir, clipboard: entry } : null),
@@ -230,10 +282,10 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
           `/projects/${encodeURIComponent(projectId)}/requirements/${encodeURIComponent(requirementId)}`,
         );
         // The module page opens the row's ancestors, selects it, scrolls to it and drops `highlight`.
-        navigate(
-          `/projects/${encodeURIComponent(projectId)}/modules/${encodeURIComponent(result.module_id)}?highlight=${encodeURIComponent(requirementId)}`,
-          { replace: result.module_id === moduleId },
-        );
+        // A detached window stays detached (it then shows the other module).
+        navigate(`${modulePath(projectId, result.module_id, detached)}?highlight=${encodeURIComponent(requirementId)}`, {
+          replace: result.module_id === moduleId,
+        });
       },
       showInTree: (requirementId) => {
         setSelection({ moduleKey, id: requirementId });
@@ -246,17 +298,53 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
         setLeftPanelTab('project');
       },
       openModule: (openProjectId, openModuleId) => {
-        navigate(`/projects/${encodeURIComponent(openProjectId)}/modules/${encodeURIComponent(openModuleId)}`);
+        navigate(modulePath(openProjectId, openModuleId, detached));
         setLeftPanelTab('module');
       },
+      openModuleTab: (tabProjectId, tabModuleId) => moduleTabs.add({ projectId: tabProjectId, moduleId: tabModuleId }),
+      closeTabs,
+      moveTab: (key, toIndex) => moduleTabs.move(key, toIndex),
+      openModuleWindow: (windowProjectId, windowModuleId, highlightId) =>
+        openDetachedWindow(windowProjectId, windowModuleId, highlightId) !== null,
+      detachTab: (tab) => {
+        if (openDetachedWindow(tab.projectId, tab.moduleId) === null) return false;
+        closeTabs([tabKey(tab)]);
+        return true;
+      },
+      reattach: () => {
+        if (!projectId || !moduleId) return;
+        moduleTabs.add({ projectId, moduleId });
+        const opener = window.opener as Window | null;
+        let posted = false;
+        try {
+          if (opener && !opener.closed) {
+            const message: AttachMessage = { type: ATTACH_MESSAGE_TYPE, projectId, moduleId };
+            opener.postMessage(message, window.location.origin);
+            opener.focus();
+            posted = true;
+          }
+        } catch {
+          // The opener navigated elsewhere: fall through.
+        }
+        if (posted) window.close();
+        // Without an opener (or when the browser keeps this window open), this
+        // window becomes a main window showing the module's tab.
+        window.setTimeout(() => navigate(modulePath(projectId, moduleId)), posted ? 300 : 0);
+      },
       requestTemplates: () => setTemplatesRequested(true),
-    }),
+    };
+  },
     // The mutation objects change identity on every state change; their
     // `mutateAsync` functions are stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       navigate,
       dataDir,
+      detached,
+      moduleTabs.tabs,
+      moduleTabs.add,
+      moduleTabs.remove,
+      moduleTabs.move,
       moduleKey,
       projectId,
       moduleId,
@@ -294,6 +382,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     detailPanelOpen,
     narrowLayout,
     colorScheme,
+    tabs: detached ? [] : moduleTabs.tabs,
+    detached,
     templates: {
       data: templatesQuery.data ?? [],
       isLoading: !templatesRequested || templatesQuery.isLoading,

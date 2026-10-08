@@ -4,6 +4,7 @@ import type {
   GitPullResult,
   GitPushResult,
   GitStatus,
+  LinkOption,
   Module,
   Project,
   ProjectListEntry,
@@ -12,6 +13,7 @@ import type {
   View,
 } from '../api/types';
 import type { ResizableColumns } from '../hooks/columnLayout';
+import type { ModuleTabRef } from '../layout/moduleTabs';
 
 /**
  * The shared action registry's types.
@@ -49,8 +51,9 @@ export interface ActionTargets {
   column: ColumnTarget | null;
   /** One `>`/`<` link badge of a requirement (no default). */
   link: LinkTarget | null;
-  // Hooks for later items: module tabs (`tab`: close, close others, detach,
-  // split view), module folders (`folder`) and project references
+  /** A module tab of the tab bar: the right-clicked tab, or the active tab by default. */
+  tab: ModuleTabRef | null;
+  // Hooks for later items: module folders (`folder`) and project references
   // (`reference`) become element types here once those features exist; their
   // menus reuse `ActionMenuEntries` and `AppActionsValue.openMenu` unchanged.
 }
@@ -129,6 +132,8 @@ export type DialogRequest =
   | { kind: 'linkRequirement'; projectId: string; moduleId: string; source: Requirement }
   | { kind: 'moveRequirement'; projectId: string; moduleId: string; source: Requirement }
   | { kind: 'attributeModules'; projectId: string; attribute: AttributeDefinition }
+  /** Drag-and-drop linking with several possible link configurations: the user picks one. */
+  | { kind: 'dropLink'; projectId: string; fromId: string; toId: string; options: LinkOption[] }
   | { kind: 'shortcuts' }
   | { kind: 'about' };
 
@@ -180,6 +185,18 @@ export interface AppCommands {
   /** Open a project / module and switch the sidebar to its tab. */
   openProject: (projectId: string) => void;
   openModule: (projectId: string, moduleId: string) => void;
+  /** Add a module tab without switching to it (no-op when it is open already). */
+  openModuleTab: (projectId: string, moduleId: string) => void;
+  /** Close module tabs (by `tabKey`); closing the active one switches to its neighbour or the project page. */
+  closeTabs: (keys: string[]) => void;
+  /** Move a module tab to a position of the tab bar. */
+  moveTab: (key: string, toIndex: number) => void;
+  /** Open a module in its own (detached) window, optionally revealing a requirement; false when the popup was blocked. */
+  openModuleWindow: (projectId: string, moduleId: string, highlightId?: string) => boolean;
+  /** Detach a tab: open its module in its own window and remove the tab; false when the popup was blocked. */
+  detachTab: (tab: ModuleTabRef) => boolean;
+  /** In a detached window: put the module back in the tab bar of the main window and close this window. */
+  reattach: () => void;
   /** Start loading the templates list (it is fetched lazily, when a template menu or picker opens). */
   requestTemplates: () => void;
 }
@@ -210,6 +227,10 @@ export interface AppState {
   detailPanelOpen: boolean;
   narrowLayout: boolean;
   colorScheme: 'light' | 'dark';
+  /** The open module tabs (this data folder), in tab bar order; empty in a detached window. */
+  tabs: ModuleTabRef[];
+  /** Whether this window is a detached module window (minimal chrome, no tab bar). */
+  detached: boolean;
   /** Loaded lazily: `isLoading` until `commands.requestTemplates()` was called and the list arrived. */
   templates: { data: TemplateSummary[]; isLoading: boolean; isError: boolean };
   commands: AppCommands;

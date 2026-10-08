@@ -789,6 +789,12 @@ async def link_requirements(project_id: str, body: LinkBody):
     return {"source": result["source"].to_dict(), "target": result["target"].to_dict()}
 
 
+@app.get("/projects/{project_id}/links/options")
+def link_options(project_id: str, from_id: str = Query(), to_id: str = Query()):
+    """Link configurations that can join two requirements (drag-and-drop linking)."""
+    return _serialize(_wrap(service.link_options, project_id, from_id, to_id))
+
+
 @app.delete("/projects/{project_id}/links")
 async def unlink_requirements(project_id: str, body: LinkBody):
     result = _wrap(
@@ -895,6 +901,9 @@ RPC_METHODS = {
     ),
     "requirement.unlink": lambda p: service.unlink_requirements(
         p["project_id"], p["config_id"], p["source_id"], p["target_id"]
+    ),
+    "requirement.link_options": lambda p: service.link_options(
+        p["project_id"], p["from_id"], p["to_id"]
     ),
 }
 

@@ -44,6 +44,12 @@ import { RequirementDetailPanel } from '../components/RequirementDetailPanel';
 import { ResizableHeaderCell, type ColumnMenuKind } from '../components/ResizableHeaderCell';
 import { RowResizeHandle } from '../components/RowResizeHandle';
 import { useRowAppearance } from '../components/rowStyles';
+import {
+  hasRequirementDragData,
+  readRequirementDragData,
+  setRequirementDragData,
+} from '../components/requirementDrag';
+import { useDropLink } from '../hooks/useDropLink';
 import { RightSidePanel } from '../layout/SidePanelLayout';
 import {
   DEFAULT_ID_COLUMN_WIDTH,
@@ -129,6 +135,20 @@ export function ModulePage() {
   const scrollTargetRef = useRef<string | null>(null);
 
   const highlightId = searchParams.get('highlight');
+
+  // Drag-and-drop linking: a requirement row (of this or another tab or
+  // window) dropped on a row of this module links the two.
+  const dropLink = useDropLink(projectId ?? '');
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  useEffect(() => {
+    const clear = () => setDropTargetId(null);
+    window.addEventListener('dragend', clear);
+    window.addEventListener('drop', clear);
+    return () => {
+      window.removeEventListener('dragend', clear);
+      window.removeEventListener('drop', clear);
+    };
+  }, []);
 
   useEffect(() => {
     if (!highlightId || !requirementsQuery.data) return;
@@ -377,6 +397,24 @@ export function ModulePage() {
                   bg={selected ? 'var(--mantine-color-blue-light)' : undefined}
                   data-row-height={rowSizes.heightOf(req.id)}
                   data-row-bold={appearance.bold || undefined}
+                  data-drop-target={dropTargetId === req.id || undefined}
+                  onDragOver={(e) => {
+                    if (!hasRequirementDragData(e.dataTransfer)) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'link';
+                    if (dropTargetId !== req.id) setDropTargetId(req.id);
+                  }}
+                  onDragLeave={(e) => {
+                    if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return;
+                    setDropTargetId((current) => (current === req.id ? null : current));
+                  }}
+                  onDrop={(e) => {
+                    if (!hasRequirementDragData(e.dataTransfer)) return;
+                    e.preventDefault();
+                    setDropTargetId(null);
+                    const payload = readRequirementDragData(e.dataTransfer);
+                    if (payload) void dropLink(payload, req.id, moduleId);
+                  }}
                   style={{
                     cursor: 'pointer',
                     ...rowSizes.rowStyle(req.id),
@@ -394,7 +432,11 @@ export function ModulePage() {
                     <div
                       className="reqman-cell-clip"
                       data-fade={columns.isSingleLine(ID_COLUMN) ? undefined : ''}
-                      title="Click for navigation, right-click for editing"
+                      title="Click for navigation, right-click for editing; drag onto a requirement of another module to link"
+                      draggable
+                      onDragStart={(e) =>
+                        setRequirementDragData(e.dataTransfer, { projectId, moduleId, requirementIds: [req.id] })
+                      }
                       onClick={(e) =>
                         openMenu({
                           x: e.clientX,

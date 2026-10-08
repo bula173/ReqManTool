@@ -954,6 +954,52 @@
       screenshots at 1400px and 600px. Not covered: interactive browser
       verification, overlay focus handling, frontend tests; follow-ups in
       the backlog ("Side panels: follow-ups").
+- [x] **Multiple open modules (tabs), detachable module windows, and
+      drag-and-drop linking** (2026-10-08; requested 2026-10-04).
+      Tabs: opening a module in a main window adds a tab "project ·
+      module"; click switches, middle-click / × / Delete closes, arrow
+      keys move focus, drag reorders; right-click `MODULE_TAB_MENU`
+      (Close tab, Close other tabs, Close tabs to the right, Move
+      left/right, Detach into new window). Closing the active tab opens
+      the right neighbour, else the left, else the project page. The tab
+      list is kept in localStorage (`reqman.moduleTabs`, keyed by data
+      folder) and shared by all main windows via the storage event; each
+      window has its own active tab (its route). Tabs whose module fails
+      to load show a warning; the bar is hidden with no tabs. View menu:
+      Close tab, Detach tab; sidebar module menu: Open in new tab (no
+      switch), Open in new window. Detached windows: route
+      `/detached/projects/:projectId/modules/:moduleId`, minimal chrome
+      (title, Re-attach, dark mode) with its own live sync, shortcuts,
+      menus and dialogs; one named window per module; a blocked popup
+      shows a notification and keeps the tab; Detach removes the tab;
+      Re-attach posts an origin-checked message to the opener, which
+      reopens the tab. Requirement navigation menu: Open in new window.
+      Drag-and-drop linking: the Id cell is the drag handle, payload
+      `application/x-reqman-requirements+json` {kind, version: 1,
+      projectId, moduleId, requirementIds}; rows highlight as drop
+      targets, hovering a tab for 600 ms switches to it, cross-window via
+      native DataTransfer. On drop the server returns the options: none →
+      warning, no link; all existing → "already linked"; one → created in
+      the configured direction; several → picker dialog. Same-module
+      drops only with an intra-module configuration; cross-project drops
+      and more than one id are rejected with a warning for now.
+      Endpoints: `GET /projects/{project_id}/links/options?from_id=&to_id=`
+      and WS `requirement.link_options` (read-only, no broadcast);
+      backend `ProjectService.link_options` in `backend/reqman/service.py`
+      (configurations in project order, oriented for either drag
+      direction, `exists` flag; same id → 400, unknown → 404). Files:
+      `backend/reqman/{service.py, app.py}`, `frontend/src/{App.tsx,
+      api/types.ts, api/queries.ts, index.css}`,
+      `frontend/src/actions/{types.ts, AppActionsProvider.tsx,
+      registry.ts, projectActions.ts, tabActions.ts (new)}`,
+      `frontend/src/layout/{moduleTabs.ts (new), ModuleTabBar.tsx (new),
+      DetachedLayout.tsx (new), AppLayout.tsx, AppDialogs.tsx}`,
+      `frontend/src/components/{requirementDrag.ts (new),
+      DropLinkModal.tsx (new)}`, `frontend/src/hooks/useDropLink.ts`
+      (new), `frontend/src/pages/ModulePage.tsx`. Not covered: split
+      view, multi-selection drag, browser verification, backend tests
+      for `link_options`; follow-ups in the backlog ("Module tabs:
+      follow-ups").
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -1172,10 +1218,11 @@ to the categories above.
       `AGPL-3.0-only` in `frontend/package.json` and (with the
       distribution item) `pyproject.toml`; a third-party licence list
       generated at build time; `CONTRIBUTING.md` with the CLA requirement.
-- [ ] Context menus: follow-ups (2026-10-08). (1) Module tab entries
-      (close, close others, detach, split view), "Open in new tab" /
-      "Detach", module folder and project reference entries arrive with
-      those items (hooks in `ActionTargets` and the menu layouts).
+- [ ] Context menus: follow-ups (2026-10-08). (1) Done 2026-10-08 for
+      module tab entries (close, close others, detach), "Open in new
+      tab" and "Detach"; split view, module folder and project reference
+      entries still arrive with those items (hooks in `ActionTargets` and
+      the menu layouts).
       (2) Project/module Rename needs backend APIs. (3) Column header
       Sort / Filter / Hide / Add to view need their own features.
       (4) Detail-panel link badges and module-outline nodes have no
@@ -1186,6 +1233,16 @@ to the categories above.
       calls and two commits (not atomic) — consider a server-side
       copy-with-index. (9) No frontend tests (no runner) and no browser
       verification yet.
+- [ ] Module tabs: follow-ups (2026-10-08). (1) Side-by-side split view
+      in one window is not built; it needs per-pane module, selection and
+      view state (`AppActionsProvider` and `ModulePage` take ids from the
+      route). (2) Multi-selection drag: the payload is ready, bulk
+      selection is missing. (3) Cross-project drops await project
+      references. (4) Tab icons by module type (with the module types
+      item). (5) No Close-tab shortcut (the browser owns Ctrl/Cmd+W).
+      (6) Not browser-verified: tabs, `window.open`/`postMessage`,
+      cross-window drag-and-drop; backend tests for `link_options` are
+      pending (phase B).
 - [ ] AI prompt library (copy → external AI chat → CSV → import).
       Requested 2026-10-04. No AI service is called by ReqManTool; the
       user copies a generated prompt into any AI chat and imports the CSV
@@ -1391,26 +1448,6 @@ to the categories above.
       Interlocking, Neighbouring RBC (SUBSET-098), Operator/TMS; SwRS per
       EN 50128 software requirements specification structure. Exact
       chapter lists are data in the template files and can be edited.
-- [ ] Multiple open modules (tabs), detachable module windows, and
-      drag-and-drop linking. Requested 2026-10-04. (1) Tabs: opening a
-      module adds a tab to a tab bar listing the open modules (project ·
-      module name); switch, close, and reorder tabs; the open-tab list is
-      remembered per browser. (2) Detach: a tab can be popped out into its
-      own browser window (minimal chrome, same live sync) and re-attached;
-      an optional side-by-side split view gives the same result inside one
-      window. (3) Drag-and-drop linking: drag a requirement row (or a
-      multi-selection, once bulk selection exists) from one module onto a
-      requirement in another module — across tabs/split panes or between
-      detached windows (HTML5 drag-and-drop with a typed payload of
-      project/module/requirement ids). The link set is resolved from the
-      project's link configurations between the two modules, in either
-      drag direction, and the link is created in the configured direction;
-      several matching configurations → the user picks one; **no link
-      configuration between the two modules → a warning is shown and no
-      link is created**. The server stays the authority (the existing
-      link-creation rules reject illegal pairs); duplicates are reported,
-      not duplicated. Works across projects once cross-project
-      traceability lands.
 - [ ] Module types + traceability matrix, verification report and test
       execution report. Requested 2026-10-04 (absorbs the former
       "traceability matrix / coverage view" item). (1) Module types:

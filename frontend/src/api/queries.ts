@@ -12,6 +12,7 @@ import type {
   GitPushResult,
   GitStatus,
   LinkConfiguration,
+  LinkOption,
   Module,
   Project,
   ProjectListEntry,
@@ -794,6 +795,16 @@ export function useLinkRequirements(projectId: string) {
       invalidateProjectRequirements(qc, projectId);
     },
   });
+}
+
+/**
+ * The link configurations that can join `fromId` (dragged) and `toId` (drop
+ * target), in either direction, each oriented the configured way. Fetched on
+ * demand (drag-and-drop linking), not cached as a query.
+ */
+export function fetchLinkOptions(projectId: string, fromId: string, toId: string): Promise<LinkOption[]> {
+  const query = new URLSearchParams({ from_id: fromId, to_id: toId });
+  return api.get<LinkOption[]>(`/projects/${encodeURIComponent(projectId)}/links/options?${query}`);
 }
 
 export function useUnlinkRequirements(projectId: string) {

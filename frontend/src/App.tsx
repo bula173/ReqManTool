@@ -1,5 +1,6 @@
 import { Route, Routes } from 'react-router-dom';
 import { AppLayout } from './layout/AppLayout';
+import { DetachedLayout } from './layout/DetachedLayout';
 import { BaselineComparePage } from './pages/BaselineComparePage';
 import { BaselinePage } from './pages/BaselinePage';
 import { HomePage } from './pages/HomePage';
@@ -16,6 +17,10 @@ export function App() {
         {/* The static "compare" segment outranks :baselineName; "compare" is a reserved baseline name. */}
         <Route path="/projects/:projectId/baselines/compare" element={<BaselineComparePage />} />
         <Route path="/projects/:projectId/baselines/:baselineName" element={<BaselinePage />} />
+      </Route>
+      {/* A module in its own browser window (minimal chrome); see layout/moduleTabs.ts. */}
+      <Route path="/detached" element={<DetachedLayout />}>
+        <Route path="projects/:projectId/modules/:moduleId" element={<ModulePage />} />
       </Route>
     </Routes>
   );

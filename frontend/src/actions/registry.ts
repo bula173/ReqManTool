@@ -2,10 +2,12 @@ import { IconFileExport, IconFileImport, IconTemplate } from '@tabler/icons-reac
 import { appActions } from './appActions';
 import { columnActions } from './columnActions';
 import { linkActions } from './linkActions';
+import { tabKey } from '../layout/moduleTabs';
 import { moduleActions, projectActions } from './projectActions';
 import { purgeActions } from './purgeActions';
 import { requirementActions } from './requirementActions';
 import { matchesShortcut } from './shortcuts';
+import { moduleWindowActions, requirementWindowActions, tabActions, windowActions } from './tabActions';
 import type {
   Action,
   ActionContext,
@@ -34,6 +36,10 @@ export const ACTIONS: Action[] = [
   ...moduleActions,
   ...columnActions,
   ...linkActions,
+  ...tabActions,
+  ...moduleWindowActions,
+  ...requirementWindowActions,
+  ...windowActions,
 ] as Action[];
 
 const ACTIONS_BY_ID = new Map<string, Action>(ACTIONS.map((action) => [action.id, action]));
@@ -65,6 +71,12 @@ export function resolveTarget<E extends ElementType>(element: E, state: AppState
           ? { projectId: state.projectId, module: state.module, moduleIds: state.modules.map((m) => m.id) }
           : null
       ) as ActionTargets[E];
+    case 'tab': {
+      // The active tab: the open module, if it has a tab.
+      const active =
+        state.projectId && state.moduleId ? state.tabs.find((t) => tabKey(t) === `${state.projectId}/${state.moduleId}`) : undefined;
+      return (active ?? null) as ActionTargets[E];
+    }
     default:
       return null as ActionTargets[E];
   }
@@ -191,6 +203,9 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
       action('view.toggleLeftPanel'),
       action('view.toggleDetailPanel'),
       divider,
+      action('tab.close'),
+      action('tab.detach'),
+      divider,
       action('view.resetColumnWidths'),
       action('view.saveColumnWidths'),
       action('view.removeViewColumnWidths'),
@@ -256,12 +271,26 @@ export const REQUIREMENT_CONTEXT_MENU: MenuEntry[] = [
 
 /**
  * Left-click (navigation/view) menu of a requirement (its Id cell). "Open in
- * new tab" and "Detach" join it with the module tabs item.
+ * new window" shows the requirement's module in a detached window.
  */
 export const REQUIREMENT_NAVIGATION_MENU: MenuEntry[] = [
   action('requirement.showDetails'),
   action('requirement.showInTree'),
   action('requirement.goToLinked'),
+  divider,
+  action('requirement.openInWindow'),
+];
+
+/** Right click of a module tab in the tab bar (left click switches to it). */
+export const MODULE_TAB_MENU: MenuEntry[] = [
+  action('tab.close'),
+  action('tab.closeOthers'),
+  action('tab.closeToRight'),
+  divider,
+  action('tab.moveLeft'),
+  action('tab.moveRight'),
+  divider,
+  action('tab.detach'),
 ];
 
 /** Left click of a `>`/`<` link badge. */
@@ -272,7 +301,7 @@ export const LINK_CONTEXT_MENU: MenuEntry[] = [action('link.goTo'), divider, act
 
 /**
  * Right-click menu of a project / subproject node in the sidebar (left click
- * opens it). Rename, references, "open in tab" and "detach" join it with their
+ * opens it). Rename and project references join it with their
  * backlog items.
  */
 export const PROJECT_NODE_MENU: MenuEntry[] = [
@@ -287,10 +316,12 @@ export const PROJECT_NODE_MENU: MenuEntry[] = [
 /**
  * Right-click menu of a module node in the sidebar (left click opens it); the
  * module's project is passed as the `project` target for "New module".
- * Rename, folders, "open in tab" and "detach" join it with their items.
+ * Rename and folders join it with their items.
  */
 export const MODULE_NODE_MENU: MenuEntry[] = [
   action('module.open'),
+  action('module.openInNewTab'),
+  action('module.openInWindow'),
   divider,
   action('module.moveUp'),
   action('module.moveDown'),

@@ -7,6 +7,7 @@ import { DataDirSettings } from '../components/DataDirSettings';
 import { VersionFooter } from '../components/VersionFooter';
 import { useLiveSync } from '../hooks/useLiveSync';
 import { MenuBar } from './MenuBar';
+import { ModuleTabBar } from './ModuleTabBar';
 import { LeftSidePanel } from './SidePanelLayout';
 import { SIDE_PANEL_RAIL_WIDTH, usePanelWidth } from './sidePanels';
 
@@ -61,6 +62,7 @@ function AppFrame() {
       </AppShell.Navbar>
       {/* Fixed shell: only the page area (and the panels inside it) scrolls, never the document. */}
       <AppShell.Main className="reqman-main">
+        <ModuleTabBar />
         <div className="reqman-page">
           <Outlet />
         </div>

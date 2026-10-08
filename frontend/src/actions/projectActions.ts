@@ -9,8 +9,9 @@ import type { Action, ActionContext } from './types';
  * menus, the menu bar and the project page. The target is the clicked node,
  * or the open project / module by default. Rename is not offered: there is no
  * rename API for projects or modules yet (add `project.rename` /
- * `module.rename` here once there is). Module folders, references, "open in
- * tab" and "detach" join these menus with their backlog items.
+ * `module.rename` here once there is). Module folders and references join
+ * these menus with their backlog items; "Open in new tab" / "Open in new
+ * window" are in `tabActions.ts`.
  */
 
 type ProjectContext = ActionContext<'project'>;

@@ -1873,6 +1873,52 @@ class ProjectService:
             "target": self.store.load_requirement(project_id, target_module, target_id),
         }
 
+    def link_options(self, project_id: str, from_id: str, to_id: str) -> list[dict[str, Any]]:
+        """The links that may join two requirements, in either direction.
+
+        Used by drag-and-drop linking: ``from_id`` is the dragged requirement,
+        ``to_id`` the one it was dropped on. Every link configuration between
+        the two requirements' modules is an option, oriented the configured
+        way: a configuration from the dragged requirement's module to the drop
+        target's module links ``from_id`` → ``to_id``; one in the opposite
+        direction links ``to_id`` → ``from_id``. A configuration within one
+        module (both requirements in it) is offered once, in drag direction.
+        ``exists`` marks a link that is already there (creating it again is
+        rejected by ``link_requirements``). No configuration → empty list.
+        Read-only; options are listed in the project's configuration order.
+        """
+        if from_id == to_id:
+            raise ValueError("A requirement cannot be linked to itself")
+        project = self.store.load_project(project_id)
+        from_module = self.store.find_requirement_module(project_id, from_id)
+        if from_module is None:
+            raise FileNotFoundError(f"Requirement '{from_id}' not found in project '{project_id}'")
+        to_module = self.store.find_requirement_module(project_id, to_id)
+        if to_module is None:
+            raise FileNotFoundError(f"Requirement '{to_id}' not found in project '{project_id}'")
+
+        options: list[dict[str, Any]] = []
+        for config in project.link_configurations:
+            if config.source_module_id == from_module and config.target_module_id == to_module:
+                source_id, target_id = from_id, to_id
+            elif config.source_module_id == to_module and config.target_module_id == from_module:
+                source_id, target_id = to_id, from_id
+            else:
+                continue
+            pairs = self.store.load_link_pairs(project_id, config.id)
+            exists = any(p.source_id == source_id and p.target_id == target_id for p in pairs)
+            options.append(
+                {
+                    "config": config,
+                    "source_id": source_id,
+                    "target_id": target_id,
+                    "source_module_id": config.source_module_id,
+                    "target_module_id": config.target_module_id,
+                    "exists": exists,
+                }
+            )
+        return options
+
     @_records_history
     def unlink_requirements(
         self, project_id: str, config_id: str, source_id: str, target_id: str

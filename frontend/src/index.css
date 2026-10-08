@@ -390,3 +390,75 @@ th:hover > div > .reqman-col-menu-button,
 .reqman-panel-overlay > .reqman-side-panel {
   flex: 1;
 }
+
+/* Drag-and-drop linking: the requirement row a dragged requirement would be linked to. */
+tr[data-drop-target] > td {
+  box-shadow:
+    inset 0 2px 0 var(--mantine-color-blue-filled),
+    inset 0 -2px 0 var(--mantine-color-blue-filled);
+}
+
+[data-requirement-row] [draggable='true'] {
+  cursor: grab;
+}
+
+/* Module tab bar (above the page area; see ModuleTabBar). */
+.reqman-tab-bar {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  overflow-x: auto;
+  padding: 4px var(--mantine-spacing-md) 0;
+  border-bottom: 1px solid var(--mantine-color-default-border);
+}
+
+.reqman-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 280px;
+  padding: 4px 6px 4px 12px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--mantine-radius-sm) var(--mantine-radius-sm) 0 0;
+  margin-bottom: -1px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  font-size: var(--mantine-font-size-sm);
+  color: var(--mantine-color-dimmed);
+}
+
+.reqman-tab:hover {
+  background: var(--mantine-color-default-hover);
+}
+
+.reqman-tab[aria-selected='true'] {
+  background: var(--mantine-color-body);
+  border-color: var(--mantine-color-default-border);
+  color: var(--mantine-color-text);
+  font-weight: 600;
+}
+
+.reqman-tab[data-drop-before] {
+  box-shadow: inset 3px 0 0 var(--mantine-color-blue-filled);
+}
+
+.reqman-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Detached module window: a slim header above the page. */
+.reqman-detached {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+.reqman-detached-header {
+  flex: none;
+  padding: 6px var(--mantine-spacing-md);
+  border-bottom: 1px solid var(--mantine-color-default-border);
+}

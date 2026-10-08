@@ -7,6 +7,7 @@ import { AboutModal } from '../components/AboutModal';
 import { AddProjectFromRemoteModal } from '../components/AddProjectFromRemoteModal';
 import { AttributeModulesModal } from '../components/AttributeModulesModal';
 import { DataDirModal } from '../components/DataDirSettings';
+import { DropLinkModal } from '../components/DropLinkModal';
 import { ImportCsvModal } from '../components/ImportCsvModal';
 import { ImportTemplateModal } from '../components/ImportTemplateModal';
 import { KeyboardShortcutsModal } from '../components/KeyboardShortcutsModal';
@@ -131,6 +132,16 @@ export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; 
       );
     case 'attributeModules':
       return <AttributeModulesModal projectId={dialog.projectId} attribute={dialog.attribute} onClose={onClose} />;
+    case 'dropLink':
+      return (
+        <DropLinkModal
+          projectId={dialog.projectId}
+          fromId={dialog.fromId}
+          toId={dialog.toId}
+          options={dialog.options}
+          onClose={onClose}
+        />
+      );
     case 'shortcuts':
       return <KeyboardShortcutsModal opened onClose={onClose} />;
     case 'about':

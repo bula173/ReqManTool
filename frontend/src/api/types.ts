@@ -34,6 +34,20 @@ export interface LinkConfiguration {
   target_module_id: string;
 }
 
+/**
+ * One way to link two requirements (`GET /projects/{id}/links/options`,
+ * WebSocket `requirement.link_options`): a link configuration between their
+ * modules, oriented the configured way. `exists`: that link is already there.
+ */
+export interface LinkOption {
+  config: LinkConfiguration;
+  source_id: string;
+  target_id: string;
+  source_module_id: string;
+  target_module_id: string;
+  exists: boolean;
+}
+
 export interface View {
   id: string;
   name: string;
