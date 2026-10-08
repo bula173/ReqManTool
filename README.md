@@ -101,6 +101,13 @@ This starts the backend on `http://localhost:8899` and the frontend dev
 server on `http://localhost:5173` — open the latter in a browser. First run
 installs a Python venv (`backend/.venv`, runtime dependencies from
 `backend/requirements.txt`) and `npm install`s the frontend automatically.
+
+Pick the edition with a flag: `./etc/start.sh --local` (or `--desktop`) runs
+the local edition without login; `./etc/start.sh --server` runs the server
+edition, which requires login and refuses to start until a login provider
+is configured (`server.auth_providers` in the config file). Without a flag
+the mode comes from `REQMAN_MODE` / the config file (default: local). Other
+arguments go to `reqman serve`, e.g. `./etc/start.sh --local --dir ~/ReqManData`.
 See `etc/start-backend.sh` / `etc/start-frontend.sh` to run either half on
 its own (e.g. two terminals). `etc/start-backend.sh` accepts the
 `reqman serve` flags (`--dir`, `--host`, `--port`, `--cors-origins`,
