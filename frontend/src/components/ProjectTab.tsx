@@ -1,5 +1,5 @@
 import { Center, Loader, NavLink, ScrollArea, Stack, Text } from '@mantine/core';
-import { IconAlertTriangle, IconCornerLeftUp, IconFileText, IconFolderPlus, IconFolders, IconPlus } from '@tabler/icons-react';
+import { IconAlertTriangle, IconCornerLeftUp, IconFolderPlus, IconFolders, IconPlus } from '@tabler/icons-react';
 import type { MouseEvent } from 'react';
 import { useAppActions } from '../actions/context';
 import { MODULE_NODE_MENU, PROJECT_NODE_MENU } from '../actions/registry';
@@ -8,6 +8,7 @@ import type { ActionTargetOverrides, MenuEntry } from '../actions/types';
 import { useModules, useProjects } from '../api/queries';
 import { isProjectStub } from '../api/types';
 import { buildProjectForest } from './projectTree';
+import { ModuleTypeIcon } from './ModuleTypeIcon';
 
 interface ProjectTabProps {
   /** The chosen project (from the route, else the last one picked in this browser). */
@@ -151,7 +152,7 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
                 key={module.id}
                 label={module.name}
                 description={module.prefix}
-                leftSection={<IconFileText size={14} />}
+                leftSection={<ModuleTypeIcon module={module} size={14} />}
                 active={state.projectId === projectId && activeModuleId === module.id}
                 onClick={() => onOpenModule(projectId, module.id)}
                 {...menuProps(module.name, MODULE_NODE_MENU, {

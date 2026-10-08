@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import type { DialogRequest } from '../actions/types';
 import { applicableAttributes } from '../api/applicability';
-import { useProject, useRequirements } from '../api/queries';
+import { useModule, useProject, useRequirements } from '../api/queries';
 import type { Requirement } from '../api/types';
 import { AboutModal } from '../components/AboutModal';
 import { AddProjectFromRemoteModal } from '../components/AddProjectFromRemoteModal';
@@ -24,11 +24,13 @@ type AddRequirementRequest = Extract<DialogRequest, { kind: 'addRequirement' }>;
 /** The requirement form, with the attributes that apply to the module (kept stable so the form is not re-seeded). */
 function AddRequirementDialog({ request, onClose }: { request: AddRequirementRequest; onClose: () => void }) {
   const projectQuery = useProject(request.projectId);
+  const moduleQuery = useModule(request.projectId, request.moduleId);
   const requirementsQuery = useRequirements(request.projectId, request.moduleId);
   const projectAttributes = projectQuery.data?.attributes;
+  const moduleType = moduleQuery.data?.type;
   const attributes = useMemo(
-    () => applicableAttributes(projectAttributes ?? [], request.moduleId),
-    [projectAttributes, request.moduleId],
+    () => applicableAttributes(projectAttributes ?? [], { id: request.moduleId, type: moduleType }),
+    [projectAttributes, request.moduleId, moduleType],
   );
   // "Add sibling" places the new requirement right after the clicked one: name it in the title.
   const afterId = useMemo(() => {
@@ -43,7 +45,7 @@ function AddRequirementDialog({ request, onClose }: { request: AddRequirementReq
       projectId={request.projectId}
       moduleId={request.moduleId}
       attributes={attributes}
-      opened={projectQuery.data !== undefined}
+      opened={projectQuery.data !== undefined && moduleQuery.data !== undefined}
       parentId={request.parentId}
       insertIndex={request.insertIndex}
       afterId={afterId}

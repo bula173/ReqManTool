@@ -16,7 +16,14 @@ import re
 from dataclasses import dataclass, field, asdict
 from typing import Any, Literal
 
-AttributeType = Literal["string", "text", "integer", "boolean", "enum"]
+AttributeType = Literal["string", "text", "integer", "boolean", "enum", "date"]
+
+# What a module holds (project format 5). ``requirements`` is the default, and
+# the only kind before module types existed. Rules (which link configurations
+# may join which kinds) live in ``ProjectService``.
+ModuleType = Literal["requirements", "test_cases", "test_execution"]
+MODULE_TYPES: tuple[str, ...] = ("requirements", "test_cases", "test_execution")
+DEFAULT_MODULE_TYPE = "requirements"
 
 
 def _string_list(value: Any) -> list[str]:
@@ -38,11 +45,17 @@ class AttributeDefinition:
     # keeps exactly the keys it had before. Rules (ids exist, values only in
     # listed modules) live in ``ProjectService``.
     modules: list[str] = field(default_factory=list)
+    # Module types the attribute also applies to (project format 5), in
+    # ``MODULE_TYPES`` order. Like ``modules``, written only when set; an
+    # attribute with neither list applies to every module.
+    module_types: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         data = asdict(self)
         if not self.modules:
             del data["modules"]
+        if not self.module_types:
+            del data["module_types"]
         return data
 
     @staticmethod
@@ -56,6 +69,7 @@ class AttributeDefinition:
             choices=data.get("choices"),
             system=data.get("system", False),
             modules=_string_list(data.get("modules")),
+            module_types=_string_list(data.get("module_types")),
         )
 
 
@@ -216,17 +230,27 @@ class Module:
     name: str
     prefix: str
     description: str = ""
+    # One of ``MODULE_TYPES`` (project format 5). Written only when it is not
+    # the default, so a requirements module keeps exactly the keys it had
+    # before module types existed (API responses omit it the same way). A
+    # missing or unknown value reads as ``requirements``.
+    type: str = DEFAULT_MODULE_TYPE
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        if self.type == DEFAULT_MODULE_TYPE:
+            del data["type"]
+        return data
 
     @staticmethod
     def from_dict(data: dict) -> "Module":
+        module_type = data.get("type", DEFAULT_MODULE_TYPE)
         return Module(
             id=data["id"],
             name=data["name"],
             prefix=data["prefix"],
             description=data.get("description", ""),
+            type=module_type if module_type in MODULE_TYPES else DEFAULT_MODULE_TYPE,
         )
 
 

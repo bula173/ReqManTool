@@ -3,8 +3,9 @@ import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import { useAddAttribute } from '../api/queries';
 import { ApiError } from '../api/client';
-import type { AttributeType } from '../api/types';
+import type { AttributeType, ModuleType } from '../api/types';
 import { REQUIRED_SCOPE_HINT } from '../api/applicability';
+import { isIsoDate } from '../api/dates';
 import { AttributeModulesChecklist } from './AttributeModulesChecklist';
 
 interface AddAttributeModalProps {
@@ -20,8 +21,10 @@ interface FormValues {
   required: boolean;
   default: string;
   choices: string;
-  /** Module ids the attribute applies to; empty = every module. */
+  /** Module ids the attribute applies to; with `moduleTypes` empty too = every module. */
   modules: string[];
+  /** Module types the attribute applies to. */
+  moduleTypes: ModuleType[];
 }
 
 const TYPE_OPTIONS: { value: AttributeType; label: string }[] = [
@@ -30,6 +33,7 @@ const TYPE_OPTIONS: { value: AttributeType; label: string }[] = [
   { value: 'integer', label: 'Integer' },
   { value: 'boolean', label: 'Boolean' },
   { value: 'enum', label: 'Enum' },
+  { value: 'date', label: 'Date' },
 ];
 
 function parseChoices(raw: string): string[] {
@@ -48,6 +52,8 @@ function coerceDefault(type: AttributeType, raw: string): unknown {
     }
     case 'boolean':
       return raw.trim() === 'true';
+    case 'date':
+      return raw.trim();
     default:
       return raw;
   }
@@ -56,7 +62,7 @@ function coerceDefault(type: AttributeType, raw: string): unknown {
 export function AddAttributeModal({ projectId, opened, onClose }: AddAttributeModalProps) {
   const addAttribute = useAddAttribute(projectId);
   const form = useForm<FormValues>({
-    initialValues: { id: '', name: '', type: 'string', required: false, default: '', choices: '', modules: [] },
+    initialValues: { id: '', name: '', type: 'string', required: false, default: '', choices: '', modules: [], moduleTypes: [] },
     validate: {
       id: (value) => (value.trim().length === 0 ? 'Attribute id is required' : null),
       name: (value) => (value.trim().length === 0 ? 'Attribute name is required' : null),
@@ -65,6 +71,7 @@ export function AddAttributeModal({ projectId, opened, onClose }: AddAttributeMo
         if (raw === '') return null;
         if (values.type === 'integer' && !/^[+-]?\d+$/.test(raw)) return 'Default must be a whole number';
         if (values.type === 'boolean' && raw !== 'true' && raw !== 'false') return 'Default must be true or false';
+        if (values.type === 'date' && !isIsoDate(raw)) return 'Default must be a date (YYYY-MM-DD)';
         if (values.type === 'enum' && !parseChoices(values.choices).includes(value)) {
           return 'Default must be one of the choices';
         }
@@ -85,6 +92,7 @@ export function AddAttributeModal({ projectId, opened, onClose }: AddAttributeMo
         choices,
         // Only optional attributes can be limited to modules.
         modules: values.required ? [] : values.modules,
+        module_types: values.required ? [] : values.moduleTypes,
       },
       {
         onSuccess: () => {
@@ -120,10 +128,18 @@ export function AddAttributeModal({ projectId, opened, onClose }: AddAttributeMo
             onChange={(event) => {
               const required = event.currentTarget.checked;
               form.setFieldValue('required', required);
-              if (required) form.setFieldValue('modules', []);
+              if (required) {
+                form.setFieldValue('modules', []);
+                form.setFieldValue('moduleTypes', []);
+              }
             }}
           />
-          <TextInput label="Default value" placeholder="Optional" {...form.getInputProps('default')} />
+          <TextInput
+            label="Default value"
+            placeholder="Optional"
+            type={form.values.type === 'date' ? 'date' : undefined}
+            {...form.getInputProps('default')}
+          />
           {form.values.type === 'enum' && (
             <TextInput
               label="Choices"
@@ -135,6 +151,8 @@ export function AddAttributeModal({ projectId, opened, onClose }: AddAttributeMo
             projectId={projectId}
             value={form.values.modules}
             onChange={(modules) => form.setFieldValue('modules', modules)}
+            types={form.values.moduleTypes}
+            onTypesChange={(types) => form.setFieldValue('moduleTypes', types)}
             disabled={addAttribute.isPending || form.values.required}
           />
           {form.values.required && (

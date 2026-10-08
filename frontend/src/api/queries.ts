@@ -14,6 +14,7 @@ import type {
   LinkConfiguration,
   LinkOption,
   Module,
+  ModuleType,
   Project,
   ProjectListEntry,
   Requirement,
@@ -234,17 +235,28 @@ export function useAddAttribute(projectId: string) {
 
 /**
  * Changes the modules an attribute applies to (`PUT
- * /projects/{id}/attributes/{attr}/modules`, WS `attribute.set_modules`); an
- * empty list means every module. Non-blank values in modules left out are
+ * /projects/{id}/attributes/{attr}/modules`, WS `attribute.set_modules`) and
+ * module types (`module_types`, replaced too); both empty means every module. Non-blank values in modules left out are
  * refused (400) unless `drop_values` is true; the removed ones are returned in
  * `dropped_values`. Invalidates the whole project, since requirements may change.
  */
 export function useSetAttributeModules(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ attrId, modules, dropValues }: { attrId: string; modules: string[]; dropValues: boolean }) =>
+    mutationFn: ({
+      attrId,
+      modules,
+      moduleTypes,
+      dropValues,
+    }: {
+      attrId: string;
+      modules: string[];
+      moduleTypes: ModuleType[];
+      dropValues: boolean;
+    }) =>
       api.put<SetAttributeModulesResult>(`/projects/${projectId}/attributes/${encodeURIComponent(attrId)}/modules`, {
         modules,
+        module_types: moduleTypes,
         drop_values: dropValues,
       }),
     onSuccess: () => {
@@ -595,7 +607,7 @@ export function useModule(projectId: string | undefined, moduleId: string | unde
 export function useCreateModule(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string; prefix: string; description?: string }) =>
+    mutationFn: (body: { name: string; prefix: string; description?: string; type?: ModuleType }) =>
       api.post<Module>(`/projects/${projectId}/modules`, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.modules(projectId) });

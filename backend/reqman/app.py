@@ -239,17 +239,24 @@ class AddAttributeBody(BaseModel):
     # Module ids the attribute applies to; absent/empty = every module. Typed
     # loosely so the service validates it and REST/WebSocket reject alike.
     modules: Any = None
+    # Module types the attribute applies to (with ``modules``: either one).
+    module_types: Any = None
 
 
 class SetAttributeModulesBody(BaseModel):
     modules: Any = None
     drop_values: Any = False
+    # Replaces the type scope too; absent/null = no type scope.
+    module_types: Any = None
 
 
 class CreateModuleBody(BaseModel):
     name: str
     prefix: str
     description: str = ""
+    # "requirements" (default), "test_cases" or "test_execution"; validated
+    # by the service so REST and WebSocket reject alike.
+    type: Any = None
 
 
 class AddRequirementBody(BaseModel):
@@ -532,6 +539,7 @@ async def add_attribute(project_id: str, body: AddAttributeBody):
         body.default,
         body.choices,
         body.modules,
+        body.module_types,
     )
     await manager.broadcast(project_id)
     return project.to_dict()
@@ -539,7 +547,9 @@ async def add_attribute(project_id: str, body: AddAttributeBody):
 
 @app.put("/projects/{project_id}/attributes/{attr_id}/modules")
 async def set_attribute_modules(project_id: str, attr_id: str, body: SetAttributeModulesBody):
-    result = _wrap(service.set_attribute_modules, project_id, attr_id, body.modules, body.drop_values)
+    result = _wrap(
+        service.set_attribute_modules, project_id, attr_id, body.modules, body.drop_values, body.module_types
+    )
     await manager.broadcast(project_id)
     return {"project": result["project"].to_dict(), "dropped_values": result["dropped_values"]}
 
@@ -660,7 +670,7 @@ def export_docx(project_id: str):
 
 @app.post("/projects/{project_id}/modules")
 async def create_module(project_id: str, body: CreateModuleBody):
-    module = _wrap(service.create_module, project_id, body.name, body.prefix, body.description)
+    module = _wrap(service.create_module, project_id, body.name, body.prefix, body.description, body.type)
     await manager.broadcast(project_id)
     return module.to_dict()
 
@@ -841,12 +851,13 @@ RPC_METHODS = {
     "attribute.add": lambda p: service.add_attribute_definition(
         p["project_id"], p["id"], p["name"], p.get("type", "string"),
         p.get("required", False), p.get("default"), p.get("choices"), p.get("modules"),
+        p.get("module_types"),
     ),
     "attribute.set_modules": lambda p: service.set_attribute_modules(
-        p["project_id"], p["id"], p.get("modules"), p.get("drop_values", False)
+        p["project_id"], p["id"], p.get("modules"), p.get("drop_values", False), p.get("module_types")
     ),
     "module.create": lambda p: service.create_module(
-        p["project_id"], p["name"], p["prefix"], p.get("description", "")
+        p["project_id"], p["name"], p["prefix"], p.get("description", ""), p.get("type")
     ),
     "module.get": lambda p: service.get_module(p["project_id"], p["id"]),
     "module.list": lambda p: service.list_modules(p["project_id"]),

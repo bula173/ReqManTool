@@ -91,7 +91,7 @@ export function BaselinePage() {
   }
 
   const module = snapshot.modules.find((m) => m.id === moduleId);
-  const attributes = applicableAttributes(snapshot.project.attributes, moduleId);
+  const attributes = applicableAttributes(snapshot.project.attributes, module ?? (moduleId ? { id: moduleId } : null));
   const rows = treeOrder(requirementsQuery.data ?? []);
   const tableWidth =
     columns.widthOf(ID_COLUMN, DEFAULT_ID_COLUMN_WIDTH) +

@@ -69,6 +69,7 @@ export function defaultColumnWidth(attr: AttributeDefinition): number {
     case 'boolean':
       return 110;
     case 'enum':
+    case 'date':
       return 140;
     default:
       return 200;

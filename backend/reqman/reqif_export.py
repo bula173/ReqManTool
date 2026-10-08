@@ -18,6 +18,12 @@ Mapping decisions (see also the docstring of ``export_project_to_reqif``):
     - "text"            -> ATTRIBUTE-DEFINITION-XHTML / DATATYPE-DEFINITION-XHTML
     - "integer"         -> ATTRIBUTE-DEFINITION-INTEGER / DATATYPE-DEFINITION-INTEGER
     - "boolean"         -> ATTRIBUTE-DEFINITION-BOOLEAN / DATATYPE-DEFINITION-BOOLEAN
+    - "date"            -> ATTRIBUTE-DEFINITION-DATE / DATATYPE-DEFINITION-DATE
+  A date value ``YYYY-MM-DD`` is written as the ``xsd:dateTime``
+  ``YYYY-MM-DDT00:00:00`` (no time zone: a calendar date, not an instant);
+  a stored value that is not a valid date (hand-edited data) is omitted.
+  DATATYPE-DATE is declared only when the project has a date attribute, so
+  exports of projects without one are unchanged.
   "enum" is NOT exported as ENUMERATION with a proper enum-values datatype
   definition but as a plain string, losing the "one of a fixed set of
   choices" information in the ReqIF file itself.
@@ -58,11 +64,13 @@ Mapping decisions (see also the docstring of ``export_project_to_reqif``):
 from __future__ import annotations
 
 import re
+from datetime import date as _date
 from typing import Any, Iterable, List, Optional, Sequence, Tuple
 
 from reqif.models.reqif_core_content import ReqIFCoreContent
 from reqif.models.reqif_data_type import (
     ReqIFDataTypeDefinitionBoolean,
+    ReqIFDataTypeDefinitionDateIdentifier,
     ReqIFDataTypeDefinitionInteger,
     ReqIFDataTypeDefinitionString,
     ReqIFDataTypeDefinitionXHTML,
@@ -92,6 +100,9 @@ DATATYPE_STRING_ID = "DATATYPE-STRING"
 DATATYPE_INTEGER_ID = "DATATYPE-INTEGER"
 DATATYPE_BOOLEAN_ID = "DATATYPE-BOOLEAN"
 DATATYPE_XHTML_ID = "DATATYPE-XHTML"
+DATATYPE_DATE_ID = "DATATYPE-DATE"
+
+_ISO_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 
 SPEC_OBJECT_TYPE_ID = "SPEC-OBJECT-TYPE-REQUIREMENT"
 
@@ -102,7 +113,19 @@ _ATTRIBUTE_TYPE_MAP = {
     "enum": (SpecObjectAttributeType.STRING, DATATYPE_STRING_ID),
     "integer": (SpecObjectAttributeType.INTEGER, DATATYPE_INTEGER_ID),
     "boolean": (SpecObjectAttributeType.BOOLEAN, DATATYPE_BOOLEAN_ID),
+    "date": (SpecObjectAttributeType.DATE, DATATYPE_DATE_ID),
 }
+
+
+def _date_value(value: Any) -> Optional[str]:
+    """A ``YYYY-MM-DD`` value as an ``xsd:dateTime`` THE-VALUE, or None if it is not a valid date."""
+    if not isinstance(value, str) or not _ISO_DATE.match(value):
+        return None
+    try:
+        _date.fromisoformat(value)
+    except ValueError:
+        return None
+    return f"{value}T00:00:00"
 
 
 def _relation_type_id(config_id: str) -> str:
@@ -199,7 +222,7 @@ def export_project_to_reqif(
         project: object with ``.id: str``, ``.name: str``, ``.description: str``,
             and ``.attributes: list[AttributeDefinition]`` where each
             AttributeDefinition has ``.id: str``, ``.name: str``,
-            ``.type: "string"|"text"|"integer"|"boolean"|"enum"``,
+            ``.type: "string"|"text"|"integer"|"boolean"|"enum"|"date"``,
             ``.required: bool``, ``.default: Any``, ``.choices: list[str] | None``.
         modules: list of ``(module, requirements)`` tuples, in the module
             order that should appear in the output. Each ``module`` has
@@ -249,6 +272,8 @@ def export_project_to_reqif(
     ]
     if any(attr.type == "text" for attr in project.attributes):
         data_types.append(ReqIFDataTypeDefinitionXHTML(identifier=DATATYPE_XHTML_ID, is_self_closed=True))
+    if any(attr.type == "date" for attr in project.attributes):
+        data_types.append(ReqIFDataTypeDefinitionDateIdentifier(identifier=DATATYPE_DATE_ID, is_self_closed=True))
 
     # --- SPEC-TYPES: one SPEC-OBJECT-TYPE for the whole project ---------
     attribute_definitions = []
@@ -291,12 +316,18 @@ def export_project_to_reqif(
             raw_value = requirement.attributes[attr.id]
             if raw_value is None:
                 continue
+            if attr.type == "date":
+                the_value = _date_value(raw_value)
+                if the_value is None:
+                    continue
+            else:
+                the_value = _format_attribute_value(attr.type, raw_value)
             spec_attr_type, _datatype_id = _ATTRIBUTE_TYPE_MAP[attr.type]
             values.append(
                 SpecObjectAttribute(
                     attribute_type=spec_attr_type,
                     definition_ref=attr.id,
-                    value=_format_attribute_value(attr.type, raw_value),
+                    value=the_value,
                 )
             )
         spec_objects.append(

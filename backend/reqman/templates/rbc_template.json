@@ -2,7 +2,7 @@
   "format_version": 1,
   "id": "rbc_template",
   "name": "RBC_Template",
-  "description": "ERTMS/ETCS Radio Block Centre project structured for the CENELEC railway standards EN 50126 (RAMS), EN 50128 (software) and EN 50129 (safety-related electronic systems): stakeholder, system and software requirements with system and software test specifications, traced V-model style.",
+  "description": "ERTMS/ETCS Radio Block Centre project structured for the CENELEC railway standards EN 50126 (RAMS), EN 50128 (software) and EN 50129 (safety-related electronic systems): stakeholder, system and software requirements with system and software test specifications and their test executions, traced V-model style.",
   "attributes": [
     {
       "id": "object_type",
@@ -130,6 +130,51 @@
       "default": null,
       "choices": ["Not Run", "Passed", "Failed", "Blocked", "Not Applicable"],
       "modules": ["systest", "swtest"]
+    },
+    {
+      "id": "result",
+      "name": "Result",
+      "type": "enum",
+      "required": false,
+      "default": "Not Run",
+      "choices": ["Passed", "Failed", "Blocked", "Not Run"],
+      "module_types": ["test_execution"]
+    },
+    {
+      "id": "executed_by",
+      "name": "Executed By",
+      "type": "string",
+      "required": false,
+      "default": null,
+      "choices": null,
+      "module_types": ["test_execution"]
+    },
+    {
+      "id": "execution_date",
+      "name": "Execution Date",
+      "type": "date",
+      "required": false,
+      "default": null,
+      "choices": null,
+      "module_types": ["test_execution"]
+    },
+    {
+      "id": "version_under_test",
+      "name": "Build/SW Version Under Test",
+      "type": "string",
+      "required": false,
+      "default": null,
+      "choices": null,
+      "module_types": ["test_execution"]
+    },
+    {
+      "id": "evidence_ref",
+      "name": "Evidence/Log Ref",
+      "type": "string",
+      "required": false,
+      "default": null,
+      "choices": null,
+      "module_types": ["test_execution"]
     }
   ],
   "modules": [
@@ -155,13 +200,29 @@
       "key": "systest",
       "name": "SysTest",
       "prefix": "SYST",
-      "description": "System test specification: test cases verifying the SyRS."
+      "description": "System test specification: test cases verifying the SyRS.",
+      "type": "test_cases"
     },
     {
       "key": "swtest",
       "name": "SwTest",
       "prefix": "SWT",
-      "description": "Software test specification (EN 50128 overall software testing): test cases verifying the SwRS."
+      "description": "Software test specification (EN 50128 overall software testing): test cases verifying the SwRS.",
+      "type": "test_cases"
+    },
+    {
+      "key": "systestexec",
+      "name": "SysTestExec",
+      "prefix": "SYSTX",
+      "description": "System test execution: one entry per executed SysTest test case, with its result, executor, date, build/version under test and evidence.",
+      "type": "test_execution"
+    },
+    {
+      "key": "swtestexec",
+      "name": "SwTestExec",
+      "prefix": "SWTX",
+      "description": "Software test execution (EN 50128 software test report): one entry per executed SwTest test case, with its result, executor, date, software version under test and evidence.",
+      "type": "test_execution"
     }
   ],
   "link_configurations": [
@@ -188,6 +249,18 @@
       "name": "Verifies SwRS",
       "source_module": "swtest",
       "target_module": "swrs"
+    },
+    {
+      "key": "systestexec_systest",
+      "name": "Executes SysTest",
+      "source_module": "systestexec",
+      "target_module": "systest"
+    },
+    {
+      "key": "swtestexec_swtest",
+      "name": "Executes SwTest",
+      "source_module": "swtestexec",
+      "target_module": "swtest"
     }
   ],
   "views": [
@@ -204,12 +277,19 @@
       "attribute_ids": ["object_text", "object_type", "preconditions", "test_steps", "expected_result", "test_result", "status", "link:systest_syrs", "link:swtest_swrs"]
     },
     {
+      "name": "Test Execution",
+      "attribute_ids": ["object_text", "object_type", "result", "executed_by", "execution_date", "version_under_test", "evidence_ref", "status", "link:systestexec_systest", "link:swtestexec_swtest"]
+    },
+    {
       "name": "Review",
       "attribute_ids": ["object_text", "status", "source", "rationale", "target_release"]
     }
   ],
   "row_styles": [
     {"attribute_id": "object_type", "value": "Heading", "font_color": "#2f9e44", "background_color": null, "bold": false},
-    {"attribute_id": "object_type", "value": "Information", "font_color": "#1971c2", "background_color": null, "bold": false}
+    {"attribute_id": "object_type", "value": "Information", "font_color": "#1971c2", "background_color": null, "bold": false},
+    {"attribute_id": "result", "value": "Passed", "font_color": "#2f9e44", "background_color": null, "bold": false},
+    {"attribute_id": "result", "value": "Failed", "font_color": "#e03131", "background_color": null, "bold": true},
+    {"attribute_id": "result", "value": "Blocked", "font_color": "#e8590c", "background_color": null, "bold": false}
   ]
 }

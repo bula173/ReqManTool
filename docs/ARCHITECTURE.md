@@ -102,7 +102,8 @@ persistence" below.
                                    #   row_styles (only if non-empty)
     modules/
       <module-id>/
-        module.json                # Module: id, name, prefix, description
+        module.json                # Module: id, name, prefix, description,
+                                   #   type (only if not "requirements")
         requirements/
           <requirement-id>.json    # Requirement: id, attributes,
                                     #   parent_id, order
@@ -128,8 +129,9 @@ persistence" below.
   when non-empty — see "Module order" below), `row_styles: list[RowStyle]`
   (written last and only when non-empty — see "Row styles" below).
 - **AttributeDefinition** — `id`, `name`, `type` (`string | text | integer
-  | boolean | enum`), `required`, `default`, `choices` (enum only),
-  `system: bool`. `system=True` marks an attribute the service manages
+  | boolean | enum | date`), `required`, `default`, `choices` (enum only),
+  `system: bool`, then `modules` and `module_types` (each written only when
+  non-empty; see "Module types" below). `system=True` marks an attribute the service manages
   automatically — currently only the read-only mirrors that link
   configurations create (see "Link configurations" below);
   `ProjectService._validate_attributes` rejects any attempt to set a
@@ -145,7 +147,7 @@ persistence" below.
   `Id`/`Module`/`Parent` as the reserved columns and needs the attribute's
   column headed with its `id`.
   `add_attribute_definition` also rejects (400) a `type` outside
-  `string | text | integer | boolean | enum` (checked first; "Unknown
+  `string | text | integer | boolean | enum | date` (checked first; "Unknown
   attribute type '<type>'; expected one of …"), an `enum` without a
   non-empty list of string `choices`, `choices` on any other type (they must
   be `null`), a `default` that is not a valid value for the type (same
@@ -160,7 +162,9 @@ persistence" below.
   typed values). Besides unknown/system attributes, it checks value types:
   `integer` must be a JSON integer (not a boolean or float, not a numeric
   string), `boolean` a JSON boolean, `enum` one of `choices`, `string`/`text`
-  a string. `null` (unset) is accepted for every type except as the value of
+  a string, `date` an existing calendar date written `YYYY-MM-DD` (a string;
+  `2026-02-30`, `2026-1-1` or `02/01/2026` are rejected with "<Name>: '<v>'
+  is not a date (expected YYYY-MM-DD)"). `null` (unset) is accepted for every type except as the value of
   a required attribute; violations are 400 errors. Required attributes must
   not be blank (`null`, `""` or whitespace only — "required attribute
   '<Name>' is empty"): on create the check runs on the merged result, so an
@@ -171,7 +175,10 @@ persistence" below.
   system attributes and skips a stored default that is invalid for its type
   (legacy data; the stored definition is not rewritten).
 - **Module** (`module.json`) — `id`, `name`, `prefix` (e.g. `"REQ"` — the
-  namespace requirement ids in this module are allocated from), `description`.
+  namespace requirement ids in this module are allocated from), `description`,
+  `type` (`requirements | test_cases | test_execution`; written, and returned
+  by the API, only when it is not the default `requirements` — see "Module
+  types" below).
 - **Requirement** (`<id>.json`) — `id`, `attributes: dict[str, Any]` (keyed
   by `AttributeDefinition.id`), `parent_id: str | None` (another
   requirement in the *same module*, forming a tree — see "Nesting" below),
@@ -251,6 +258,60 @@ system or not, becomes an exported `SPEC-OBJECT` value; link configurations
 *additionally* become `SPEC-RELATION-TYPE`/`SPEC-RELATION`s from the
 central pairs store).
 
+### Module types and date attributes
+
+Project format 5 gives every module a **type**: `requirements` (the
+default, and what every module was before), `test_cases` or
+`test_execution`. It is chosen at creation — `POST /projects/{id}/modules`
+and WS `module.create` take an optional `type`; anything else than the three
+values is 400 / -32602 ("Unknown module type …") — and cannot be changed
+later. `module.json` stores it only when it is not `requirements`, and the
+API omits it the same way (the frontend reads it with `moduleTypeOf`). An
+unknown value in a hand-edited file reads as `requirements`. The UI shows
+it as an icon (`components/ModuleTypeIcon.tsx`: document, flask, checklist)
+in the Project tab of the sidebar, the module tab bar and the project page.
+
+- **Attribute scope by type**: `AttributeDefinition.module_types` lists
+  module types an attribute applies to, next to `modules` (module ids). The
+  attribute applies to a module listed in `modules` *or* of a type listed in
+  `module_types`; with both empty it applies everywhere
+  (`ProjectService._attribute_applies`, mirrored by `attributeAppliesTo`).
+  `add_attribute_definition` (`module_types` body field / WS param) and
+  `set_attribute_modules` (`PUT .../attributes/{attr}/modules` body
+  `{modules, module_types, drop_values}`, WS `attribute.set_modules`) take
+  it; `set_attribute_modules` replaces the whole scope (an omitted
+  `module_types` means none). Types are stored in canonical order, duplicates
+  collapse, unknown types are refused. Required attributes cannot be scoped
+  by type either (`_check_required_scope`).
+- **Link type pairs**: a new link configuration (API or template) must join
+  `requirements → requirements`, `test_cases → requirements` or
+  `test_execution → test_cases` (`LINK_TYPE_PAIRS`,
+  `_check_link_types`); anything else is 400 / -32602 and nothing is
+  written. Configurations already stored are never checked, so existing
+  (all-`requirements`) projects and hand-edited data keep loading and
+  linking. The New link configuration dialog disables targets that do not
+  fit the chosen source.
+- **Templates**: a template module may carry `type` and a template attribute
+  `module_types` (both optional, template `format_version` stays 1: an
+  older ReqManTool ignores them). Save as template writes them when not
+  default; `GET /templates` lists each module's `type`. The built-in
+  `RBC_Template` makes StRS/SyRS/SwRS `requirements`, SysTest/SwTest
+  `test_cases` and adds SysTestExec/SwTestExec (`test_execution`, links
+  "Executes SysTest"/"Executes SwTest") with execution attributes scoped by
+  type: Result (Passed/Failed/Blocked/Not Run, default Not Run), Executed By,
+  Execution Date (`date`), Build/SW Version Under Test, Evidence/Log Ref, a
+  Test Execution view and row styles for Passed/Failed/Blocked.
+- **Date values** are ISO strings, so they sort and compare as text. The
+  editors use the browser's native date picker (`<input type="date">`; no
+  extra dependency). Exports: CSV writes the string (re-importable; the CSV
+  import strips blanks and validates `YYYY-MM-DD`), XLSX writes a real date
+  cell formatted `yyyy-mm-dd`, DOCX the string, ReqIF an
+  `ATTRIBUTE-DEFINITION-DATE` on a `DATATYPE-DEFINITION-DATE` (declared only
+  when the project has a date attribute) with `THE-VALUE`
+  `YYYY-MM-DDT00:00:00` (an `xsd:dateTime` without a time zone); a stored
+  value that is not a valid date (hand-edited) is omitted from ReqIF and
+  written as text to XLSX.
+
 ### Subprojects
 
 `Project.parent_project_id` forms a generic → specific product-line tree
@@ -310,8 +371,8 @@ domain rules.
   (the mirror attribute of that link configuration). Duplicate module
   prefixes are allowed, as in projects (they share one id counter).
 - **Compatibility**: unknown keys are ignored at every level, so a later
-  optional key (for example a module `type`) needs no `format_version`
-  bump. `format_version` is bumped only for incompatible changes; a
+  optional key (such as a module's `type` or an attribute's
+  `module_types`) needs no `format_version` bump. `format_version` is bumped only for incompatible changes; a
   template with any other `format_version` than 1 is invalid.
 - **Listing** (`GET /templates`): built-in templates, then user templates,
   each sorted by name, each fully validated. An invalid file (unreadable,
@@ -355,7 +416,7 @@ domain rules.
 
 `project.json` and the app config file (`.reqman/config.json`) start with
 an integer `format_version` (`reqman/formats.py`: `PROJECT_FORMAT`,
-`CONFIG_FORMAT`; project currently 3, config 1). Module, requirement and
+`CONFIG_FORMAT`; project currently 5, config 1). Module, requirement and
 link-pair files have no version of their own; they are governed by their
 project's version. Templates keep their own, separate `format_version`.
 Project format 2 added `AttributeDefinition.modules` (per-module attribute
@@ -364,7 +425,15 @@ non-empty); the 1 → 2 step drops any stray `modules` key, since version 1
 attributes applied to every module. Project format 3 added
 `Project.row_styles`; the 2 → 3 step drops any stray `row_styles` key, so
 an existing project gets no rules (only new projects from a template that
-declares them, such as the RBC template, get the defaults).
+declares them, such as the RBC template, get the defaults). Project format
+4 marked rich text values (nothing rewritten). Project format 5 added
+module types (`module.json` `type`), `AttributeDefinition.module_types` and
+the `date` attribute type (see "Module types and date attributes"); the
+4 → 5 step drops any stray `module_types` key and does not rewrite module
+files (a version 4 `module.json` has no `type`). Every write that can store
+one of them also saves `project.json` (creating a module stores the module
+order, adding an attribute or a template project saves the project), so a
+file using them is always in a version 5 project.
 
 Only optional attributes can be scoped to modules: a required attribute
 always applies to every module. `ProjectService._check_required_scope`
@@ -869,10 +938,10 @@ resource:
 | Projects | `POST/GET /projects` (`GET` lists unloadable projects as `{id, name, error}` stubs; `POST` body: `name`, `description`, optional `template_id`, optional `parent_project_id`), `GET /projects/{id}`, `PUT /projects/{id}/parent` (`{"parent_project_id": id or null}`), `PUT /projects/{id}/row-styles` (`{"row_styles": [...]}`; WS `project.set_row_styles`; 400 invalid) |
 | History (git) | `GET /projects/{id}/git` (status; WS `project.git_status`), `POST /projects/{id}/git/enable` (WS `project.git_enable`, broadcasts `changed`, also after a part-way failure; 409 nested/foreign/detached/merge etc. in progress/`current` not checked out, 400 git off or missing or a failed step), `GET /projects/{id}/git/log?limit=` (WS `project.git_log`), `GET .../modules/{m}/requirements/{r}/history` (WS `requirement.history`) — see "Project history (git)" |
 | Baselines (git) | `POST /projects/{id}/baselines` (`{name, description}`; WS `baseline.create`, broadcasts `changed`; 409 duplicate name / not `ready` / `baseline` moved by hand, 400 invalid name or git off/missing), `GET /projects/{id}/baselines` (WS `baseline.list`), `GET /projects/{id}/baselines/{name}` (WS `baseline.get`; 409 for a newer-format baseline), `GET .../baselines/{name}/modules/{m}/requirements` (WS `baseline.requirements`), `GET /projects/{id}/baselines/compare?from=&to=` (`to`/`from` = a baseline name or `current`; WS `baseline.compare`) — reads are read-only; see "Project history (git)" |
-| Templates | `GET /templates` → `[{id, source, name, description, modules: [{key, name, prefix}], error}]`, `POST /projects/{id}/save-as-template` (`{name, description}`; 409 on a name clash; broadcasts `templates_changed`), `POST /templates/import` (raw template JSON request body, `Content-Type: application/json` required (415 otherwise), UTF-8 with optional BOM, at most 1 MiB (413); invalid → 400, name clash → 409; returns the template summary; broadcasts `templates_changed`; WS: `template.import` `{text}`) |
-| Attributes | `POST /projects/{id}/attributes` |
+| Templates | `GET /templates` → `[{id, source, name, description, modules: [{key, name, prefix, type}], error}]`, `POST /projects/{id}/save-as-template` (`{name, description}`; 409 on a name clash; broadcasts `templates_changed`), `POST /templates/import` (raw template JSON request body, `Content-Type: application/json` required (415 otherwise), UTF-8 with optional BOM, at most 1 MiB (413); invalid → 400, name clash → 409; returns the template summary; broadcasts `templates_changed`; WS: `template.import` `{text}`) |
+| Attributes | `POST /projects/{id}/attributes` (optional `modules`, `module_types`; WS `attribute.add`), `PUT /projects/{id}/attributes/{attr}/modules` (`{modules, module_types, drop_values}`; WS `attribute.set_modules`) |
 | Link configurations | `POST/GET /projects/{id}/link-configurations`, `DELETE .../link-configurations/{config_id}` |
-| Modules | `POST/GET /projects/{id}/modules`, `GET .../modules/{id}`, `POST .../modules/{id}/purge`, `POST /projects/{project_id}/modules/{module_id}/reorder` (`{"direction": "up" \| "down"}`; WS: `module.reorder`) |
+| Modules | `POST/GET /projects/{id}/modules` (create: `{name, prefix, description, type?}`; WS `module.create`), `GET .../modules/{id}`, `POST .../modules/{id}/purge`, `POST /projects/{project_id}/modules/{module_id}/reorder` (`{"direction": "up" \| "down"}`; WS: `module.reorder`) |
 | Requirements | `POST/GET .../requirements`, `GET/PUT/DELETE .../requirements/{id}`, `PUT .../requirements/{id}/parent` (move; body `parent_id`, optional `index`), `POST .../requirements/{id}/reorder`, `POST .../requirements/{id}/copy` |
 | Links | `POST/DELETE /projects/{id}/links` |
 | Export | `GET /projects/{id}/export/reqif`, `GET /projects/{id}/export/csv` |

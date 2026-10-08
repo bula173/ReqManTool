@@ -1,4 +1,10 @@
-export type AttributeType = 'string' | 'text' | 'integer' | 'boolean' | 'enum';
+export type AttributeType = 'string' | 'text' | 'integer' | 'boolean' | 'enum' | 'date';
+
+/**
+ * What a module holds (project format 5). Omitted by the backend for the
+ * default `requirements`; read it with `moduleTypeOf` (`api/moduleTypes.ts`).
+ */
+export type ModuleType = 'requirements' | 'test_cases' | 'test_execution';
 
 export interface AttributeDefinition {
   id: string;
@@ -14,6 +20,12 @@ export interface AttributeDefinition {
    * rejected by the server; see `api/applicability.ts`.
    */
   modules?: string[];
+  /**
+   * Module types the attribute applies to (every module of such a type), in
+   * the order `requirements`, `test_cases`, `test_execution`. Omitted when
+   * empty. With `modules`, the attribute applies to a module named by either.
+   */
+  module_types?: ModuleType[];
 }
 
 /** A requirement value removed by `PUT /projects/{id}/attributes/{attr}/modules`. */
@@ -128,6 +140,8 @@ export interface Module {
   name: string;
   prefix: string;
   description: string;
+  /** Omitted for a `requirements` module; chosen at creation, never changed. */
+  type?: ModuleType;
 }
 
 export interface Requirement {
@@ -164,7 +178,7 @@ export interface TemplateSummary {
   source: TemplateSource;
   name: string;
   description: string;
-  modules: { key: string; name: string; prefix: string }[];
+  modules: { key: string; name: string; prefix: string; type: ModuleType }[];
   /** Why the template cannot be used, or null if it is valid. */
   error: string | null;
 }

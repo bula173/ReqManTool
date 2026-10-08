@@ -116,10 +116,35 @@ def _project_v3_to_v4(data: dict) -> dict:
     return data
 
 
+def _project_v4_to_v5(data: dict) -> dict:
+    """Project format 4 -> 5: module types, type-scoped attributes and ``date`` attributes.
+
+    Version 5 adds ``Module.type`` (``module.json``: ``requirements``,
+    ``test_cases`` or ``test_execution``; absent = ``requirements``),
+    ``AttributeDefinition.module_types`` (the module types an attribute also
+    applies to; absent or empty = none) and the ``date`` attribute type
+    (ISO ``YYYY-MM-DD`` strings). Version 4 had none of them: every module
+    held requirements, and a stray ``module_types`` key in a hand-edited
+    version 4 file was ignored then and is dropped here so it keeps meaning
+    nothing. Module files are not rewritten: a version 4 ``module.json``
+    has no ``type`` key (the one theoretical exception, a hand-added one,
+    is read as the module's type from now on). Requirement and link-pair
+    files are unchanged. The bump exists so that an older ReqManTool, which
+    would drop module types and type scopes on save and not validate date
+    values, refuses version 5 projects instead.
+    """
+    attributes = data.get("attributes")
+    if isinstance(attributes, list):
+        for attr in attributes:
+            if isinstance(attr, dict):
+                attr.pop("module_types", None)
+    return data
+
+
 PROJECT_FORMAT = FileFormat(
     name="project",
-    current=4,
-    migrations={1: _project_v1_to_v2, 2: _project_v2_to_v3, 3: _project_v3_to_v4},
+    current=5,
+    migrations={1: _project_v1_to_v2, 2: _project_v2_to_v3, 3: _project_v3_to_v4, 4: _project_v4_to_v5},
 )
 CONFIG_FORMAT = FileFormat(name="config", current=1)
 

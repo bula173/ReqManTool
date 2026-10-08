@@ -21,8 +21,8 @@ Format (``format_version`` 1)::
       "id": "<stem>",
       "name": "...",
       "description": "...",
-      "attributes": [{"id", "name", "type", "required", "default", "choices", "modules"?}],
-      "modules": [{"key", "name", "prefix", "description"}],
+      "attributes": [{"id", "name", "type", "required", "default", "choices", "modules"?, "module_types"?}],
+      "modules": [{"key", "name", "prefix", "description", "type"?}],
       "link_configurations": [{"key", "name", "source_module", "target_module"}],
       "views": [{"name", "attribute_ids"}],
       "row_styles"?: [{"attribute_id", "value", "font_color", "background_color", "bold"}]
@@ -40,6 +40,14 @@ ignores it and creates the attribute for every module. It is written only
 when non-empty. Only an optional attribute may have one: a required
 attribute applies to every module, so ``ProjectService`` reports a template
 with a required, scoped attribute as invalid.
+
+An attribute's optional ``module_types`` lists module types
+(``requirements``, ``test_cases``, ``test_execution``) the attribute also
+applies to, and a module's optional ``type`` is one of those
+(absent: ``requirements``). Both were added without a ``format_version``
+bump under the rule below: an older ReqManTool ignores them and creates
+requirements modules and unscoped attributes. Both are written only when
+they differ from the default. Values are checked by ``ProjectService``.
 
 The optional ``row_styles`` list styles rows by enum attribute value: a
 template attribute ``attribute_id``, one of its choices as ``value``,
@@ -104,6 +112,8 @@ class TemplateAttribute:
     choices: Any = None
     # Module keys of the template the attribute applies to; empty = every module.
     modules: list[str] = field(default_factory=list)
+    # Module types the attribute applies to (with ``modules``: either one).
+    module_types: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         data = {
@@ -116,6 +126,8 @@ class TemplateAttribute:
         }
         if self.modules:
             data["modules"] = list(self.modules)
+        if self.module_types:
+            data["module_types"] = list(self.module_types)
         return data
 
 
@@ -125,9 +137,14 @@ class TemplateModule:
     name: str
     prefix: Any
     description: str = ""
+    # A module type; None (absent) means ``requirements``.
+    type: Any = None
 
     def to_dict(self) -> dict:
-        return {"key": self.key, "name": self.name, "prefix": self.prefix, "description": self.description}
+        data = {"key": self.key, "name": self.name, "prefix": self.prefix, "description": self.description}
+        if self.type not in (None, "requirements"):
+            data["type"] = self.type
+        return data
 
 
 @dataclass
@@ -374,6 +391,13 @@ def parse_template(data: Any, template_id: str) -> Template:
             raise ValueError(f"{where}: 'modules' must be a list of module keys")
         if len(set(scope)) != len(scope):
             raise ValueError(f"{where}: 'modules' lists a module key more than once")
+        type_scope = raw.get("module_types", [])
+        if type_scope is None:
+            type_scope = []
+        if not isinstance(type_scope, list) or not all(isinstance(t, str) for t in type_scope):
+            raise ValueError(f"{where}: 'module_types' must be a list of module types")
+        if len(set(type_scope)) != len(type_scope):
+            raise ValueError(f"{where}: 'module_types' lists a module type more than once")
         attributes.append(
             TemplateAttribute(
                 id=attr_id,
@@ -383,6 +407,7 @@ def parse_template(data: Any, template_id: str) -> Template:
                 default=raw.get("default"),
                 choices=raw.get("choices"),
                 modules=list(scope),
+                module_types=list(type_scope),
             )
         )
 
@@ -410,10 +435,15 @@ def parse_template(data: Any, template_id: str) -> Template:
         prefix = raw.get("prefix")
         if not isinstance(prefix, str):
             raise ValueError(f"{where}: 'prefix' must be a string")
+        module_type = raw.get("type")
+        if module_type is not None and not isinstance(module_type, str):
+            raise ValueError(f"{where}: 'type' must be a module type string")
         module_keys.add(key)
         module_names.add(module_name.casefold())
         modules.append(
-            TemplateModule(key=key, name=module_name, prefix=prefix, description=module_description)
+            TemplateModule(
+                key=key, name=module_name, prefix=prefix, description=module_description, type=module_type
+            )
         )
 
     for index, attr in enumerate(attributes):

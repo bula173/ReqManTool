@@ -1,9 +1,14 @@
-import { Button, Group, Modal, Stack, Textarea, TextInput } from '@mantine/core';
+import { Button, Group, Modal, Select, Stack, Textarea, TextInput } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import { useNavigate } from 'react-router-dom';
 import { useCreateModule } from '../api/queries';
 import { ApiError } from '../api/client';
+import { MODULE_TYPE_LABELS, MODULE_TYPES } from '../api/moduleTypes';
+import type { ModuleType } from '../api/types';
+import { ModuleTypeIcon } from './ModuleTypeIcon';
+
+const TYPE_OPTIONS = MODULE_TYPES.map((type) => ({ value: type, label: MODULE_TYPE_LABELS[type] }));
 
 interface NewModuleModalProps {
   projectId: string | null;
@@ -14,13 +19,14 @@ interface FormValues {
   name: string;
   prefix: string;
   description: string;
+  type: ModuleType;
 }
 
 export function NewModuleModal({ projectId, onClose }: NewModuleModalProps) {
   const navigate = useNavigate();
   const createModule = useCreateModule(projectId ?? '');
   const form = useForm<FormValues>({
-    initialValues: { name: '', prefix: '', description: '' },
+    initialValues: { name: '', prefix: '', description: '', type: 'requirements' },
     validate: {
       name: (value) => (value.trim().length === 0 ? 'Module name is required' : null),
       prefix: (value) =>
@@ -54,6 +60,20 @@ export function NewModuleModal({ projectId, onClose }: NewModuleModalProps) {
         <Stack gap="sm">
           <TextInput label="Name" placeholder="Core Requirements" required {...form.getInputProps('name')} />
           <TextInput label="Prefix" placeholder="REQ" required {...form.getInputProps('prefix')} />
+          <Select
+            label="Type"
+            description="What the module holds; it decides which links and attributes fit it and cannot be changed later"
+            data={TYPE_OPTIONS}
+            allowDeselect={false}
+            leftSection={<ModuleTypeIcon type={form.values.type} size={16} />}
+            renderOption={({ option }) => (
+              <Group gap="xs" wrap="nowrap">
+                <ModuleTypeIcon type={option.value as ModuleType} size={16} />
+                {option.label}
+              </Group>
+            )}
+            {...form.getInputProps('type')}
+          />
           <Textarea label="Description" {...form.getInputProps('description')} />
           <Group justify="flex-end" mt="sm">
             <Button variant="default" onClick={onClose}>

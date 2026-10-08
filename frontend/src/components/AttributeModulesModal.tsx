@@ -3,7 +3,7 @@ import { notifications } from '@mantine/notifications';
 import { useState } from 'react';
 import { ApiError } from '../api/client';
 import { useSetAttributeModules } from '../api/queries';
-import type { AttributeDefinition } from '../api/types';
+import type { AttributeDefinition, ModuleType } from '../api/types';
 import { AttributeModulesChecklist } from './AttributeModulesChecklist';
 
 interface AttributeModulesModalProps {
@@ -13,7 +13,7 @@ interface AttributeModulesModalProps {
   onClose: () => void;
 }
 
-/** Edits which modules an existing attribute applies to. */
+/** Edits which modules and module types an existing attribute applies to. */
 export function AttributeModulesModal({ projectId, attribute, onClose }: AttributeModulesModalProps) {
   return (
     <Modal opened={attribute !== null} onClose={onClose} title={`Modules for "${attribute?.name ?? ''}"`} centered>
@@ -33,13 +33,14 @@ function AttributeModulesForm({
 }) {
   const setModules = useSetAttributeModules(projectId);
   const [modules, setModulesValue] = useState<string[]>(attribute.modules ?? []);
+  const [moduleTypes, setModuleTypes] = useState<ModuleType[]>(attribute.module_types ?? []);
   const [dropValues, setDropValues] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSave = () => {
     setError(null);
     setModules.mutate(
-      { attrId: attribute.id, modules, dropValues },
+      { attrId: attribute.id, modules, moduleTypes, dropValues },
       {
         onSuccess: (result) => {
           const dropped = result.dropped_values.length;
@@ -63,6 +64,8 @@ function AttributeModulesForm({
         projectId={projectId}
         value={modules}
         onChange={setModulesValue}
+        types={moduleTypes}
+        onTypesChange={setModuleTypes}
         disabled={setModules.isPending}
       />
       <Checkbox

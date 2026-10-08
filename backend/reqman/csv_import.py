@@ -37,7 +37,9 @@ Rules:
   number.
 - **Values**: an empty cell means "not set". ``integer`` accepts an optional
   sign and ASCII digits 0-9. ``boolean`` accepts true/false, yes/no, y/n and
-  1/0 (any case). ``string``/``text``/``enum`` are kept verbatim.
+  1/0 (any case). ``date`` is stripped of surrounding blanks and must then be
+  ``YYYY-MM-DD`` (checked by ``validate``). ``string``/``text``/``enum`` are
+  kept verbatim.
 - **Row validation**: once every cell of a row has been converted, the row's
   values go to ``validate`` (enum choices, required attributes without a
   default, ...), and each problem it returns is reported for that row.
@@ -126,6 +128,8 @@ def _coerce(attr: Any, raw: str) -> Any:
         if text in _FALSE_VALUES:
             return False
         raise ValueError(f"'{raw}' is not a boolean (use true/false, yes/no or 1/0)")
+    if attr.type == "date":
+        return raw.strip()
     return raw
 
 

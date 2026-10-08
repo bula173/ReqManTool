@@ -4,6 +4,7 @@ import { notifications } from '@mantine/notifications';
 import { useEffect, useState } from 'react';
 import { useAddRequirement, useMoveRequirement } from '../api/queries';
 import { ApiError } from '../api/client';
+import { isIsoDate } from '../api/dates';
 import type { AttributeDefinition } from '../api/types';
 import { LazyRichTextField } from './LazyRichTextField';
 import { richTextToPlain } from './richText';
@@ -45,6 +46,8 @@ function hasUsableDefault(attr: AttributeDefinition): boolean {
       return typeof value === 'boolean';
     case 'enum':
       return typeof value === 'string' && (attr.choices ?? []).includes(value);
+    case 'date':
+      return isIsoDate(value);
     default:
       return typeof value === 'string' && richTextToPlain(value).trim() !== '';
   }
@@ -64,7 +67,7 @@ function isBlank(value: unknown): boolean {
 /**
  * Turn form values into the typed attribute values the server accepts:
  * integers as whole numbers, booleans as booleans, enums as one of the
- * choices. An empty integer or enum field is sent as null when the
+ * choices, dates as `YYYY-MM-DD`. An empty integer, enum or date field is sent as null when the
  * attribute has a default (the user cleared it, so the server must not
  * apply the default), and left out otherwise.
  */
@@ -87,6 +90,7 @@ function toAttributePayload(
         break;
       }
       case 'enum':
+      case 'date':
         if (cleared) {
           if (hasUsableDefault(attr)) payload[attr.id] = null;
           break;
@@ -130,8 +134,11 @@ export function RequirementFormModal({
     validate: (values) => {
       const errors: Record<string, string> = {};
       for (const attr of editableAttributes) {
-        if (attr.required && attr.type !== 'boolean' && isBlank(values.attrs[attr.id])) {
+        const value = values.attrs[attr.id];
+        if (attr.required && attr.type !== 'boolean' && isBlank(value)) {
           errors[`attrs.${attr.id}`] = `${attr.name} is required`;
+        } else if (attr.type === 'date' && !isBlank(value) && !isIsoDate(value)) {
+          errors[`attrs.${attr.id}`] = `${attr.name} must be a date (YYYY-MM-DD)`;
         }
       }
       return errors;
@@ -233,6 +240,9 @@ export function RequirementFormModal({
                     {...form.getInputProps(path)}
                   />
                 );
+              case 'date':
+                // Native date picker: the value is `YYYY-MM-DD`, or '' while empty.
+                return <TextInput key={attr.id} label={label} type="date" {...form.getInputProps(path)} />;
               default:
                 return <TextInput key={attr.id} label={label} {...form.getInputProps(path)} />;
             }

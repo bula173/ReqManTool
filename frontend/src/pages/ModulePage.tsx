@@ -207,7 +207,7 @@ export function ModulePage() {
   }
 
   // Only the attributes that apply to this module: table, views, detail panel and forms.
-  const attributes = applicableAttributes(projectQuery.data.attributes, moduleId);
+  const attributes = applicableAttributes(projectQuery.data.attributes, moduleQuery.data);
   const requirements = requirementsQuery.data;
   const module = moduleQuery.data;
   const rows = flattenTree(requirements, collapsed);

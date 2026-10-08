@@ -41,11 +41,13 @@ import {
   useRemoveView,
   useReorderModule,
 } from '../api/queries';
-import { REQUIRED_SCOPE_HINT } from '../api/applicability';
+import { attributeScopeLabel, REQUIRED_SCOPE_HINT } from '../api/applicability';
+import { MODULE_TYPE_LABELS, moduleTypeOf } from '../api/moduleTypes';
 import { AddAttributeModal } from '../components/AddAttributeModal';
 import { AttributeModulesModal } from '../components/AttributeModulesModal';
 import { GitStatusPanel } from '../components/GitStatusPanel';
 import { LinkConfigurationModal } from '../components/LinkConfigurationModal';
+import { ModuleTypeIcon } from '../components/ModuleTypeIcon';
 import { ProjectParentModal } from '../components/ProjectParentModal';
 import { richTextToPlain } from '../components/richText';
 import { ViewModal } from '../components/ViewModal';
@@ -269,13 +271,11 @@ export function ProjectPage() {
                 <Table.Td>{attr.default === null || attr.default === undefined ? '—' : richTextToPlain(attr.default)}</Table.Td>
                 <Table.Td>{attr.choices ? attr.choices.join(', ') : '—'}</Table.Td>
                 <Table.Td>
-                  {!attr.required && attr.modules && attr.modules.length > 0
-                    ? attr.modules.map(moduleLabel).join(', ')
-                    : 'All'}
+                  {attributeScopeLabel(attr, moduleLabel)}
                 </Table.Td>
                 <Table.Td>
                   {attr.id !== 'object_text' && (
-                    <Tooltip label={attr.required ? `${REQUIRED_SCOPE_HINT}; only optional ones can be limited` : 'Modules it applies to'}>
+                    <Tooltip label={attr.required ? `${REQUIRED_SCOPE_HINT}; only optional ones can be limited` : 'Modules and module types it applies to'}>
                       <ActionIcon
                         variant="subtle"
                         aria-label={`Modules for ${attr.name}`}
@@ -414,6 +414,7 @@ export function ProjectPage() {
             >
               <Group gap="xs" justify="space-between" wrap="nowrap">
                 <Group gap="xs">
+                  <ModuleTypeIcon module={module} size={16} />
                   <Text fw={600}>{module.name}</Text>
                   <Badge size="sm" variant="outline">
                     {module.prefix}
@@ -444,6 +445,9 @@ export function ProjectPage() {
                   </Tooltip>
                 </Group>
               </Group>
+              <Text size="xs" c="dimmed">
+                {MODULE_TYPE_LABELS[moduleTypeOf(module)]}
+              </Text>
               <Text size="sm" c="dimmed" lineClamp={2}>
                 {module.description || 'No description'}
               </Text>

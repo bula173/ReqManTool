@@ -28,6 +28,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, replace
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
@@ -36,7 +37,18 @@ from .formats import PROJECT_FORMAT, NewerFormatError, upgrade
 from .git_repo import DEFAULT_LOG_LIMIT, LOG_LIMIT, GitError, GitHistory, RepoConflict, local_remote_path
 from .history import FileChange, build_snapshot, compare_snapshots, describe_changes
 from . import richtext
-from .models import AttributeDefinition, LinkConfiguration, LinkPair, Module, Project, Requirement, RowStyle, View
+from .models import (
+    DEFAULT_MODULE_TYPE,
+    MODULE_TYPES,
+    AttributeDefinition,
+    LinkConfiguration,
+    LinkPair,
+    Module,
+    Project,
+    Requirement,
+    RowStyle,
+    View,
+)
 from .store import PROJECT_SLUG_PATTERN, ProjectStore, validate_prefix
 from .templates import (
     BUILTIN_SOURCE,
@@ -64,7 +76,21 @@ BUILTIN_ATTRIBUTES = [
     AttributeDefinition(id="object_text", name="ObjectText", type="text", required=True),
 ]
 
-ATTRIBUTE_TYPES = ("string", "text", "integer", "boolean", "enum")
+ATTRIBUTE_TYPES = ("string", "text", "integer", "boolean", "enum", "date")
+
+# A ``date`` attribute value: an ISO 8601 calendar date ``YYYY-MM-DD`` (a
+# string, so it sorts and compares as text and round-trips through CSV).
+_ISO_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+
+# The (source module type, target module type) pairs a link configuration may
+# join: requirements trace to requirements, test cases verify requirements and
+# test executions execute test cases. Checked when a configuration is created
+# (API or template); configurations already stored are never rejected.
+LINK_TYPE_PAIRS = (
+    ("requirements", "requirements"),
+    ("test_cases", "requirements"),
+    ("test_execution", "test_cases"),
+)
 
 # Shared view column widths (``View.column_widths``): the key of the
 # requirements table's Id column (attribute ids name the other columns) and
@@ -819,28 +845,37 @@ class ProjectService:
         default: Any = None,
         choices: list[str] | None = None,
         modules: list[str] | None = None,
+        module_types: list[str] | None = None,
     ) -> Project:
-        """Add an attribute definition, optionally scoped to some modules.
+        """Add an attribute definition, optionally scoped to some modules and/or module types.
 
-        ``modules`` lists the module ids the attribute applies to; ``None``
-        or an empty list means every module (see ``_attribute_applies``).
-        Only an optional attribute can be scoped (``_check_required_scope``).
+        ``modules`` lists the module ids the attribute applies to and
+        ``module_types`` the module types it applies to (every module of
+        such a type); the attribute applies to a module named by either.
+        ``None`` or empty for both means every module (see
+        ``_attribute_applies``). Only an optional attribute can be scoped
+        (``_check_required_scope``).
         """
         project = self.store.load_project(project_id)
         definition = self._new_attribute_definition(project, attr_id, name, type, required, default, choices)
         definition.modules = self._checked_attribute_modules(project, modules)
-        self._check_required_scope(definition.name, definition.required, definition.modules)
+        definition.module_types = self._checked_module_types(module_types)
+        self._check_required_scope(
+            definition.name, definition.required, [*definition.modules, *definition.module_types]
+        )
         project.attributes.append(definition)
         self.store.save_project(project)
         return project
 
     @_records_history
     def set_attribute_modules(
-        self, project_id: str, attr_id: str, modules: Any, drop_values: Any = False
+        self, project_id: str, attr_id: str, modules: Any, drop_values: Any = False, module_types: Any = None
     ) -> dict[str, Any]:
-        """Change the modules an attribute applies to (empty: every module).
+        """Change the modules and module types an attribute applies to (both empty: every module).
 
-        Values the attribute has in requirements of modules outside the new
+        The whole scope is replaced: ``module_types`` omitted (``None``)
+        means no type scope, like an empty list. Values the attribute has in
+        requirements of modules outside the new
         scope cannot stay: a non-blank value is refused (``ValueError``)
         unless ``drop_values`` is true, in which case it is removed and
         reported in ``dropped_values``. Blank values there are removed
@@ -859,12 +894,15 @@ class ProjectService:
         if attr.id in {a.id for a in BUILTIN_ATTRIBUTES}:
             raise ValueError(f"Attribute '{attr.name}' is built in and applies to every module")
         scope = self._checked_attribute_modules(project, modules)
-        self._check_required_scope(attr.name, attr.required, scope)
+        type_scope = self._checked_module_types(module_types)
+        self._check_required_scope(attr.name, attr.required, [*scope, *type_scope])
+        scoped = replace(attr, modules=scope, module_types=type_scope)
 
         outside: list[tuple[str, Requirement]] = []
-        if scope:
-            for module_id in self._module_order(project):
-                if module_id in scope:
+        if scope or type_scope:
+            for module in self.list_modules(project_id):
+                module_id = module.id
+                if self._attribute_applies(scoped, module_id, module.type):
                     continue
                 outside.extend(
                     (module_id, r)
@@ -881,6 +919,7 @@ class ProjectService:
             )
 
         attr.modules = scope
+        attr.module_types = type_scope
         for module_id, requirement in outside:
             del requirement.attributes[attr_id]
             self.store.save_requirement(project_id, module_id, requirement)
@@ -908,6 +947,31 @@ class ProjectService:
         return [module_id for module_id in order if module_id in wanted]
 
     @staticmethod
+    def _checked_module_types(module_types: Any) -> list[str]:
+        """``module_types`` as a stored attribute type scope, in ``MODULE_TYPES`` order.
+
+        ``None`` or an empty list means no type scope (stored as ``[]``).
+        Duplicates collapse; an unknown type is refused.
+        """
+        if module_types is None:
+            return []
+        if not isinstance(module_types, list) or not all(isinstance(t, str) for t in module_types):
+            raise ValueError("Attribute module_types must be a list of module types")
+        unknown = sorted(set(module_types) - set(MODULE_TYPES))
+        if unknown:
+            raise ValueError(f"Unknown module type(s) {unknown}; expected some of {', '.join(MODULE_TYPES)}")
+        return [t for t in MODULE_TYPES if t in module_types]
+
+    @staticmethod
+    def _checked_module_type(module_type: Any) -> str:
+        """``module_type`` if it is one of ``MODULE_TYPES`` (``None``: the default ``requirements``)."""
+        if module_type is None:
+            return DEFAULT_MODULE_TYPE
+        if not isinstance(module_type, str) or module_type not in MODULE_TYPES:
+            raise ValueError(f"Unknown module type {module_type!r}; expected one of {', '.join(MODULE_TYPES)}")
+        return module_type
+
+    @staticmethod
     def _check_required_scope(name: Any, required: Any, scope: list[str]) -> None:
         """Refuse to limit a required attribute to some modules.
 
@@ -922,29 +986,39 @@ class ProjectService:
             )
 
     @staticmethod
-    def _attribute_applies(attr: AttributeDefinition, module_id: str) -> bool:
-        """Whether ``attr`` applies to requirements of ``module_id``.
+    def _attribute_applies(attr: AttributeDefinition, module_id: str, module_type: str) -> bool:
+        """Whether ``attr`` applies to requirements of module ``module_id`` of type ``module_type``.
 
-        An attribute without a module list applies everywhere. Ids in the
-        list that name no existing module (hand-edited data) are harmless.
-        A required attribute applies everywhere even if a hand-edited file
-        gives it a module list: the API never lets one be scoped, and the
-        stored list is kept (not rewritten) until the scope is reset.
+        An attribute without a module list and without a module type list
+        applies everywhere. Otherwise it applies to the modules it lists and
+        to every module of a type it lists. Ids or types in the lists that
+        name nothing (hand-edited data) are harmless. A required attribute
+        applies everywhere even if a hand-edited file gives it a scope: the
+        API never lets one be scoped, and the stored lists are kept (not
+        rewritten) until the scope is reset.
         """
-        return bool(attr.required) or not attr.modules or module_id in attr.modules
+        if attr.required or (not attr.modules and not attr.module_types):
+            return True
+        return module_id in attr.modules or module_type in attr.module_types
+
+    def _module_type(self, project_id: str, module_id: str) -> str:
+        """The type of an existing module (``FileNotFoundError`` if it does not exist)."""
+        return self.store.load_module(project_id, module_id).type
 
     @classmethod
     def _applicable_values(
-        cls, project: Project, module_id: str, attributes: dict[str, Any]
+        cls, project: Project, module: Module, attributes: dict[str, Any]
     ) -> tuple[dict[str, Any], list[str]]:
-        """``attributes`` without the values of attributes that do not apply to ``module_id``.
+        """``attributes`` without the values of attributes that do not apply to ``module``.
 
         Returns the kept values and the dropped attribute ids (in project
         attribute order). Unknown keys are kept. Used by the exports; moving
         or copying a requirement to another module must use it too.
         """
         excluded = [
-            a.id for a in project.attributes if a.id in attributes and not cls._attribute_applies(a, module_id)
+            a.id
+            for a in project.attributes
+            if a.id in attributes and not cls._attribute_applies(a, module.id, module.type)
         ]
         if not excluded:
             return attributes, []
@@ -1131,8 +1205,14 @@ class ProjectService:
     # --- modules ----------------------------------------------------------------
 
     @_records_history
-    def create_module(self, project_id: str, name: str, prefix: str, description: str = "") -> Module:
+    def create_module(
+        self, project_id: str, name: str, prefix: str, description: str = "", type: Any = None
+    ) -> Module:
         """Create a module, appended at the end of the project's module order.
+
+        ``type`` is one of ``MODULE_TYPES`` (``None``: ``requirements``); it
+        is chosen at creation and cannot be changed later, so the link
+        configurations checked against it stay valid.
 
         The module file is written first, then project.json with the new
         order. If the second write fails, the module is still listed: an
@@ -1140,13 +1220,14 @@ class ProjectService:
         """
         project = self.store.load_project(project_id)
         validate_prefix(prefix)
+        module_type = self._checked_module_type(type)
         module_id = _unique_slug(
             name,
             lambda c: self.store.module_exists(project_id, c),
             fallback="module",
             max_length=self.store.max_name_length(),
         )
-        module = Module(id=module_id, name=name, prefix=prefix, description=description)
+        module = Module(id=module_id, name=name, prefix=prefix, description=description, type=module_type)
         order = self._module_order(project)
         self.store.save_module(project_id, module)
         project.module_order = [*order, module_id]
@@ -1224,10 +1305,24 @@ class ProjectService:
         elif attr.type in ("string", "text"):
             if not isinstance(value, str):
                 return f"{attr.name}: expected a string, got {type(value).__name__}"
+        elif attr.type == "date":
+            if not ProjectService._is_iso_date(value):
+                return f"{attr.name}: '{value}' is not a date (expected YYYY-MM-DD)"
         return None
 
+    @staticmethod
+    def _is_iso_date(value: Any) -> bool:
+        """Whether ``value`` is an existing calendar date written ``YYYY-MM-DD``."""
+        if not isinstance(value, str) or not _ISO_DATE.match(value):
+            return False
+        try:
+            date.fromisoformat(value)
+        except ValueError:
+            return False
+        return True
+
     def _attribute_problems(
-        self, project: Project, attributes: dict[str, Any], *, is_create: bool, module_id: str
+        self, project: Project, attributes: dict[str, Any], *, is_create: bool, module_id: str, module_type: str
     ) -> list[str]:
         """Every reason ``attributes`` cannot be written, in a stable order.
 
@@ -1235,8 +1330,9 @@ class ProjectService:
         add and update (via ``_validate_attributes``) and the CSV import (one
         call per row) all use it. ``attributes`` must hold typed values; the
         CSV import parses text cells before calling this. ``module_id`` is the
-        requirement's module: an attribute that does not apply to it cannot be
-        written, and is neither required nor defaulted there.
+        requirement's module (of type ``module_type``): an attribute that does
+        not apply to it cannot be written, and is neither required nor
+        defaulted there.
         """
         defined = {a.id: a for a in project.attributes}
         unknown = set(attributes) - set(defined)
@@ -1246,7 +1342,9 @@ class ProjectService:
         if system_ids:
             return [f"Attribute(s) are system-managed and cannot be set directly: {sorted(system_ids)}"]
         not_applicable = [
-            a.name for a in project.attributes if a.id in attributes and not self._attribute_applies(a, module_id)
+            a.name
+            for a in project.attributes
+            if a.id in attributes and not self._attribute_applies(a, module_id, module_type)
         ]
         if not_applicable:
             return [f"Attribute(s) do not apply to module '{module_id}': {not_applicable}"]
@@ -1261,11 +1359,11 @@ class ProjectService:
         # an omitted attribute gets its (valid) default; an explicit blank
         # value overrides the default and so is rejected. On update, only the
         # attributes being written are checked.
-        effective = self._merged_attributes(project, attributes, module_id) if is_create else attributes
+        effective = self._merged_attributes(project, attributes, module_id, module_type) if is_create else attributes
         for attr in project.attributes:
             if not attr.required or attr.system or attr.id in invalid_ids:
                 continue
-            if not self._attribute_applies(attr, module_id):
+            if not self._attribute_applies(attr, module_id, module_type):
                 continue
             if (is_create or attr.id in attributes) and self._is_blank(effective.get(attr.id)):
                 problems.append(f"required attribute '{attr.name}' is empty")
@@ -1296,16 +1394,20 @@ class ProjectService:
         }
 
     def _validate_attributes(
-        self, project: Project, attributes: dict[str, Any], *, is_create: bool, module_id: str
+        self, project: Project, attributes: dict[str, Any], *, is_create: bool, module_id: str, module_type: str
     ) -> None:
         if not isinstance(attributes, dict):
             raise ValueError("Attributes must be an object")
-        problems = self._attribute_problems(project, attributes, is_create=is_create, module_id=module_id)
+        problems = self._attribute_problems(
+            project, attributes, is_create=is_create, module_id=module_id, module_type=module_type
+        )
         if problems:
             raise ValueError("; ".join(problems))
 
     @classmethod
-    def _merged_attributes(cls, project: Project, attributes: dict[str, Any], module_id: str) -> dict[str, Any]:
+    def _merged_attributes(
+        cls, project: Project, attributes: dict[str, Any], module_id: str, module_type: str
+    ) -> dict[str, Any]:
         """Attribute defaults overlaid with ``attributes``.
 
         System attributes, and attributes that do not apply to ``module_id``,
@@ -1323,7 +1425,7 @@ class ProjectService:
                 a.id in attributes
                 or a.default is None
                 or a.system
-                or not cls._attribute_applies(a, module_id)
+                or not cls._attribute_applies(a, module_id, module_type)
                 or cls._value_problem(a, a.default) is not None
             ):
                 continue
@@ -1395,8 +1497,8 @@ class ProjectService:
             raise FileNotFoundError(f"Requirement '{parent_id}' not found in module '{module_id}'")
 
         attributes = self._sanitized_text_values(project, attributes)
-        self._validate_attributes(project, attributes, is_create=True, module_id=module_id)
-        merged = self._merged_attributes(project, attributes, module_id)
+        self._validate_attributes(project, attributes, is_create=True, module_id=module_id, module_type=module.type)
+        merged = self._merged_attributes(project, attributes, module_id, module.type)
 
         requirement_id = self._allocate_requirement_id(project, module)
         siblings = self.store.load_all_requirements(project_id, module_id)
@@ -1549,8 +1651,9 @@ class ProjectService:
         self, project_id: str, module_id: str, requirement_id: str, attributes: dict[str, Any]
     ) -> Requirement:
         project = self.store.load_project(project_id)
+        module_type = self._module_type(project_id, module_id)
         attributes = self._sanitized_text_values(project, attributes)
-        self._validate_attributes(project, attributes, is_create=False, module_id=module_id)
+        self._validate_attributes(project, attributes, is_create=False, module_id=module_id, module_type=module_type)
         requirement = self.store.load_requirement(project_id, module_id, requirement_id)
         self._mark_rich_text_format(project, attributes)
         requirement.attributes.update(attributes)
@@ -1655,21 +1758,30 @@ class ProjectService:
             raise FileNotFoundError(f"Module '{source_module_id}' not found in project '{project_id}'")
         if not self.store.module_exists(project_id, target_module_id):
             raise FileNotFoundError(f"Module '{target_module_id}' not found in project '{project_id}'")
-        config = self._add_link_configuration(project, name, source_module_id, target_module_id)
+        config = self._add_link_configuration(
+            project,
+            name,
+            self.store.load_module(project_id, source_module_id),
+            self.store.load_module(project_id, target_module_id),
+        )
         self.store.save_project(project)
         self.store.save_link_pairs(project_id, config.id, [])
         return config
 
     def _add_link_configuration(
-        self, project: Project, name: Any, source_module_id: str, target_module_id: str
+        self, project: Project, name: Any, source: Module, target: Module
     ) -> LinkConfiguration:
         """Add a link configuration and its system mirror attribute to ``project`` in memory.
 
-        The caller has checked that both modules exist and saves the project.
+        The caller passes the two (existing) modules and saves the project.
+        The modules' types must form one of ``LINK_TYPE_PAIRS``
+        (``_check_link_types``).
         """
         # The link's mirror attribute heads its own export column, so the link
         # name follows the attribute name rule.
         name = self._checked_attribute_name(project, name, kind="Link")
+        self._check_link_types(source, target)
+        source_module_id, target_module_id = source.id, target.id
 
         taken_ids = {c.id for c in project.link_configurations} | {a.id for a in project.attributes}
         config_id = _unique_slug(name, lambda c: c in taken_ids, fallback="link")
@@ -1685,6 +1797,23 @@ class ProjectService:
             AttributeDefinition(id=config_id, name=name, type="text", required=False, system=True)
         )
         return config
+
+    @staticmethod
+    def _check_link_types(source: Module, target: Module) -> None:
+        """Refuse a link configuration between module types that do not trace to each other.
+
+        Allowed (source → target): requirements → requirements, test cases →
+        requirements, test execution → test cases (``LINK_TYPE_PAIRS``).
+        Only new configurations are checked: one already stored (hand-edited
+        data) keeps loading and working.
+        """
+        if (source.type, target.type) in LINK_TYPE_PAIRS:
+            return
+        allowed = ", ".join(f"{s} → {t}" for s, t in LINK_TYPE_PAIRS)
+        raise ValueError(
+            f"A link from module '{source.name}' ({source.type}) to module '{target.name}' ({target.type}) "
+            f"is not allowed; link configurations join {allowed}"
+        )
 
     def list_link_configurations(self, project_id: str) -> list[LinkConfiguration]:
         return self.store.load_project(project_id).link_configurations
@@ -2011,31 +2140,45 @@ class ProjectService:
             taken = set(module_ids.values())
             module_id = _unique_slug(tmodule.name, lambda c: c in taken, fallback="module")
             module_ids[tmodule.key] = module_id
+            try:
+                module_type = self._checked_module_type(tmodule.type)
+            except ValueError as exc:
+                raise ValueError(f"modules[{index}] ('{tmodule.name}'): {exc}") from exc
             modules.append(
-                Module(id=module_id, name=tmodule.name, prefix=tmodule.prefix, description=tmodule.description)
+                Module(
+                    id=module_id,
+                    name=tmodule.name,
+                    prefix=tmodule.prefix,
+                    description=tmodule.description,
+                    type=module_type,
+                )
             )
         # The template's declared module order, not the modules' id order.
         project.module_order = [m.id for m in modules]
         # Attribute scopes name module keys (checked by ``parse_template``);
         # stored as module ids in module order.
         for index, tattr in enumerate(template.attributes):
-            if tattr.modules:
+            if tattr.modules or tattr.module_types:
                 definition = next(a for a in project.attributes if a.id == tattr.id)
                 try:
-                    self._check_required_scope(definition.name, definition.required, tattr.modules)
+                    definition.module_types = self._checked_module_types(tattr.module_types)
+                    self._check_required_scope(
+                        definition.name, definition.required, [*tattr.modules, *definition.module_types]
+                    )
                 except ValueError as exc:
                     raise ValueError(f"attributes[{index}] ('{tattr.id}'): {exc}") from exc
                 wanted = {module_ids[key] for key in tattr.modules}
                 definition.modules = [m.id for m in modules if m.id in wanted]
 
         link_ids: dict[str, str] = {}
+        modules_by_id = {m.id: m for m in modules}
         for index, tconfig in enumerate(template.link_configurations):
             try:
                 config = self._add_link_configuration(
                     project,
                     tconfig.name,
-                    module_ids[tconfig.source_module],
-                    module_ids[tconfig.target_module],
+                    modules_by_id[module_ids[tconfig.source_module]],
+                    modules_by_id[module_ids[tconfig.target_module]],
                 )
             except ValueError as exc:
                 raise ValueError(f"link_configurations[{index}] ('{tconfig.key}'): {exc}") from exc
@@ -2077,7 +2220,10 @@ class ProjectService:
             "source": template.source,
             "name": template.name,
             "description": template.description,
-            "modules": [{"key": m.key, "name": m.name, "prefix": m.prefix} for m in template.modules],
+            "modules": [
+                {"key": m.key, "name": m.name, "prefix": m.prefix, "type": m.type or DEFAULT_MODULE_TYPE}
+                for m in template.modules
+            ],
             "error": None,
         }
 
@@ -2143,6 +2289,7 @@ class ProjectService:
                 # A required attribute applies to every module, whatever a
                 # hand-edited file lists (see ``_attribute_applies``).
                 modules=[] if a.required else [m.id for m in modules if m.id in a.modules],
+                module_types=[] if a.required else [t for t in MODULE_TYPES if t in a.module_types],
             )
             for a in project.attributes
             if not a.system and a.id not in builtin_ids
@@ -2166,7 +2313,7 @@ class ProjectService:
             description=description,
             attributes=attributes,
             modules=[
-                TemplateModule(key=m.id, name=m.name, prefix=m.prefix, description=m.description)
+                TemplateModule(key=m.id, name=m.name, prefix=m.prefix, description=m.description, type=m.type)
                 for m in modules
             ],
             link_configurations=[
@@ -2290,7 +2437,7 @@ class ProjectService:
         for module in self.list_modules(project.id):
             requirements = []
             for requirement in self.store.load_all_requirements(project.id, module.id):
-                kept, dropped = self._applicable_values(project, module.id, requirement.attributes)
+                kept, dropped = self._applicable_values(project, module, requirement.attributes)
                 rich = [
                     k for k in text_ids
                     if richtext.is_rich(kept.get(k)) and not (keep_rich and richtext.blocks(kept[k]))
@@ -2362,9 +2509,9 @@ class ProjectService:
             project.attributes,
             csv_text,
             validate=lambda values: self._attribute_problems(
-                project, values, is_create=True, module_id=module_id
+                project, values, is_create=True, module_id=module_id, module_type=module.type
             ),
-            applies=lambda attr: self._attribute_applies(attr, module_id),
+            applies=lambda attr: self._attribute_applies(attr, module_id, module.type),
         )
 
         existing = self.store.load_all_requirements(project_id, module_id)
@@ -2388,7 +2535,7 @@ class ProjectService:
                 k: richtext.from_plain(v) if k in text_ids and isinstance(v, str) else v
                 for k, v in row.attributes.items()
             }
-            attributes = self._merged_attributes(project, values, module_id)
+            attributes = self._merged_attributes(project, values, module_id, module.type)
             created.append(Requirement(id=requirement_id, attributes=attributes, parent_id=parent_id, order=order))
 
         self._write_new_requirements(project, module_id, created)

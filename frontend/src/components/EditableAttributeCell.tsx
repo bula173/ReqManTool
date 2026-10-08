@@ -142,6 +142,13 @@ function DisplayValue({
   if (attr.type === 'text' && isRichText(value)) {
     return <RichTextView value={value} wrap={wrap} />;
   }
+  if (attr.type === 'date') {
+    return (
+      <Text size="sm" style={{ whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+        {String(value)}
+      </Text>
+    );
+  }
   if (wrap === false) {
     return (
       <Text size="sm" truncate="end" title={String(value)}>
@@ -172,6 +179,10 @@ function coerceValue(attr: AttributeDefinition, raw: unknown): unknown {
     // NumberInput reports a partial entry such as "-" as a string; send numbers only.
     const n = typeof raw === 'number' ? raw : Number(raw);
     return Number.isNaN(n) ? null : n;
+  }
+  if (attr.type === 'date') {
+    // The native date input reports '' while empty or incomplete.
+    return raw === '' || raw === undefined ? null : raw;
   }
   return raw;
 }
@@ -271,6 +282,19 @@ export function EditableAttributeCell({
               setEditing(false);
             }}
             onBlur={cancel}
+          />
+        );
+      case 'date':
+        // Native date picker; the value is always `YYYY-MM-DD` (or '' while empty).
+        return (
+          <TextInput
+            ref={inputRef as Ref<HTMLInputElement>}
+            type="date"
+            aria-label={attr.name}
+            value={typeof draft === 'string' ? draft : ''}
+            onChange={(e) => setDraft(e.currentTarget.value)}
+            onBlur={commit}
+            onKeyDown={commonKeyDown}
           />
         );
       case 'enum':

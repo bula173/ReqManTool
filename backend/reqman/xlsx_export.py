@@ -8,11 +8,16 @@ trivially testable and side-effect free.
 from __future__ import annotations
 
 import io
+import re
+from datetime import date
 from typing import Any, Sequence, Tuple
 
 from openpyxl import Workbook
 
 from .ordering import tree_order
+
+_ISO_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+DATE_NUMBER_FORMAT = "yyyy-mm-dd"
 
 
 def export_project_to_xlsx(
@@ -41,7 +46,10 @@ def export_project_to_xlsx(
 
         Every string value is stored as a string cell (``data_type`` ``'s'``),
         so text such as ``=1+1`` is shown verbatim and never becomes a live
-        formula. Integers and booleans keep their native cell types.
+        formula. Integers and booleans keep their native cell types. A valid
+        ``date`` attribute value (``YYYY-MM-DD``) becomes a date cell shown
+        as ``yyyy-mm-dd``, so spreadsheets sort and filter it as a date; an
+        invalid one (hand-edited data) stays a string cell.
     """
     workbook = Workbook()
     sheet = workbook.active
@@ -52,16 +60,32 @@ def export_project_to_xlsx(
 
     for module, requirements in modules:
         for requirement in tree_order(requirements):
-            row = [requirement.id, module.id, requirement.parent_id or ""]
+            row: list[Any] = [requirement.id, module.id, requirement.parent_id or ""]
             for attr in project.attributes:
                 value = requirement.attributes.get(attr.id, "")
+                if getattr(attr, "type", None) == "date":
+                    value = _as_date(value)
                 row.append("" if value is None else value)
             sheet.append(row)
-            _force_text_cells(sheet[sheet.max_row], row)
+            cells = sheet[sheet.max_row]
+            _force_text_cells(cells, row)
+            for cell, value in zip(cells, row):
+                if isinstance(value, date):
+                    cell.number_format = DATE_NUMBER_FORMAT
 
     buffer = io.BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()
+
+
+def _as_date(value: Any) -> Any:
+    """A valid ``YYYY-MM-DD`` string as a ``date``; anything else unchanged."""
+    if isinstance(value, str) and _ISO_DATE.match(value):
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return value
+    return value
 
 
 def _force_text_cells(cells: Sequence[Any], values: Sequence[Any]) -> None:

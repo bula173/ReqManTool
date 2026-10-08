@@ -5,6 +5,7 @@ import { useAppActions } from '../actions/context';
 import { MODULE_TAB_MENU } from '../actions/registry';
 import { contextMenuTargetProps } from '../actions/shortcuts';
 import { useModule, useProject } from '../api/queries';
+import { ModuleTypeIcon } from '../components/ModuleTypeIcon';
 import { hasRequirementDragData, TAB_DRAG_MIME } from '../components/requirementDrag';
 import { tabKey, type ModuleTabRef } from './moduleTabs';
 
@@ -117,6 +118,7 @@ function ModuleTabItem({ tab, index, active, dropBefore, onDropIndicator }: Modu
     >
       {loading && <Loader size={12} />}
       {failed && <IconAlertTriangle size={14} color="var(--mantine-color-red-filled)" aria-hidden />}
+      {!loading && !failed && <ModuleTypeIcon module={moduleQuery.data} size={14} style={{ flexShrink: 0 }} />}
       <span className="reqman-tab-label">{label}</span>
       <ActionIcon
         variant="subtle"
