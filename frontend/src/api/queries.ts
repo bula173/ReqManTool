@@ -36,7 +36,15 @@ import type {
   ProjectReferences,
   ProjectRemovalInfo,
   ProjectRemovalResult,
+  ProjectProviderInfo,
+  ProviderConnection,
+  ProviderKind,
+  ProviderNamespace,
+  ProviderRepositoryPage,
+  PublishProjectResult,
   Requirement,
+  ReviewStatus,
+  StartReviewResult,
   RequirementHistory,
   RowStyle,
   SetAttributeModulesResult,
@@ -132,6 +140,19 @@ export const queryKeys = {
   moduleTemplates: ['module-templates'] as const,
   /** The AI prompt library (GET /prompts); refetched on `prompts_changed`. */
   prompts: ['prompts'] as const,
+  /** GitLab/GitHub connections (app-level); refetched on `connections_changed`. */
+  providerConnections: ['provider-connections'] as const,
+  providerNamespaces: (connectionId: string) => ['provider-connections', connectionId, 'namespaces'] as const,
+  providerRepositories: (connectionId: string, search: string, page: number) =>
+    ['provider-connections', connectionId, 'repositories', search, page] as const,
+  /** Which connection the project's remote belongs to (local, cheap: under `git`, refreshed with it). */
+  gitProvider: (projectId: string) => ['projects', projectId, 'git', 'provider'] as const,
+  /**
+   * The tracked merge/pull request, live from the provider. Deliberately not
+   * under `projects`: every project change would otherwise call the provider
+   * API. Refreshed explicitly (review actions, push) and on demand.
+   */
+  gitReview: (projectId: string) => ['git-review', projectId] as const,
 };
 
 // --- version -----------------------------------------------------------
@@ -657,6 +678,159 @@ export function useAddProjectFromRemote() {
     mutationFn: (url: string) => api.post<Project>('/projects/from-remote', { url }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.projects });
+    },
+  });
+}
+
+// --- GitLab / GitHub (providers) ----------------------------------------------
+
+/** The GitLab/GitHub connections (never their tokens). */
+export function useProviderConnections(enabled = true): UseQueryResult<ProviderConnection[]> {
+  return useQuery({
+    queryKey: queryKeys.providerConnections,
+    queryFn: () => api.get<ProviderConnection[]>('/providers/connections'),
+    enabled,
+  });
+}
+
+/** Adds a connection: the server verifies the token with the provider and stores it in its OS keychain. */
+export function useAddProviderConnection() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { provider: ProviderKind; url: string; name: string; token: string }) =>
+      api.post<ProviderConnection>('/providers/connections', body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.providerConnections }),
+  });
+}
+
+/** Renames a connection and/or replaces its token (`token` omitted: kept). */
+export function useUpdateProviderConnection() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string; name?: string; token?: string }) =>
+      api.put<ProviderConnection>(`/providers/connections/${encodeURIComponent(id)}`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.providerConnections }),
+  });
+}
+
+/** Removes a connection and its keychain token; project remotes stay configured. */
+export function useRemoveProviderConnection() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.delete<{ id: string; removed: boolean }>(`/providers/connections/${encodeURIComponent(id)}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.providerConnections });
+      qc.invalidateQueries({ predicate: (query) => query.queryKey[2] === 'git' && query.queryKey[3] === 'provider' });
+    },
+  });
+}
+
+/** Where a repository can be created (the user's namespace first, then groups / organisations). */
+export function useProviderNamespaces(connectionId: string | null): UseQueryResult<ProviderNamespace[]> {
+  return useQuery({
+    queryKey: queryKeys.providerNamespaces(connectionId ?? ''),
+    queryFn: () => api.get<ProviderNamespace[]>(`/providers/connections/${encodeURIComponent(connectionId ?? '')}/namespaces`),
+    enabled: !!connectionId,
+    retry: false,
+  });
+}
+
+/** One page of the user's repositories on a connection, optionally filtered by name. */
+export function useProviderRepositories(
+  connectionId: string | null,
+  search: string,
+  page: number,
+): UseQueryResult<ProviderRepositoryPage> {
+  return useQuery({
+    queryKey: queryKeys.providerRepositories(connectionId ?? '', search, page),
+    queryFn: () => {
+      const params = new URLSearchParams({ page: String(page) });
+      if (search) params.set('search', search);
+      return api.get<ProviderRepositoryPage>(
+        `/providers/connections/${encodeURIComponent(connectionId ?? '')}/repositories?${params.toString()}`,
+      );
+    },
+    enabled: !!connectionId,
+    retry: false,
+    placeholderData: (previous) => previous,
+  });
+}
+
+/** "Add project from GitLab/GitHub": the server looks the repository up and clones it. */
+export function useAddProjectFromProvider() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { connection_id: string; repository: string }) =>
+      api.post<Project>('/projects/from-provider', body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.projects });
+    },
+  });
+}
+
+/**
+ * "Publish project": creates the repository on the provider, sets it as the
+ * project's remote and pushes. A failure after the repository was created
+ * still changed the project's status: it is refetched either way.
+ */
+export function usePublishProject(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      connection_id: string;
+      namespace_id: string | null;
+      name: string;
+      private: boolean;
+      description: string;
+    }) => api.post<PublishProjectResult>(`/projects/${projectId}/git/publish`, body),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.gitStatus(projectId) });
+    },
+  });
+}
+
+/** Which connection the project's remote belongs to (null connection: none). */
+export function useGitProvider(projectId: string | undefined, enabled = true): UseQueryResult<ProjectProviderInfo> {
+  return useQuery({
+    queryKey: queryKeys.gitProvider(projectId ?? ''),
+    queryFn: () => api.get<ProjectProviderInfo>(`/projects/${projectId}/git/provider`),
+    enabled: enabled && !!projectId,
+  });
+}
+
+/** The tracked merge/pull request, live from the provider (state, approvals). */
+export function useGitReview(projectId: string | undefined, enabled = true): UseQueryResult<ReviewStatus> {
+  return useQuery({
+    queryKey: queryKeys.gitReview(projectId ?? ''),
+    queryFn: () => api.get<ReviewStatus>(`/projects/${projectId}/git/review`),
+    enabled: enabled && !!projectId,
+    retry: false,
+    staleTime: 30_000,
+  });
+}
+
+/** Pushes `current` to a review branch and opens (or reuses) a merge/pull request into `current`. */
+export function useStartReview(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { branch: string | null; title: string | null }) =>
+      api.post<StartReviewResult>(`/projects/${projectId}/git/review`, body),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.gitStatus(projectId) });
+      qc.invalidateQueries({ queryKey: queryKeys.gitReview(projectId) });
+    },
+  });
+}
+
+/** Stops tracking the merge/pull request (nothing changes on the provider). */
+export function useForgetReview(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.delete<GitStatus>(`/projects/${projectId}/git/review`),
+    onSuccess: (status) => {
+      qc.setQueryData(queryKeys.gitStatus(projectId), status);
+      qc.removeQueries({ queryKey: queryKeys.gitReview(projectId) });
     },
   });
 }

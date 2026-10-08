@@ -7,6 +7,7 @@ import { linkActions } from './linkActions';
 import { appPromptActions, modulePromptActions, requirementPromptActions } from './promptActions';
 import { tabKey } from '../layout/moduleTabs';
 import { moduleActions, projectActions } from './projectActions';
+import { providerActions } from './providerActions';
 import { purgeActions } from './purgeActions';
 import { requirementActions } from './requirementActions';
 import { matchesShortcut } from './shortcuts';
@@ -34,6 +35,7 @@ import type {
 export const ACTIONS: Action[] = [
   ...appActions,
   ...appPromptActions,
+  ...providerActions,
   ...requirementPromptActions,
   ...modulePromptActions,
   ...purgeActions,
@@ -184,6 +186,7 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
     entries: [
       action('file.newProject'),
       action('file.addProjectFromRemote'),
+      action('file.addProjectFromProvider'),
       action('file.openFolder'),
       divider,
       {
@@ -202,6 +205,8 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
       action('project.enableHistory'),
       action('project.gitPush'),
       action('project.gitPull'),
+      action('project.publish'),
+      action('project.requestReview'),
       divider,
       {
         kind: 'submenu',
@@ -280,7 +285,12 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
   {
     // The AI prompt library (no AI service is called: copy, paste into a chat, paste the answer back).
     label: 'Tools',
-    entries: [action('tools.aiPrompts'), action('tools.pasteAiResult')],
+    entries: [
+      action('tools.aiPrompts'),
+      action('tools.pasteAiResult'),
+      divider,
+      action('tools.providerConnections'),
+    ],
   },
   {
     // Read-only reports; the module ones apply to the open module.

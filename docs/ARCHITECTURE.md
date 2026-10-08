@@ -1492,6 +1492,101 @@ so a project's repository never contains another project's files.
   supported; use an ssh, git, https or local-folder remote".
 - Not yet (later slices): `merge --squash` of user branches, a settings UI.
 
+## GitLab and GitHub integration
+
+Builds on the git remotes. `backend/reqman/providers.py` is the one
+provider abstraction (`Provider`, with `GitLabProvider` for GitLab REST v4
+— gitlab.com or a self-hosted URL — and `GitHubProvider` for GitHub REST —
+github.com via api.github.com, GitHub Enterprise via `<url>/api/v3`).
+Every provider call runs server-side; the browser never talks to a
+provider and never receives a token.
+
+- **Connections** (`ProviderConnection`: id, provider, name, web URL, user
+  name, created) are app-level settings in `connections.json` beside the
+  config file (`config.connections_file()`, so `REQMAN_CONFIG_FILE`
+  relocates it too), with its own `format_version`
+  (`CONNECTIONS_FORMAT`); never in project data or git. Adding one checks
+  the token with `GET /user` first; provider errors are passed on verbatim
+  (`ProviderError`, 400). The URL must be `https://` (`http://` only for a
+  loopback host).
+- **Tokens** (local edition: a personal access token) live in the OS
+  keychain through the `keyring` package (`KeyringTokenStore`, service
+  "ReqManTool provider token", account = connection id), cached in process
+  memory. `REQMAN_TOKEN_STORE=memory` keeps them in memory only (tests,
+  scratch servers); a `ProjectService` built without a `ProviderService`
+  has no connections and in-memory tokens. Responses only carry
+  `has_token`. **Server edition (later):** the abstraction point is
+  `TokenStore` / `ProviderService.token` — the token of the logged-in
+  user's OAuth login instead of a keychain entry; providers and git
+  authentication stay unchanged.
+- **HTTP**: stdlib `urllib` (`ProviderHttp`; httpx is a test dependency
+  only), a 20 s timeout on every request, responses capped at 8 MiB, and
+  redirects are never followed (a token header must not go to another
+  host).
+- **git authentication**: `GitHistory.remote_auth` (set by
+  `ProjectService` to `ProviderService.git_auth_env`) gives every remote
+  operation (ls-remote, fetch, push, clone, review push, auto-push) on an
+  https URL under a connection's URL extra environment for that one git
+  process: `GIT_CONFIG_COUNT=2`, `http.<connection URL>/.extraHeader =
+  Authorization: Basic base64(oauth2|x-access-token:<token>)` and
+  `http.<connection URL>/.followRedirects=false`. The token is never on a
+  command line (visible in the process list), in `.git/config`, in the
+  remote URL or in a log; git scopes the header to URLs under the
+  connection's URL. `GIT_ALLOW_PROTOCOL` and the other `-c` rules are
+  unchanged. SSH remotes keep using the user's ssh agent.
+- **Publish project** (`ProjectService.publish_project`): needs an own
+  repository with a commit and no remote (409 otherwise); creates the
+  repository (owner namespace / group / organisation, name, private by
+  default), sets its HTTPS clone URL as the remote (`set_remote`, probed
+  with ls-remote) and pushes (`push`). A failure after the repository was
+  created says so and is broadcast (`project_changed`).
+- **Add project from GitLab/GitHub**: lists the user's repositories (GitLab
+  `membership=true` with server-side search; GitHub `/user/repos`,
+  filtered by name over at most 500 recently updated repositories), then
+  `add_project_from_provider` looks the clone URL up on the provider (never
+  taken from the client) and reuses `add_project_from_remote`.
+- **Review workflow** (`start_review`): `GitHistory.push_review_branch`
+  fetches the remote's `current`, refuses when there is nothing to review
+  or the remote has no `current` yet, pushes `current` to
+  `review/<UTC timestamp>` (or a given branch; never `current`/`baseline`,
+  never forced), then a merge request (GitLab) / pull request (GitHub) into
+  `current` is opened — or the open one from that branch reused — with a
+  generated description: commit count, base/head, the newest baseline, and
+  the changed requirements per module from `compare_snapshots(base, head)`
+  (at most 200 ids listed). The request is tracked per instance in
+  `.git/config` (`reqman.review.branch/number/url/connection`, cleared when
+  the remote is removed or changed) and reported in
+  `status.remote.review`; `review_status` reads its state, approvals
+  (GitLab approvals API; GitHub latest review per user) and merge status
+  live from the provider. The description asks for a merge commit or
+  fast-forward, so ReqManTool clones can fast-forward with Pull.
+- **Locking**: publishing and reviews are git remote operations like Push
+  and Pull: they write no project files, so they are allowed while a
+  project is locked.
+- **API**: REST `GET/POST /providers/connections`, `PUT/DELETE
+  /providers/connections/{id}`, `GET /providers/connections/{id}/namespaces`,
+  `GET /providers/connections/{id}/repositories?search=&page=`, `POST
+  /projects/from-provider`, `POST /projects/{id}/git/publish`, `GET
+  /projects/{id}/git/provider`, `GET|POST|DELETE /projects/{id}/git/review`;
+  WebSocket `provider.connections`, `provider.add_connection`,
+  `provider.update_connection`, `provider.remove_connection`,
+  `provider.namespaces`, `provider.repositories`,
+  `project.create_from_provider`, `project.git_publish`,
+  `project.git_provider`, `project.git_review_status`,
+  `project.git_review_start`, `project.git_review_forget`. Connection
+  changes broadcast `{"event":"connections_changed"}`; project operations
+  broadcast `changed`.
+- **Frontend**: Tools ▸ GitLab / GitHub connections
+  (`ProviderConnectionsModal`), File ▸ Add project from GitLab / GitHub
+  (`AddProjectFromProviderModal`), File ▸ Publish project / Request review
+  (`PublishProjectModal`, `StartReviewModal`; registry actions in
+  `actions/providerActions.ts`), and the Git panel's Publish button and
+  Review section (state, approvals, refresh, forget). The review status
+  query (`['git-review', id]`) is outside the `projects` prefix so project
+  changes do not call the provider API.
+- Not yet: issue links (issue URL attribute, create an issue from a
+  requirement), the server edition's OAuth login.
+
 ## Backend layering
 
 ```
@@ -1522,6 +1617,9 @@ backend/reqman/
                    project has one): rich values are written from their
                    canonical tree as one xhtml:div (u/s become styled
                    spans), plain values as escaped text with xhtml:br.
+  providers.py     GitLab/GitHub connections, keychain tokens and the
+                   provider REST clients (stdlib urllib); called only by
+                   ProjectService. See "GitLab and GitHub integration".
   csv_export.py    Same pattern as reqif_export.py, much smaller.
   xlsx_export.py   Same columns and row order as csv_export.py; string
                    values are stored as string cells, never formulas.

@@ -471,6 +471,19 @@ export interface GitRemoteStatus {
    */
   sync_conflict: boolean;
   conflict_message: string | null;
+  /**
+   * The merge/pull request this instance opened and tracks (stored in
+   * `.git/config`, never in the shared data files); null when none.
+   */
+  review: TrackedReview | null;
+}
+
+/** The tracked merge/pull request of a project (`GitRemoteStatus.review`). */
+export interface TrackedReview {
+  branch: string;
+  number: number;
+  url: string | null;
+  connection: string | null;
 }
 
 export interface GitStatus {
@@ -916,4 +929,116 @@ export interface TestResultsImportResult {
   config_id: string;
   test_module_id: string;
   warnings: string[];
+}
+
+// --- GitLab / GitHub (providers) ------------------------------------------------
+
+export type ProviderKind = 'gitlab' | 'github';
+
+/**
+ * A GitLab/GitHub connection (GET /providers/connections). App-level, not
+ * project data. The token lives in the server's OS keychain and is never
+ * sent to the browser: `has_token` only says whether one is stored (null
+ * when the keychain could not be read, see `token_error`).
+ */
+export interface ProviderConnection {
+  id: string;
+  provider: ProviderKind;
+  name: string;
+  /** The instance's web URL, e.g. https://gitlab.com or https://ghe.example.com. */
+  url: string;
+  /** The token owner's user name. */
+  username: string;
+  created: string;
+  provider_label: string;
+  has_token: boolean | null;
+  token_error: string | null;
+}
+
+/** Where a repository can be created: the user's own namespace, or a group / organisation. */
+export interface ProviderNamespace {
+  id: string;
+  path: string;
+  name: string;
+  kind: 'user' | 'group';
+}
+
+export interface ProviderRepository {
+  id: string;
+  /** "group/subgroup/name" (GitLab) or "owner/name" (GitHub). */
+  full_path: string;
+  name: string;
+  description: string;
+  private: boolean;
+  visibility: string | null;
+  web_url: string | null;
+  clone_url: string | null;
+  ssh_url: string | null;
+  default_branch: string | null;
+  updated: string | null;
+}
+
+/** GET /providers/connections/{id}/repositories: one page. */
+export interface ProviderRepositoryPage {
+  repositories: ProviderRepository[];
+  page: number;
+  has_more: boolean;
+  /** E.g. GitHub name search limits. */
+  note?: string | null;
+}
+
+/** POST /projects/{id}/git/publish (WS `project.git_publish`). */
+export interface PublishProjectResult {
+  repository: ProviderRepository;
+  pushed: string[];
+  status: GitStatus;
+}
+
+/** GET /projects/{id}/git/provider: the connection the project's remote belongs to. */
+export interface ProjectProviderInfo {
+  connection: { id: string; name: string; provider: ProviderKind; provider_label: string } | null;
+  repository: string | null;
+}
+
+export interface ReviewApprovals {
+  approved_by: string[];
+  changes_requested_by: string[];
+  /** GitLab: approvals required / still missing (null on GitHub). */
+  required: number | null;
+  left: number | null;
+  approved: boolean;
+}
+
+/** A merge request (GitLab) / pull request (GitHub), as the provider reports it. */
+export interface ChangeRequest {
+  number: number;
+  title: string;
+  url: string | null;
+  state: 'open' | 'merged' | 'closed' | string;
+  draft: boolean;
+  source_branch: string | null;
+  target_branch: string | null;
+  author: string | null;
+  merge_status: string | null;
+  created: string | null;
+  updated: string | null;
+  approvals: ReviewApprovals | null;
+  /** Why the approvals could not be read (verbatim provider error). */
+  approvals_error: string | null;
+}
+
+/** GET /projects/{id}/git/review (WS `project.git_review_status`). */
+export interface ReviewStatus {
+  tracked: TrackedReview | null;
+  review: ChangeRequest | null;
+  provider: ProviderKind | null;
+  provider_label?: string;
+  repository?: string;
+}
+
+/** POST /projects/{id}/git/review (WS `project.git_review_start`). */
+export interface StartReviewResult {
+  review: ChangeRequest;
+  pushed: { url: string; branch: string; head: string; base: string | null; commits: number };
+  status: GitStatus;
 }

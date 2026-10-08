@@ -1344,6 +1344,60 @@
       result" opens `ImportCsvModal` with a paste-text box. Not covered:
       tests, browser verification; follow-ups in the backlog ("AI prompt
       library: follow-ups").
+- [x] **GitLab and GitHub API integration, parts (1)–(3)** (2026-10-08;
+      requested 2026-10-07). Provider connections (GitLab.com /
+      self-hosted, GitHub.com / Enterprise via `/api/v3`) are stored in
+      `connections.json` beside the config file (own `format_version`;
+      not in `config.json`, which `save_data_dir` rewrites); tokens live
+      in the OS keychain (new dependency `keyring>=25.0`), cached in
+      process memory, never in project data, git, config, logs or
+      responses; a token is checked with `GET /user` on add;
+      `REQMAN_TOKEN_STORE=memory` for tests. One provider abstraction
+      (GitLab REST v4, GitHub REST) over stdlib urllib: 20 s timeout,
+      8 MiB response cap, redirects never followed, provider errors
+      verbatim; plain-http non-loopback URLs refused. Server-edition
+      OAuth hook point: `TokenStore` / `ProviderService.token`. Git auth:
+      the token is passed only in the git process environment
+      (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`, `http.<connection
+      URL>/.extraHeader` = Authorization Basic, `followRedirects=false`),
+      scoped to the connection URL, never on the command line, in
+      `.git/config` or in the remote URL; covers ls-remote, fetch, push,
+      clone and auto-push; needs git ≥ 2.31. Publish project creates the
+      repository in a chosen namespace (private by default), sets the
+      remote and pushes (409 if already published). Add project from
+      GitLab/GitHub browses/searches repositories and clones one (GitHub
+      search scans at most 500 recently updated repositories). Review
+      workflow: push to a review branch and open an MR/PR targeting
+      `current` with a generated description (changed requirements,
+      baseline reference); status, approvals and merge status in the Git
+      panel; refresh/forget; tracked per instance in `.git/config`
+      `reqman.review.*`; GitLab MRs set `remove_source_branch: true`.
+      Decisions: publish/review are git remote operations and work while
+      a project is locked (like push/pull); review always targets
+      `current` and asks for a merge commit/fast-forward (squash would
+      cause a sync conflict on the next pull); auto-push still pushes
+      `current` directly (bypasses review, user's choice). Endpoints:
+      `GET/POST /providers/connections`, `PUT/DELETE
+      /providers/connections/{id}`, `GET .../{id}/namespaces`, `GET
+      .../{id}/repositories?search=&page=`, `POST /projects/from-provider`,
+      `POST /projects/{id}/git/publish`, `GET /projects/{id}/git/provider`,
+      `GET|POST|DELETE /projects/{id}/git/review`; WS
+      `provider.connections`, `provider.add_connection`,
+      `provider.update_connection`, `provider.remove_connection`,
+      `provider.namespaces`, `provider.repositories`,
+      `project.create_from_provider`, `project.git_publish`,
+      `project.git_provider`, `project.git_review_status`,
+      `project.git_review_start`, `project.git_review_forget`; broadcast
+      `connections_changed`. Backend: `backend/reqman/{providers.py,
+      service.py, git_repo.py, config.py, formats.py, app.py}`; design in
+      `docs/ARCHITECTURE.md` ("GitLab and GitHub integration"). UI:
+      `ProviderConnectionsModal` (Tools menu), File ▸ Add project from
+      GitLab/GitHub and a HomePage button (`AddProjectFromProviderModal`),
+      Git panel "Publish to GitLab / GitHub…" (`PublishProjectModal`) and
+      Review section (`StartReviewModal`), `ProviderConnectionSelect`,
+      `providerActions.ts` (new). Not covered: part (4) issue links,
+      tests, browser verification; follow-ups in the backlog
+      ("GitLab/GitHub: follow-ups").
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -1488,24 +1542,17 @@ to the categories above.
       browser page. (5) Stale filter inputs when a menu action navigates
       to the same scope (cosmetic). (6) Browse-at-commit reads the whole
       tree into memory (as baselines). (7) Tests pending (phase B).
-- [ ] GitLab and GitHub API integration. Requested 2026-10-07. Builds on
-      git remotes (done). Provider connections (GitLab.com / self-hosted
-      GitLab URL, GitHub.com / GitHub Enterprise URL) authenticated with a
-      personal access token in the local edition (stored in the OS
-      keychain, never in project data or git) and with the user's OAuth
-      login in the server edition. Features: (1) "Publish project" — create
-      the remote repository (choose group/organisation, name, private by
-      default) and set it as the project's remote, then push; (2) "Add
-      project from GitLab/GitHub" — browse/search the user's repositories
-      and clone one (instead of pasting a URL); (3) review workflow —
-      push the current work to a review branch and open a merge request /
-      pull request with a generated description (changed requirements,
-      baseline reference), show its status and approvals in the Git panel;
-      (4) optional: link requirements to issues (issue URL attribute,
-      create issue from a requirement). All API calls server-side through
-      one provider abstraction (GitLab REST v4, GitHub REST), REST +
-      WebSocket parity, provider errors shown verbatim, no token ever sent
-      to the browser.
+- [ ] GitLab/GitHub: follow-ups (2026-10-08). (1) Part (4) of the
+      original item: link requirements to issues (issue URL attribute,
+      create issue from a requirement). (2) Server-edition OAuth login
+      for provider connections (with the server edition item; hook point
+      `TokenStore` / `ProviderService.token`). (3) Review target branch
+      other than `current` and a draft option. (4) Namespace paging
+      beyond 100. (5) GitHub repository search is limited to the 500
+      most recently updated repositories. (6) The macOS keychain may
+      prompt on the first listing. (7) Tests pending (phase B); one
+      existing assertion in `tests/test_git_remotes.py` was updated for
+      the new `review` key.
 - [ ] Server edition: login (GitLab / OIDC / LDAP), users, project
       membership, module edit locks. Requested 2026-10-06 (replaces the
       2026-10-04 "User handling" item; scope change confirmed by the user).

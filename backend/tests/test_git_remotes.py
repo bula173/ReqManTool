@@ -146,6 +146,7 @@ def test_push_publishes_current_baseline_and_tags(service, root, bare):
         "behind": 0,
         "sync_conflict": False,
         "conflict_message": None,
+        "review": None,
     }
 
 

@@ -16,11 +16,14 @@ import {
 } from '@mantine/core';
 import {
   IconAlertTriangle,
+  IconBrandGit,
   IconCamera,
   IconCloudDownload,
   IconCloudUpload,
   IconGitCompare,
+  IconGitPullRequest,
   IconHistory,
+  IconRefresh,
 } from '@tabler/icons-react';
 import { useIsMutating } from '@tanstack/react-query';
 import { useState } from 'react';
@@ -30,14 +33,17 @@ import { ApiError } from '../api/client';
 import {
   queryKeys,
   useBaselines,
+  useForgetReview,
   useGitLog,
+  useGitProvider,
+  useGitReview,
   useGitPull,
   useGitPush,
   useGitStatus,
   useSetGitAutoPush,
   useSetGitRemote,
 } from '../api/queries';
-import type { GitRemoteStatus, GitState } from '../api/types';
+import type { ChangeRequest, GitRemoteStatus, GitState, TrackedReview } from '../api/types';
 import { commitBrowserPath, commitPath } from './commits';
 import { CreateBaselineModal } from './CreateBaselineModal';
 
@@ -252,6 +258,153 @@ function RemoteSync({ projectId, remote }: { projectId: string; remote: GitRemot
   );
 }
 
+const REVIEW_STATE_COLORS: Record<string, string> = { open: 'blue', merged: 'green', closed: 'gray' };
+
+/** The tracked merge/pull request, live from the provider: state, approvals, merge status. */
+function ReviewDetails({ projectId, tracked, noun }: { projectId: string; tracked: TrackedReview; noun: string }) {
+  const reviewQuery = useGitReview(projectId);
+  const forget = useForgetReview(projectId);
+  const review: ChangeRequest | null = reviewQuery.data?.review ?? null;
+  const approvals = review?.approvals ?? null;
+
+  return (
+    <Stack gap={4}>
+      <Group gap="xs" wrap="nowrap">
+        <Anchor href={tracked.url ?? undefined} target="_blank" rel="noreferrer" size="sm">
+          {noun} #{tracked.number}
+        </Anchor>
+        {review && (
+          <Badge size="sm" variant="light" color={REVIEW_STATE_COLORS[review.state] ?? 'gray'}>
+            {review.draft && review.state === 'open' ? 'draft' : review.state}
+          </Badge>
+        )}
+        <Text size="xs" c="dimmed" ff="monospace" lineClamp={1} style={{ flex: 1 }}>
+          {tracked.branch} → current
+        </Text>
+        <Tooltip label="Refresh from the server" withArrow>
+          <Button
+            size="compact-xs"
+            variant="subtle"
+            loading={reviewQuery.isFetching}
+            onClick={() => reviewQuery.refetch()}
+            aria-label="Refresh review status"
+          >
+            <IconRefresh size={14} />
+          </Button>
+        </Tooltip>
+        <Button size="compact-xs" variant="subtle" color="gray" loading={forget.isPending} onClick={() => forget.mutate()}>
+          Forget
+        </Button>
+      </Group>
+      {reviewQuery.isLoading && <Loader size="xs" />}
+      {reviewQuery.isError && (
+        <Text size="sm" c="red" style={{ wordBreak: 'break-word' }}>
+          The {noun} status could not be read: {errorMessage(reviewQuery.error, 'Unknown error')}
+        </Text>
+      )}
+      {review && (
+        <>
+          <Text size="sm" lineClamp={1}>
+            {review.title}
+          </Text>
+          {approvals && (
+            <Text size="sm">
+              {approvals.approved_by.length > 0
+                ? `Approved by ${approvals.approved_by.join(', ')}`
+                : 'No approvals yet'}
+              {approvals.required !== null && approvals.left !== null
+                ? ` (${approvals.left} of ${approvals.required} required still missing)`
+                : ''}
+              {approvals.changes_requested_by.length > 0
+                ? `; changes requested by ${approvals.changes_requested_by.join(', ')}`
+                : ''}
+            </Text>
+          )}
+          {review.approvals_error && (
+            <Text size="xs" c="dimmed" style={{ wordBreak: 'break-word' }}>
+              Approvals unavailable: {review.approvals_error}
+            </Text>
+          )}
+          {review.merge_status && review.state === 'open' && (
+            <Text size="xs" c="dimmed">
+              Merge status: {review.merge_status}
+            </Text>
+          )}
+          {review.state === 'merged' && (
+            <Text size="xs" c="dimmed">
+              Merged: use Pull to bring the reviewed state into this project.
+            </Text>
+          )}
+        </>
+      )}
+      {forget.isError && (
+        <Text size="sm" c="red">
+          {errorMessage(forget.error, 'Failed to forget the review')}
+        </Text>
+      )}
+    </Stack>
+  );
+}
+
+/**
+ * Reviews through GitLab merge requests / GitHub pull requests: offered when
+ * the remote belongs to a provider connection; shows the tracked request.
+ */
+function ReviewSection({ projectId, remote }: { projectId: string; remote: GitRemoteStatus }) {
+  const { run, isAvailable } = useAppActions();
+  const providerQuery = useGitProvider(projectId, remote.url !== null);
+  const connection = providerQuery.data?.connection ?? null;
+  if (remote.url === null || providerQuery.isLoading) return null;
+  if (providerQuery.isError) {
+    return (
+      <Text size="sm" c="red">
+        {errorMessage(providerQuery.error, 'Failed to check the GitLab / GitHub connection')}
+      </Text>
+    );
+  }
+  if (!connection) {
+    return (
+      <Text size="xs" c="dimmed">
+        To open merge / pull requests from here, add a GitLab / GitHub connection for this remote’s server{' '}
+        <Anchor component="button" type="button" size="xs" onClick={() => run('tools.providerConnections')}>
+          (connections…)
+        </Anchor>
+        .
+      </Text>
+    );
+  }
+  const noun = connection.provider === 'github' ? 'Pull request' : 'Merge request';
+  return (
+    <Stack gap="xs">
+      <Group justify="space-between">
+        <Group gap="xs">
+          <Title order={5}>Review</Title>
+          <Text size="xs" c="dimmed">
+            {connection.provider_label}: {providerQuery.data?.repository}
+          </Text>
+        </Group>
+        <Button
+          size="xs"
+          variant="default"
+          leftSection={<IconGitPullRequest size={14} />}
+          disabled={!isAvailable('project.requestReview')}
+          onClick={() => run('project.requestReview')}
+        >
+          Request review…
+        </Button>
+      </Group>
+      {remote.review ? (
+        <ReviewDetails projectId={projectId} tracked={remote.review} noun={noun} />
+      ) : (
+        <Text size="sm" c="dimmed">
+          No open review. “Request review” pushes your changes to a review branch and opens a{' '}
+          {noun.toLowerCase()} into “current” with the changed requirements listed.
+        </Text>
+      )}
+    </Stack>
+  );
+}
+
 /** The baselines table: list (newest first), Create, Browse, Compare. */
 function Baselines({ projectId, canCreate }: { projectId: string; canCreate: boolean }) {
   const baselinesQuery = useBaselines(projectId);
@@ -453,6 +606,23 @@ export function GitStatusPanel({ projectId }: { projectId: string }) {
             </Alert>
           )}
           {hasRepo && status.remote && <RemoteSync projectId={projectId} remote={status.remote} />}
+          {hasRepo && status.remote && status.remote.url === null && status.head && (
+            <Group gap="xs">
+              <Button
+                size="xs"
+                variant="light"
+                leftSection={<IconBrandGit size={14} />}
+                disabled={!isAvailable('project.publish')}
+                onClick={() => run('project.publish')}
+              >
+                Publish to GitLab / GitHub…
+              </Button>
+              <Text size="xs" c="dimmed">
+                Creates the repository, sets it as the remote and pushes.
+              </Text>
+            </Group>
+          )}
+          {hasRepo && status.remote && <ReviewSection projectId={projectId} remote={status.remote} />}
           {hasRepo && status.head && (
             <>
               <Title order={5}>Last commits</Title>

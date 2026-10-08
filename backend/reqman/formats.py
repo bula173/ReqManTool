@@ -6,6 +6,8 @@ Two kinds of file carry an integer ``format_version`` as their first key:
   link-pair files carry no version of their own: they are governed by their
   project's version.
 - the app config file, ``.reqman/config.json`` (``CONFIG_FORMAT``).
+- the provider connections file, ``.reqman/connections.json``
+  (``CONNECTIONS_FORMAT``).
 
 Project templates keep their own, independent ``format_version`` (see
 ``templates.py``); it is not handled here.
@@ -219,6 +221,9 @@ PROJECT_FORMAT = FileFormat(
     },
 )
 CONFIG_FORMAT = FileFormat(name="config", current=1)
+# GitLab/GitHub provider connections (``connections.json`` next to the config
+# file, see ``providers.py``): metadata only, tokens live in the OS keychain.
+CONNECTIONS_FORMAT = FileFormat(name="provider connections", current=1)
 
 
 def stored_format_version(data: dict, what: str) -> int:

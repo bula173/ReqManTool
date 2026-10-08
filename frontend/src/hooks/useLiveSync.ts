@@ -23,7 +23,17 @@ interface PromptsChangedEvent {
   event: 'prompts_changed';
 }
 
-type LiveSyncEvent = ChangedEvent | RootChangedEvent | TemplatesChangedEvent | PromptsChangedEvent;
+/** A GitLab/GitHub connection was added, changed or removed (app-level; never carries a token). */
+interface ConnectionsChangedEvent {
+  event: 'connections_changed';
+}
+
+type LiveSyncEvent =
+  | ChangedEvent
+  | RootChangedEvent
+  | TemplatesChangedEvent
+  | PromptsChangedEvent
+  | ConnectionsChangedEvent;
 
 /**
  * Opens a single app-wide WebSocket connection to the backend's live-sync
@@ -37,7 +47,8 @@ type LiveSyncEvent = ChangedEvent | RootChangedEvent | TemplatesChangedEvent | P
  * different dataset; only the backend version query is kept (see
  * clearDatasetCache). A {"event":"templates_changed"} broadcast (a template
  * or module template was saved) refetches both template lists, and
- * {"event":"prompts_changed"} the AI prompt library.
+ * {"event":"prompts_changed"} the AI prompt library, {"event":"connections_changed"}
+ * the GitLab/GitHub connections (and which connection each project's remote uses).
  *
  * On a reconnect (usually a backend restart, possibly as a different
  * version) the footer's version query is refetched; on the first connect it
@@ -91,6 +102,11 @@ export function useLiveSync(): void {
             qc.invalidateQueries({ queryKey: queryKeys.moduleTemplates });
           } else if (data.event === 'prompts_changed') {
             qc.invalidateQueries({ queryKey: queryKeys.prompts });
+          } else if (data.event === 'connections_changed') {
+            qc.invalidateQueries({ queryKey: queryKeys.providerConnections });
+            qc.invalidateQueries({
+              predicate: (query) => query.queryKey[2] === 'git' && query.queryKey[3] === 'provider',
+            });
           }
         } catch {
           // ignore malformed messages

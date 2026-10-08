@@ -142,6 +142,11 @@ export interface RequirementClipboard {
 export type DialogRequest =
   | { kind: 'newProject'; parentProjectId?: string | null; templateId?: string }
   | { kind: 'addProjectFromRemote' }
+  /** GitLab / GitHub: connections (settings), browse-and-clone, publish, review. */
+  | { kind: 'providerConnections' }
+  | { kind: 'addProjectFromProvider' }
+  | { kind: 'publishProject'; projectId: string; projectName: string; projectDescription: string }
+  | { kind: 'startReview'; projectId: string }
   | { kind: 'dataDir' }
   | { kind: 'saveAsTemplate'; project: Project }
   | { kind: 'rowStyles'; project: Project }

@@ -1,5 +1,5 @@
 import { Alert, Button, Center, Group, Loader, Stack, Text, Title } from '@mantine/core';
-import { IconCloudPlus, IconFolderPlus, IconInfoCircle } from '@tabler/icons-react';
+import { IconBrandGit, IconCloudPlus, IconFolderPlus, IconInfoCircle } from '@tabler/icons-react';
 import { Navigate } from 'react-router-dom';
 import { useAppActions } from '../actions/context';
 import { useProjects } from '../api/queries';
@@ -71,6 +71,13 @@ export function HomePage() {
             onClick={() => run('file.addProjectFromRemote')}
           >
             Add project from remote
+          </Button>
+          <Button
+            variant="default"
+            leftSection={<IconBrandGit size={16} />}
+            onClick={() => run('file.addProjectFromProvider')}
+          >
+            Add project from GitLab / GitHub
           </Button>
         </Group>
       </Stack>

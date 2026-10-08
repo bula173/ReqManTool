@@ -31,6 +31,15 @@ def _config_file() -> Path:
     return PROJECT_ROOT / ".reqman" / "config.json"
 
 
+def connections_file() -> Path:
+    """The GitLab/GitHub provider connections file: ``connections.json`` beside the config file.
+
+    Holds connection metadata only (provider, URL, name, user); tokens are
+    kept in the OS keychain (see ``providers.py``).
+    """
+    return _config_file().parent / "connections.json"
+
+
 def _read_config(config_file: Path) -> dict | None:
     """The config file's JSON object, or ``None`` if it is missing, unreadable or not an object."""
     if not config_file.exists():

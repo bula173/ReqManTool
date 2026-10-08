@@ -25,11 +25,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response
 from pydantic import BaseModel
 
-from .config import DEFAULT_DATA_DIR, check_config_writable, load_saved_data_dir, save_data_dir
+from .config import DEFAULT_DATA_DIR, check_config_writable, connections_file, load_saved_data_dir, save_data_dir
 from .csv_import import MAX_CSV_IMPORT_BYTES
 from .test_results_import import MAX_TEST_RESULTS_IMPORT_BYTES
 from .formats import NewerFormatError
 from .git_repo import GitHistory, GitSettings
+from .providers import ProviderService
 from .service import RESULT_IMPORT_OPTIONS, ConflictError, ProjectLockedError, ProjectService
 from .store import ProjectStore
 from .templates import MAX_TEMPLATE_IMPORT_BYTES
@@ -55,7 +56,11 @@ DATA_DIR = _initial_data_dir()
 store = ProjectStore(DATA_DIR)
 # Per-project git history (REQMAN_GIT*, see git_repo.GitSettings); shared across data directory switches.
 history = GitHistory(GitSettings.from_env())
-service = ProjectService(store, history=history)
+# GitLab/GitHub connections (connections.json beside the config file; tokens in
+# the OS keychain, or in memory with REQMAN_TOKEN_STORE=memory); app-level,
+# shared across data directory switches like the git history.
+providers = ProviderService.from_env(connections_file())
+service = ProjectService(store, history=history, providers=providers)
 
 logger.info("Requirements data directory: %s", DATA_DIR)
 
@@ -114,6 +119,10 @@ class ConnectionManager:
     async def broadcast_prompts_changed(self, exclude: WebSocket | None = None) -> None:
         await self._send_all({"event": "prompts_changed"}, exclude)
 
+    async def broadcast_connections_changed(self, exclude: WebSocket | None = None) -> None:
+        """A GitLab/GitHub connection was added, changed or removed (never carries a token)."""
+        await self._send_all({"event": "connections_changed"}, exclude)
+
     async def _send_all(self, message: dict, exclude: WebSocket | None = None) -> None:
         for connection in list(self.connections):
             if connection is exclude:
@@ -168,7 +177,7 @@ async def set_config(body: SetDataDirBody):
     _wrap(save_data_dir, str(new_dir))
     DATA_DIR = new_dir
     store = new_store
-    service = ProjectService(store, history=history)
+    service = ProjectService(store, history=history, providers=providers)
     logger.info("Requirements data directory changed to: %s", DATA_DIR)
 
     await manager.broadcast_root_changed()
@@ -265,6 +274,39 @@ class SetGitAutoPushBody(BaseModel):
 
 class AddProjectFromRemoteBody(BaseModel):
     url: str
+
+
+class AddProjectFromProviderBody(BaseModel):
+    connection_id: str
+    # The repository path in the provider ("group/subgroup/name", "owner/name").
+    repository: Any = None
+
+
+class AddProviderConnectionBody(BaseModel):
+    provider: Any = None
+    url: Any = None
+    name: Any = None
+    # Written to the OS keychain; never stored in a file, logged or returned.
+    token: Any = None
+
+
+class UpdateProviderConnectionBody(BaseModel):
+    name: Any = None
+    # A new token (verified first); omitted/empty keeps the stored one.
+    token: Any = None
+
+
+class PublishProjectBody(BaseModel):
+    connection_id: str
+    namespace_id: Any = None
+    name: Any = None
+    private: Any = True
+    description: Any = None
+
+
+class StartReviewBody(BaseModel):
+    branch: Any = None
+    title: Any = None
 
 
 class AddAttributeBody(BaseModel):
@@ -743,6 +785,105 @@ async def add_project_from_remote(body: AddProjectFromRemoteBody):
     project = _wrap(service.add_project_from_remote, body.url)
     await manager.broadcast(project.id)
     return project.to_dict()
+
+
+# --- GitLab / GitHub (providers) ----------------------------------------------
+
+
+@app.get("/providers/connections")
+def list_provider_connections():
+    return _wrap(service.list_provider_connections)
+
+
+@app.post("/providers/connections")
+async def add_provider_connection(body: AddProviderConnectionBody):
+    connection = _wrap(service.add_provider_connection, body.provider, body.url, body.name, body.token)
+    await manager.broadcast_connections_changed()
+    return connection
+
+
+@app.put("/providers/connections/{connection_id}")
+async def update_provider_connection(connection_id: str, body: UpdateProviderConnectionBody):
+    connection = _wrap(service.update_provider_connection, connection_id, body.name, body.token)
+    await manager.broadcast_connections_changed()
+    return connection
+
+
+@app.delete("/providers/connections/{connection_id}")
+async def remove_provider_connection(connection_id: str):
+    result = _wrap(service.remove_provider_connection, connection_id)
+    await manager.broadcast_connections_changed()
+    return result
+
+
+@app.get("/providers/connections/{connection_id}/namespaces")
+def list_provider_namespaces(connection_id: str):
+    return _wrap(service.provider_namespaces, connection_id)
+
+
+@app.get("/providers/connections/{connection_id}/repositories")
+def list_provider_repositories(connection_id: str, search: str | None = None, page: int = Query(default=1)):
+    return _wrap(service.provider_repositories, connection_id, search, page)
+
+
+@app.post("/projects/from-provider")
+async def add_project_from_provider(body: AddProjectFromProviderBody):
+    project = _wrap(service.add_project_from_provider, body.connection_id, body.repository)
+    await manager.broadcast(project.id)
+    return project.to_dict()
+
+
+async def _broadcast_on_failure(project_id: str, exc: HTTPException) -> None:
+    """Broadcast a failed request that still changed the project (``project_changed``)."""
+    if _changed_despite_failure(exc.__cause__):
+        await manager.broadcast(project_id)
+
+
+@app.post("/projects/{project_id}/git/publish")
+async def publish_project(project_id: str, body: PublishProjectBody):
+    try:
+        result = _wrap(
+            service.publish_project,
+            project_id,
+            body.connection_id,
+            body.namespace_id,
+            body.name,
+            body.private,
+            body.description,
+        )
+    except HTTPException as exc:
+        await _broadcast_on_failure(project_id, exc)
+        raise
+    await manager.broadcast(project_id)
+    return result
+
+
+@app.get("/projects/{project_id}/git/provider")
+def get_git_provider(project_id: str):
+    return _wrap(service.provider_info_for_project, project_id)
+
+
+@app.get("/projects/{project_id}/git/review")
+def get_git_review(project_id: str):
+    return _wrap(service.review_status, project_id)
+
+
+@app.post("/projects/{project_id}/git/review")
+async def start_git_review(project_id: str, body: StartReviewBody):
+    try:
+        result = _wrap(service.start_review, project_id, body.branch, body.title)
+    except HTTPException as exc:
+        await _broadcast_on_failure(project_id, exc)
+        raise
+    await manager.broadcast(project_id)
+    return result
+
+
+@app.delete("/projects/{project_id}/git/review")
+async def forget_git_review(project_id: str):
+    status = _wrap(service.forget_review, project_id)
+    await manager.broadcast(project_id)
+    return status
 
 
 # --- baselines (git) ----------------------------------------------------------
@@ -1335,6 +1476,29 @@ RPC_METHODS = {
     "project.git_push": lambda p: service.git_push(p["id"]),
     "project.git_pull": lambda p: service.git_pull(p["id"]),
     "project.create_from_remote": lambda p: service.add_project_from_remote(p["url"]),
+    # GitLab / GitHub. Connection mutations broadcast connections_changed
+    # (CONNECTION_MUTATING_METHODS); tokens are accepted, never returned.
+    "provider.connections": lambda p: service.list_provider_connections(),
+    "provider.add_connection": lambda p: service.add_provider_connection(
+        p.get("provider"), p.get("url"), p.get("name"), p.get("token")
+    ),
+    "provider.update_connection": lambda p: service.update_provider_connection(
+        p["id"], p.get("name"), p.get("token")
+    ),
+    "provider.remove_connection": lambda p: service.remove_provider_connection(p["id"]),
+    "provider.namespaces": lambda p: service.provider_namespaces(p["id"]),
+    "provider.repositories": lambda p: service.provider_repositories(p["id"], p.get("search"), p.get("page")),
+    "project.create_from_provider": lambda p: service.add_project_from_provider(
+        p["connection_id"], p.get("repository")
+    ),
+    "project.git_publish": lambda p: service.publish_project(
+        p["id"], p["connection_id"], p.get("namespace_id"), p.get("name"), p.get("private", True),
+        p.get("description"),
+    ),
+    "project.git_provider": lambda p: service.provider_info_for_project(p["id"]),
+    "project.git_review_status": lambda p: service.review_status(p["id"]),
+    "project.git_review_start": lambda p: service.start_review(p["id"], p.get("branch"), p.get("title")),
+    "project.git_review_forget": lambda p: service.forget_review(p["id"]),
     "baseline.create": lambda p: service.create_baseline(
         p["project_id"], p["name"], p.get("description", ""), bool(p.get("lock", False)), p.get("lock_reason")
     ),
@@ -1477,7 +1641,8 @@ MUTATING_METHODS = {
     "project.create", "project.set_parent", "project.purge", "project.git_enable", "baseline.create",
     "project.set_row_styles", "project.set_references", "project.lock", "project.unlock",
     "project.git_set_remote", "project.git_set_auto_push", "project.git_push", "project.git_pull",
-    "project.create_from_remote",
+    "project.create_from_remote", "project.create_from_provider", "project.git_publish",
+    "project.git_review_start", "project.git_review_forget",
     "attribute.add", "attribute.set_modules",
     "module.create", "module.create_from_template", "module.purge", "module.reorder", "module.move",
     "module_folder.create", "module_folder.rename", "module_folder.delete", "module_folder.move",
@@ -1496,9 +1661,14 @@ TEMPLATE_MUTATING_METHODS = {"project.save_as_template", "template.import", "mod
 # Methods that change the user prompt library: they broadcast {"event": "prompts_changed"}.
 PROMPT_MUTATING_METHODS = {"prompt.create", "prompt.update", "prompt.delete", "prompt.import"}
 
+# Methods that change the app-level GitLab/GitHub connections: they broadcast {"event": "connections_changed"}.
+CONNECTION_MUTATING_METHODS = {
+    "provider.add_connection", "provider.update_connection", "provider.remove_connection",
+}
+
 
 def _project_id_of(method_name: str, params: dict, result: Any) -> str | None:
-    if method_name in ("project.create", "project.create_from_remote"):
+    if method_name in ("project.create", "project.create_from_remote", "project.create_from_provider"):
         return getattr(result, "id", None)  # None after a failure: nothing to broadcast
     return params.get("project_id") if "project_id" in params else params.get("id")
 
@@ -1524,6 +1694,8 @@ async def _dispatch(request: dict, sender: WebSocket | None = None) -> dict:
             await manager.broadcast_templates_changed(exclude=sender)
         elif method_name in PROMPT_MUTATING_METHODS:
             await manager.broadcast_prompts_changed(exclude=sender)
+        elif method_name in CONNECTION_MUTATING_METHODS:
+            await manager.broadcast_connections_changed(exclude=sender)
         return {"jsonrpc": "2.0", "id": request_id, "result": _serialize(result)}
     except FileNotFoundError as exc:
         return _error_response(request_id, -32001, str(exc))

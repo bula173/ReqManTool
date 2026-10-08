@@ -3,5 +3,6 @@ uvicorn[standard]>=0.30
 reqif>=0.0.60
 openpyxl>=3.1
 python-docx>=1.1
+keyring>=25.0
 httpx>=0.27
 pytest>=8.0

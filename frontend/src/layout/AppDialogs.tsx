@@ -4,7 +4,12 @@ import { applicableAttributes } from '../api/applicability';
 import { useModule, useProject, useRequirements } from '../api/queries';
 import type { Requirement } from '../api/types';
 import { AboutModal } from '../components/AboutModal';
+import { useAppActions } from '../actions/context';
+import { AddProjectFromProviderModal } from '../components/AddProjectFromProviderModal';
 import { AddProjectFromRemoteModal } from '../components/AddProjectFromRemoteModal';
+import { ProviderConnectionsModal } from '../components/ProviderConnectionsModal';
+import { PublishProjectModal } from '../components/PublishProjectModal';
+import { StartReviewDialog } from '../components/StartReviewDialog';
 import { AttributeModulesModal } from '../components/AttributeModulesModal';
 import { DataDirModal } from '../components/DataDirSettings';
 import { DropLinkModal } from '../components/DropLinkModal';
@@ -92,7 +97,9 @@ function MoveRequirementDialog({
  * requested so it starts fresh every time.
  */
 export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; onClose: () => void }) {
+  const { run } = useAppActions();
   if (!dialog) return null;
+  const manageConnections = () => run('tools.providerConnections');
   switch (dialog.kind) {
     case 'newProject':
       return (
@@ -105,6 +112,22 @@ export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; 
       );
     case 'addProjectFromRemote':
       return <AddProjectFromRemoteModal opened onClose={onClose} />;
+    case 'providerConnections':
+      return <ProviderConnectionsModal onClose={onClose} />;
+    case 'addProjectFromProvider':
+      return <AddProjectFromProviderModal onClose={onClose} onManageConnections={manageConnections} />;
+    case 'publishProject':
+      return (
+        <PublishProjectModal
+          projectId={dialog.projectId}
+          projectName={dialog.projectName}
+          projectDescription={dialog.projectDescription}
+          onClose={onClose}
+          onManageConnections={manageConnections}
+        />
+      );
+    case 'startReview':
+      return <StartReviewDialog projectId={dialog.projectId} onClose={onClose} />;
     case 'dataDir':
       return <DataDirModal opened onClose={onClose} />;
     case 'saveAsTemplate':

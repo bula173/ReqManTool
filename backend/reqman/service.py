@@ -45,6 +45,7 @@ from .git_repo import (
     validate_baseline_name,
 )
 from .history import FileChange, build_snapshot, compare_snapshots, describe_changes
+from .providers import PROVIDER_LABELS, ProviderService
 from . import module_tree, richtext
 from .models import (
     DEFAULT_MODULE_TYPE,
@@ -407,6 +408,7 @@ class ProjectService:
         store: ProjectStore,
         builtin_templates_dir: Path | None = None,
         history: GitHistory | None = None,
+        providers: ProviderService | None = None,
     ):
         self.store = store
         self.builtin_templates_dir = (
@@ -415,6 +417,11 @@ class ProjectService:
         self.builtin_prompts_dir = BUILTIN_PROMPTS_DIR
         # Without one, git history is off (plain files): the default for direct use and tests.
         self.history = history if history is not None else GitHistory()
+        # GitLab/GitHub connections (app-level; tokens in the OS keychain).
+        # Without one: no connections, tokens in memory (direct use and tests).
+        self.providers = providers if providers is not None else ProviderService()
+        # Remote git operations on a connection's https URL authenticate with its token.
+        self.history.remote_auth = self.providers.git_auth_env
         # The projects the last successful mutation of this thread wrote
         # (``_records_history``), so the API can broadcast every one of them:
         # removing a requirement also cleans up links in referencing projects.
@@ -808,6 +815,311 @@ class ProjectService:
                     f"A project '{project_id}' already exists in this data directory: {exc}"
                 ) from exc
         return self.store.load_project(project_id)
+
+    # --- GitLab / GitHub (providers) ----------------------------------------------
+    #
+    # Connections are app-level settings (not project data); every provider
+    # API call runs here, server-side (``providers.py``). Publishing and
+    # reviews are git remote operations like Push: they never write project
+    # files, so they are not ``_records_history`` mutations and are allowed
+    # while the project is locked (as Push and Pull are).
+
+    def list_provider_connections(self) -> list[dict[str, Any]]:
+        """The GitLab/GitHub connections (never their tokens; ``has_token`` tells whether one is stored)."""
+        return self.providers.list_connections()
+
+    def add_provider_connection(self, provider: Any, url: Any, name: Any, token: Any) -> dict[str, Any]:
+        """Add a connection; the token is verified with the provider and stored in the OS keychain."""
+        return self.providers.add_connection(provider, url, name, token)
+
+    def update_provider_connection(self, connection_id: str, name: Any = None, token: Any = None) -> dict[str, Any]:
+        """Rename a connection and/or replace its token (verified first)."""
+        return self.providers.update_connection(connection_id, name, token)
+
+    def remove_provider_connection(self, connection_id: str) -> dict[str, Any]:
+        """Remove a connection and its keychain token. Project remotes stay configured."""
+        return self.providers.remove_connection(connection_id)
+
+    def provider_namespaces(self, connection_id: str) -> list[dict[str, Any]]:
+        """Where a repository can be created: the user's own namespace, then groups / organisations."""
+        return self.providers.provider(connection_id).namespaces()
+
+    def provider_repositories(self, connection_id: str, search: Any = None, page: Any = None) -> dict[str, Any]:
+        """One page of the user's repositories (most recently active first), optionally filtered by name."""
+        provider = self.providers.provider(connection_id)
+        return provider.repositories(self.providers.checked_search(search), self.providers.checked_page(page))
+
+    def publish_project(
+        self,
+        project_id: str,
+        connection_id: str,
+        namespace_id: Any = None,
+        name: Any = None,
+        private: Any = True,
+        description: Any = None,
+    ) -> dict[str, Any]:
+        """"Publish project": create the remote repository, set it as the project's remote, push.
+
+        The project needs its own repository with at least one commit and no
+        remote yet (409 otherwise). The repository is private unless
+        ``private`` is false. When the repository was created but setting
+        the remote or pushing failed, the error says so (and the project is
+        reported changed, so clients refresh its status).
+        """
+        project = self.store.load_project(project_id)
+        project_dir = self.store.project_path(project_id)
+        status = self.history.status(project_dir)
+        if status["state"] not in ("ready", "paused"):
+            raise ConflictError(
+                status["message"] or "The project has no git repository; use “Enable history (git)” first"
+            )
+        if status["head"] is None:
+            raise ConflictError("The project has no commit yet; make a change or enable history first")
+        if status["remote"] and status["remote"]["url"]:
+            raise ConflictError(
+                f"The project already has a remote ({status['remote']['url']}); remove it in the Git panel "
+                "before publishing it elsewhere"
+            )
+        if namespace_id is not None and not isinstance(namespace_id, str):
+            raise ValueError("The namespace id must be a string")
+        repo_name = project.name if name is None or (isinstance(name, str) and not name.strip()) else name
+        if not isinstance(repo_name, str) or len(repo_name.strip()) > 100 or any(ord(c) < 32 for c in repo_name):
+            raise ValueError("The repository name must be one line of at most 100 characters")
+        if not isinstance(private, bool):
+            raise ValueError("'private' must be true or false")
+        if description is not None and not isinstance(description, str):
+            raise ValueError("The description must be a string")
+        repo_description = (project.description if description is None else description).strip()[:250]
+        provider = self.providers.provider(connection_id)
+        repository = provider.create_repository(namespace_id or "", repo_name.strip(), private, repo_description)
+        clone_url = repository.get("clone_url")
+        try:
+            if not clone_url:
+                raise ValueError(f"{provider.label} answered without a clone URL")
+            self._git_remote_call(lambda: self.history.set_remote(project_dir, clone_url))
+            pushed = self._git_remote_call(lambda: self.history.push(project_dir))
+        except ValueError as exc:
+            error = ConflictError if isinstance(exc, ConflictError) else ValueError
+            failure = error(
+                f"The repository {repository.get('web_url') or repository.get('full_path')} was created on "
+                f"{provider.label}, but publishing did not finish: {exc}"
+            )
+            failure.project_changed = True  # type: ignore[attr-defined]
+            raise failure from exc
+        return {"repository": repository, "pushed": pushed["pushed"], "status": self.history.status(project_dir)}
+
+    def add_project_from_provider(self, connection_id: str, full_path: Any) -> Project:
+        """"Add project from GitLab/GitHub": clone a repository picked from the provider's list.
+
+        The clone URL comes from the provider API (never from the client);
+        then it is the same path as ``add_project_from_remote``.
+        """
+        path = self.providers.checked_repository_path(full_path)
+        repository = self.providers.provider(connection_id).repository(path)
+        clone_url = repository.get("clone_url")
+        if not clone_url:
+            raise ValueError(f"The repository '{path}' has no HTTPS clone URL")
+        return self.add_project_from_remote(clone_url)
+
+    def _review_target(self, project_dir: Path) -> tuple[Any, str, str]:
+        """``(provider, repository path, remote URL)`` of the project's remote; ``ValueError`` without one."""
+        status = self.history.status(project_dir)
+        remote = status.get("remote") or {}
+        url = remote.get("url")
+        if not url:
+            raise ValueError("The project has no remote; publish it or set a remote URL first")
+        match = self.providers.connection_for_remote(url)
+        if match is None:
+            raise ValueError(
+                f"The project's remote ({url}) does not belong to any GitLab / GitHub connection; "
+                "add a connection for its server first"
+            )
+        connection, repo_path = match
+        return self.providers.provider(connection.id), repo_path, url
+
+    def _snapshot_at(self, project_dir: Path, project_id: str, commit: str | None) -> dict[str, Any]:
+        files: dict[str, bytes | None] = {}
+        if commit:
+            _obj, files = self.history.commit_files(project_dir, commit)
+        snapshot = build_snapshot(files)
+        snapshot["project"] = self._snapshot_project_dict(
+            project_id, snapshot["project"], f"Commit {(commit or '')[:12]} of project '{project_id}'"
+        )
+        return snapshot
+
+    def _review_description(
+        self, project: Project, project_dir: Path, pushed: dict[str, Any], limit: int = 200
+    ) -> str:
+        """The generated merge/pull request description: changed requirements and the baseline reference."""
+        lines = [
+            f"Review of the ReqManTool project **{project.name}** (`{project.id}`).",
+            "",
+            f"- Commits under review: {pushed['commits']} "
+            f"(base `{(pushed['base'] or 'none')[:12]}`, head `{pushed['head'][:12]}`)",
+        ]
+        try:
+            baselines = self.history.list_baselines(project_dir).get("baselines") or []
+        except Exception:  # noqa: BLE001 - the description is best effort
+            baselines = []
+        if baselines:
+            latest = baselines[0]
+            lines.append(
+                f"- Baseline reference: `baseline/{latest['name']}` (commit `{str(latest['commit'])[:12]}`"
+                + (f", {latest['date']}" if latest.get("date") else "")
+                + ")"
+            )
+        else:
+            lines.append("- Baseline reference: none yet")
+        try:
+            result = compare_snapshots(
+                self._snapshot_at(project_dir, project.id, pushed["base"]),
+                self._snapshot_at(project_dir, project.id, pushed["head"]),
+            )
+        except Exception as exc:  # noqa: BLE001 - never fail the review over its description
+            lines += ["", f"_The changed requirements could not be listed: {exc}_"]
+            result = None
+        if result is not None:
+            summary = result["summary"]
+            lines += [
+                "",
+                "### Changed requirements",
+                "",
+                f"{summary['requirements_added']} added, {summary['requirements_modified']} modified, "
+                f"{summary['requirements_removed']} removed; links +{summary['links_added']} "
+                f"−{summary['links_removed']}; modules +{summary['modules_added']} −{summary['modules_removed']}; "
+                f"attribute definitions +{summary['attributes_added']} −{summary['attributes_removed']} "
+                f"~{summary['attributes_changed']}.",
+            ]
+            shown = 0
+            omitted = 0
+            for module in result["modules"]:
+                change = f" ({module['change']})" if module["change"] else ""
+                entries: list[str] = []
+                for label, ids in (
+                    ("Added", module["added"]),
+                    ("Modified", [m["id"] for m in module["modified"]]),
+                    ("Removed", module["removed"]),
+                ):
+                    if not ids:
+                        continue
+                    room = max(limit - shown, 0)
+                    visible, hidden = ids[:room], ids[room:]
+                    shown += len(visible)
+                    omitted += len(hidden)
+                    if visible:
+                        entries.append(f"- {label}: " + ", ".join(f"`{i}`" for i in visible))
+                if entries:
+                    lines += ["", f"#### {module['name']} (`{module['module_id']}`){change}", *entries]
+            if omitted:
+                lines += ["", f"…and {omitted} more requirement(s); see the commit browser for the full list."]
+        lines += [
+            "",
+            "---",
+            "_Generated by ReqManTool. Merge with a merge commit or fast-forward (not squash or rebase), "
+            "so ReqManTool instances can fast-forward with Pull._",
+        ]
+        return "\n".join(lines)
+
+    def start_review(
+        self, project_id: str, branch: Any = None, title: Any = None
+    ) -> dict[str, Any]:
+        """Push ``current`` to a review branch and open a merge/pull request into ``current``.
+
+        The project's remote must belong to a connection. ``branch``
+        defaults to ``review/<UTC timestamp>``; an open request from that
+        branch is reused (re-pushing updates it). The description lists the
+        changed requirements since the remote's ``current`` and the latest
+        baseline. The request is tracked in ``.git/config`` (per instance)
+        for ``review_status``. When the branch was pushed but the request
+        could not be opened, the error says so (retry with the same branch).
+        """
+        project = self.store.load_project(project_id)
+        project_dir = self.store.project_path(project_id)
+        provider, repo_path, _url = self._review_target(project_dir)
+        if branch is None or (isinstance(branch, str) and not branch.strip()):
+            branch = f"review/{datetime.now(timezone.utc):%Y%m%d-%H%M%S}"
+        if not isinstance(branch, str):
+            raise ValueError("The review branch must be a string")
+        if title is not None and not isinstance(title, str):
+            raise ValueError("The title must be a string")
+        pushed = self._git_remote_call(lambda: self.history.push_review_branch(project_dir, branch))
+        try:
+            description = self._review_description(project, project_dir, pushed)
+            review = provider.find_open_change_request(repo_path, pushed["branch"])
+            if review is None:
+                review_title = (title or "").strip() or (
+                    f"Review: {project.name} ({pushed['commits']} commit{'s' if pushed['commits'] != 1 else ''})"
+                )
+                review = provider.create_change_request(
+                    repo_path, pushed["branch"], "current", review_title[:250], description
+                )
+            self._git_remote_call(
+                lambda: self.history.set_review(
+                    project_dir,
+                    {
+                        "branch": pushed["branch"],
+                        "number": review.get("number"),
+                        "url": review.get("url"),
+                        "connection": provider.connection.id,
+                    },
+                )
+            )
+        except ValueError as exc:
+            failure = ValueError(
+                f"The branch '{pushed['branch']}' was pushed, but the {self._review_noun(provider)} "
+                f"could not be opened: {exc}. Retry with the branch name '{pushed['branch']}'."
+            )
+            failure.project_changed = True  # type: ignore[attr-defined]
+            raise failure from exc
+        return {"review": review, "pushed": pushed, "status": self.history.status(project_dir)}
+
+    @staticmethod
+    def _review_noun(provider: Any) -> str:
+        return "merge request" if provider.kind == "gitlab" else "pull request"
+
+    def review_status(self, project_id: str) -> dict[str, Any]:
+        """The tracked merge/pull request, live from the provider: state, approvals (read-only)."""
+        self.store.load_project(project_id)
+        project_dir = self.store.project_path(project_id)
+        status = self.history.status(project_dir)
+        tracked = (status.get("remote") or {}).get("review")
+        if not tracked:
+            return {"tracked": None, "review": None, "provider": None}
+        provider, repo_path, _url = self._review_target(project_dir)
+        review = provider.change_request(repo_path, tracked["number"])
+        return {
+            "tracked": tracked,
+            "review": review,
+            "provider": provider.kind,
+            "provider_label": PROVIDER_LABELS.get(provider.kind, provider.kind),
+            "repository": repo_path,
+        }
+
+    def forget_review(self, project_id: str) -> dict[str, Any]:
+        """Stop tracking the project's merge/pull request (nothing changes on the provider)."""
+        self.store.load_project(project_id)
+        project_dir = self.store.project_path(project_id)
+        self._git_remote_call(lambda: self.history.set_review(project_dir, None))
+        return self.history.status(project_dir)
+
+    def provider_info_for_project(self, project_id: str) -> dict[str, Any]:
+        """Which connection (if any) the project's remote belongs to (for the Git panel). Read-only."""
+        self.store.load_project(project_id)
+        status = self.history.status(self.store.project_path(project_id))
+        url = (status.get("remote") or {}).get("url")
+        match = self.providers.connection_for_remote(url) if url else None
+        if match is None:
+            return {"connection": None, "repository": None}
+        connection, repo_path = match
+        return {
+            "connection": {
+                "id": connection.id,
+                "name": connection.name,
+                "provider": connection.provider,
+                "provider_label": PROVIDER_LABELS.get(connection.provider, connection.provider),
+            },
+            "repository": repo_path,
+        }
 
     # --- baselines (git) ---------------------------------------------------------
 

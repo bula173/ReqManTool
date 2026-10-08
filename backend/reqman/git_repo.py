@@ -104,6 +104,10 @@ REMOTE_NAME = "origin"
 REMOTE_WORKING_REF = f"refs/remotes/{REMOTE_NAME}/{WORKING_BRANCH}"
 REMOTE_BASELINE_REF = f"refs/remotes/{REMOTE_NAME}/{BASELINE_BRANCH}"
 AUTO_PUSH_CONFIG_KEY = "reqman.autopush"
+# The tracked merge/pull request (``reqman.review.branch``/``number``/``url``/``connection``).
+REVIEW_CONFIG_SECTION = "reqman.review"
+REVIEW_BRANCH_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+MAX_REVIEW_BRANCH_LENGTH = 100
 SYNC_CONFLICT_MESSAGE = (
     f"Sync conflict: the local '{WORKING_BRANCH}' branch and the remote's have diverged "
     "(another instance pushed other changes). Changes to this project are blocked until the "
@@ -691,6 +695,10 @@ class GitHistory:
         self._version_checked = False
         # git dir -> (monotonic time, identity) of the last `git var` lookup
         self._identities: dict[str, tuple[float, tuple[str, str]]] = {}
+        # Extra environment for a remote operation on a URL (provider token
+        # authentication, see ``providers.ProviderService.git_auth_env``), or
+        # ``None``. Set by ``ProjectService``; must never raise.
+        self.remote_auth: Callable[[str], Mapping[str, str] | None] | None = None
 
     @property
     def enabled(self) -> bool:
@@ -757,17 +765,40 @@ class GitHistory:
             [f"--git-dir={info.git_dir}", f"--work-tree={info.work_tree}", *args], info.work_tree, **kwargs
         )
 
+    def _remote_env(self, url: str | None) -> dict[str, str]:
+        """``_REMOTE_ENV`` plus the provider authentication for ``url`` (see ``remote_auth``).
+
+        The token travels only in the environment of the one git process
+        (``GIT_CONFIG_COUNT``/``GIT_CONFIG_KEY_<n>``/``GIT_CONFIG_VALUE_<n>``):
+        never on its command line, in ``.git/config`` or in the remote URL.
+        """
+        env = dict(_REMOTE_ENV)
+        if url and self.remote_auth is not None:
+            try:
+                extra = self.remote_auth(url)
+            except Exception:  # noqa: BLE001 - git then uses the user's own credentials
+                extra = None
+            if extra:
+                env.update(extra)
+        return env
+
     def _remote_run(
-        self, run: Callable[..., subprocess.CompletedProcess], *args: Any, **kwargs: Any
+        self,
+        run: Callable[..., subprocess.CompletedProcess],
+        *args: Any,
+        url: str | None = None,
+        **kwargs: Any,
     ) -> subprocess.CompletedProcess:
         """Run a remote operation (ls-remote, fetch, push, clone) through ``run`` (``_run``/``_repo``).
 
         Only these calls may use the local ``file`` transport (``_REMOTE_ENV``).
         git's refusal of another transport ("transport 'x' not allowed", e.g.
         for a remote configured outside the app) becomes a clear ``GitError``.
+        ``url`` (the remote the operation reaches) selects provider
+        authentication (``_remote_env``).
         """
         try:
-            return run(*args, env=_REMOTE_ENV, **kwargs)
+            return run(*args, env=self._remote_env(url), **kwargs)
         except GitError as exc:
             message = _transport_error(str(exc))
             if message is None:
@@ -1955,10 +1986,12 @@ class GitHistory:
             "behind": None,
             "sync_conflict": False,
             "conflict_message": None,
+            "review": None,
         }
         if url is None:
             return result
         result["auto_push"] = self._auto_push_enabled(info)
+        result["review"] = self._review_info(info)
         local = self._rev(info, WORKING_REF)
         remote = self._rev(info, REMOTE_WORKING_REF)
         if local is None or remote is None:
@@ -2026,10 +2059,12 @@ class GitHistory:
                     # Auto-push is an opt-in per remote: a later remote must
                     # not inherit it silently.
                     self._repo(info, ["config", "--unset", AUTO_PUSH_CONFIG_KEY], check=False)
+                    # A tracked review belongs to the removed remote's repository.
+                    self._repo(info, ["config", "--remove-section", REVIEW_CONFIG_SECTION], check=False)
                 return self._remote_info(info)
             cleaned = self._check_remote_url(cleaned)
             probe = self._remote_run(
-                self._repo, info, ["ls-remote", "--", cleaned], check=False, read_only=True
+                self._repo, info, ["ls-remote", "--", cleaned], check=False, read_only=True, url=cleaned
             )
             if probe.returncode != 0:
                 transport = _transport_error(_stderr(probe))
@@ -2045,6 +2080,8 @@ class GitHistory:
                 self._repo(info, ["config", "--unset", AUTO_PUSH_CONFIG_KEY], check=False)
                 self._repo(info, ["remote", "add", REMOTE_NAME, cleaned])
             else:
+                if self._remote_url(info) != cleaned:
+                    self._repo(info, ["config", "--remove-section", REVIEW_CONFIG_SECTION], check=False)
                 self._repo(info, ["remote", "set-url", REMOTE_NAME, cleaned])
             return self._remote_info(info)
 
@@ -2115,6 +2152,7 @@ class GitHistory:
             ["push", "--quiet", *self._receive_pack_options(info), REMOTE_NAME, *refspecs],
             check=False,
             timeout=timeout,
+            url=url,
         )
         if result.returncode != 0:
             error = _stderr(result)
@@ -2196,7 +2234,7 @@ class GitHistory:
                 raise ValueError("No remote is configured for this project; set a remote URL first")
             notes: list[str] = []
             self._commit_pending(info, describe)
-            listing = self._remote_run(self._repo, info, ["ls-remote", "--", url], read_only=True)
+            listing = self._remote_run(self._repo, info, ["ls-remote", "--", url], read_only=True, url=url)
             remote_refs = {
                 line.split("\t", 1)[1]
                 for line in listing.stdout.decode("utf-8", "replace").splitlines()
@@ -2208,7 +2246,7 @@ class GitHistory:
                 if ref in remote_refs
             ]
             if branch_specs:
-                self._remote_run(self._repo, info, ["fetch", "--quiet", REMOTE_NAME, *branch_specs])
+                self._remote_run(self._repo, info, ["fetch", "--quiet", REMOTE_NAME, *branch_specs], url=url)
             if any(ref.startswith(f"refs/tags/{BASELINE_TAG_PREFIX}") for ref in remote_refs):
                 # Non-forced: a local baseline/* tag that differs is kept, with a note.
                 tags = self._remote_run(
@@ -2221,6 +2259,7 @@ class GitHistory:
                         f"refs/tags/{BASELINE_TAG_PREFIX}*:refs/tags/{BASELINE_TAG_PREFIX}*",
                     ],
                     check=False,
+                    url=url,
                 )
                 if tags.returncode != 0:
                     notes.append(
@@ -2273,11 +2312,147 @@ class GitHistory:
             self._run,
             ["clone", "--quiet", "--template=", "--branch", WORKING_BRANCH, "--", cleaned, str(target)],
             target.parent,
+            url=cleaned,
         )
         info = self.detect(target)
         if info.state != STATE_READY:
             raise GitError(f"the cloned repository is not usable ({info.message})")
         self._ensure_excludes(info)
+
+    # --- review branches (GitLab merge requests / GitHub pull requests) ------------
+
+    def check_review_branch(self, branch: str) -> str:
+        """A valid review branch name, or ``ValueError``.
+
+        ``git check-ref-format --branch`` rules, plus: not ``current`` or
+        ``baseline`` (the branches ReqManTool owns), no leading ``-``, at most
+        ``MAX_REVIEW_BRANCH_LENGTH`` characters.
+        """
+        name = (branch or "").strip() if isinstance(branch, str) else ""
+        if not name:
+            raise ValueError("The review branch name must not be empty")
+        if len(name) > MAX_REVIEW_BRANCH_LENGTH or not REVIEW_BRANCH_PATTERN.fullmatch(name):
+            raise ValueError(
+                f"Invalid review branch name '{name}': use letters, digits, '.', '_', '-' and '/' "
+                f"(at most {MAX_REVIEW_BRANCH_LENGTH} characters, starting with a letter or digit)"
+            )
+        if name in (WORKING_BRANCH, BASELINE_BRANCH):
+            raise ValueError(f"The review branch must not be '{name}': ReqManTool owns that branch")
+        result = self._run(["check-ref-format", "--branch", name], None, check=False, read_only=True)
+        if result.returncode != 0:
+            raise ValueError(f"Invalid review branch name '{name}': git refuses it as a branch name")
+        return name
+
+    def push_review_branch(self, project_dir: Path, branch: str) -> dict[str, Any]:
+        """Push ``current`` to ``branch`` on the remote, for a merge/pull request into ``current``.
+
+        Fetches the remote's ``current`` first (into its remote-tracking ref,
+        like Pull) so the review base is known. Refused (``ValueError``)
+        without a remote, when the remote has no ``current`` branch yet (Push
+        first) or when it already has every local commit (nothing to review).
+        Never forced: a remote ``branch`` with other commits is a
+        ``RepoConflict``. Returns the URL, branch, head, review base (merge
+        base) and the number of commits under review.
+        """
+        self._require_enabled()
+        branch = self.check_review_branch(branch)
+        with self._lock(project_dir):
+            info = self._usable_repo(project_dir)
+            url = self._remote_url(info)
+            if url is None:
+                raise ValueError("No remote is configured for this project; set or publish a remote first")
+            head = self._rev(info, WORKING_REF)
+            if head is None:
+                raise RepoConflict("The project has no commit yet; nothing to review")
+            listing = self._remote_run(
+                self._repo, info, ["ls-remote", "--", url, WORKING_REF], read_only=True, url=url
+            )
+            if not listing.stdout.strip():
+                raise ValueError(
+                    f"The remote has no '{WORKING_BRANCH}' branch yet: Push the project first; "
+                    "later changes can then be reviewed"
+                )
+            self._remote_run(
+                self._repo,
+                info,
+                ["fetch", "--quiet", REMOTE_NAME, f"+{WORKING_REF}:{REMOTE_WORKING_REF}"],
+                url=url,
+            )
+            remote = self._rev(info, REMOTE_WORKING_REF)
+            if remote is not None and (remote == head or self._is_ancestor(info, head, remote)):
+                raise ValueError(
+                    f"Nothing to review: the remote's '{WORKING_BRANCH}' branch already has every local change"
+                )
+            base_result = self._repo(
+                info, ["merge-base", WORKING_REF, REMOTE_WORKING_REF], check=False, read_only=True
+            )
+            base = base_result.stdout.decode("utf-8", "replace").strip() or None if base_result.returncode == 0 else None
+            count_range = f"{base}..{head}" if base else head
+            counted = self._repo(info, ["rev-list", "--count", "--first-parent", count_range], read_only=True)
+            commits = int(counted.stdout.strip() or b"0")
+            result = self._remote_run(
+                self._repo,
+                info,
+                [
+                    "push",
+                    "--quiet",
+                    *self._receive_pack_options(info),
+                    REMOTE_NAME,
+                    f"{WORKING_REF}:refs/heads/{branch}",
+                ],
+                check=False,
+                url=url,
+            )
+            if result.returncode != 0:
+                error = _stderr(result)
+                transport = _transport_error(error)
+                if transport is not None:
+                    raise GitError(transport)
+                if self._is_non_fast_forward(error):
+                    raise RepoConflict(
+                        f"The remote branch '{branch}' has commits this project does not have; "
+                        f"choose another review branch name. (git: {error})"
+                    )
+                raise GitError(f"git push failed: {error}")
+            self._record(project_dir, None)
+            return {"url": url, "branch": branch, "head": head, "base": base, "commits": commits}
+
+    def _review_info(self, info: RepoInfo) -> dict[str, Any] | None:
+        """The tracked review (``reqman.review.*`` in ``.git/config``), or ``None``."""
+        result = self._repo(
+            info, ["config", "--get-regexp", r"^reqman\.review\."], check=False, read_only=True
+        )
+        if result.returncode != 0:
+            return None
+        values: dict[str, str] = {}
+        for line in result.stdout.decode("utf-8", "replace").splitlines():
+            key, _, value = line.partition(" ")
+            values[key.removeprefix(f"{REVIEW_CONFIG_SECTION}.")] = value
+        number = values.get("number", "")
+        if not values.get("branch") or not number.isdigit():
+            return None
+        return {
+            "branch": values["branch"],
+            "number": int(number),
+            "url": values.get("url") or None,
+            "connection": values.get("connection") or None,
+        }
+
+    def set_review(self, project_dir: Path, review: dict[str, Any] | None) -> None:
+        """Track (or, with ``None``, forget) the project's open review in ``.git/config``.
+
+        Per instance, like the remote and auto-push: never in the shared data files.
+        """
+        self._require_enabled()
+        with self._lock(project_dir):
+            info = self._usable_repo(project_dir)
+            self._repo(info, ["config", "--remove-section", REVIEW_CONFIG_SECTION], check=False)
+            if review is None:
+                return
+            for key in ("branch", "number", "url", "connection"):
+                value = review.get(key)
+                if value is not None and value != "":
+                    self._repo(info, ["config", f"{REVIEW_CONFIG_SECTION}.{key}", str(value)])
 
     # --- reading ----------------------------------------------------------------
 
