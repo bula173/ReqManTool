@@ -84,6 +84,25 @@ item first (phase A), then test, review and fix by area (phase B).
 
 ### Next — requested, in delivery order
 
+- [ ] Server edition: discover projects in the logged-in user's GitHub /
+      GitLab repositories, no separate "connection" needed. Requested
+      2026-10-08. When a user is logged in through a `github` or `gitlab`
+      provider, the server uses that login's OAuth token (never a stored
+      personal access token) to list the repositories the user can access
+      that contain a ReqManTool project: repositories tagged with the
+      topic `reqmantool` (set automatically by "Publish project"), plus a
+      background scan of `project.json` with a ReqManTool `format_version`
+      at the repository root (results cached per user, refresh button).
+      Workspace tab shows them as "Available on GitHub/GitLab" with
+      "Open": the server clones the repository into its data directory
+      (once, shared by all users; later opens just fetch) and lists it as
+      a project; access follows the repository-permission roles. Scopes:
+      GitHub OAuth Apps can only read private repositories with the broad
+      `repo` scope — prefer a GitHub App (fine-grained, per-repository
+      install) for the server edition, document both; GitLab needs
+      `read_api` (already requested for repository roles). The local
+      edition keeps provider connections (keychain tokens). REST + WS
+      parity; provider errors shown verbatim.
 - [ ] Server edition: more identity providers and group-based roles.
       Requested 2026-10-08 (after the repository-permission item). Login
       providers, all pluggable through the existing server auth extension
