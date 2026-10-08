@@ -127,6 +127,15 @@ item first (phase A), then test, review and fix by area (phase B).
       data volume documented (project repos can also be mirrored to
       GitLab via remotes). Depends on the server-edition items.
 
+- [ ] Rename project (display name) from the UI. Requested 2026-10-08
+      (a rename had to be done by editing project.json). Project → right-
+      click / project page → "Rename…": changes `Project.name` only; the
+      project id / folder stays (ids are referenced by subprojects,
+      project references, cross-project links and git remotes); name
+      validated like on creation; REST + WS parity, broadcast, git
+      auto-commit "Project renamed: A → B"; lock and server-edition
+      project-admin rules apply.
+
 ### Phase B — tests, review and follow-ups of delivered items
 
 Collected review findings and leftovers of the items in Done; handled
