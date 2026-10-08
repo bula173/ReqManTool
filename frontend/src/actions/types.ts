@@ -143,6 +143,8 @@ export interface AppCommands {
   setActiveView: (viewId: string | null) => void;
   /** Store (or, with null, remove) a view's shared column widths in project.json. */
   setViewColumnWidths: (viewId: string, widths: Record<string, number> | null) => Promise<View>;
+  /** Expand / collapse the left (navigation) and right (requirement detail) side panels; overlays on narrow screens. */
+  setLeftPanelOpen: (open: boolean) => void;
   setDetailPanelOpen: (open: boolean) => void;
   setColorScheme: (scheme: 'light' | 'dark') => void;
   /** "Enable history (git)" for the open project; resolves with its new git status. */
@@ -199,7 +201,14 @@ export interface AppState {
   /** The open project's history (git) status, once loaded. */
   gitStatus: GitStatus | null;
   activeViewId: string | null;
+  /**
+   * Whether the left (navigation) / right (requirement detail) side panel is
+   * open. Remembered per browser; on a narrow screen (`narrowLayout`) both
+   * start collapsed and an open one is an overlay (at most one at a time).
+   */
+  leftPanelOpen: boolean;
   detailPanelOpen: boolean;
+  narrowLayout: boolean;
   colorScheme: 'light' | 'dark';
   /** Loaded lazily: `isLoading` until `commands.requestTemplates()` was called and the list arrived. */
   templates: { data: TemplateSummary[]; isLoading: boolean; isError: boolean };

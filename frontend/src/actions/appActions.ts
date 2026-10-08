@@ -13,6 +13,7 @@ import {
   IconHistory,
   IconInfoCircle,
   IconKeyboard,
+  IconLayoutSidebar,
   IconLayoutSidebarRight,
   IconLineHeight,
   IconMoon,
@@ -273,10 +274,23 @@ export const appActions: Action<'app'>[] = [
     items: viewItems,
   },
   {
+    // The left panel (project/module tree): collapses to a rail; an overlay on narrow screens.
+    id: 'view.toggleLeftPanel',
+    element: 'app',
+    label: 'Navigation panel',
+    icon: IconLayoutSidebar,
+    shortcuts: [{ key: 'b', mod: true }],
+    isAvailable: () => true,
+    isChecked: (ctx) => ctx.leftPanelOpen,
+    run: (ctx) => ctx.commands.setLeftPanelOpen(!ctx.leftPanelOpen),
+  },
+  {
+    // The module page's right panel: collapses to a rail; an overlay on narrow screens.
     id: 'view.toggleDetailPanel',
     element: 'app',
     label: 'Requirement detail panel',
     icon: IconLayoutSidebarRight,
+    shortcuts: [{ key: 'b', mod: true, alt: true }],
     isAvailable: () => true,
     isChecked: (ctx) => ctx.detailPanelOpen,
     run: (ctx) => ctx.commands.setDetailPanelOpen(!ctx.detailPanelOpen),

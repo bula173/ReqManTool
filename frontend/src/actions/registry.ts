@@ -188,6 +188,7 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
     label: 'View',
     entries: [
       action('view.attributeView'),
+      action('view.toggleLeftPanel'),
       action('view.toggleDetailPanel'),
       divider,
       action('view.resetColumnWidths'),

@@ -1,7 +1,7 @@
 import { useComputedColorScheme, useMantineColorScheme } from '@mantine/core';
-import { useLocalStorage } from '@mantine/hooks';
+import { useLocalStorage, useMediaQuery } from '@mantine/hooks';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client';
 import {
   subscribeDatasetCleared,
@@ -29,6 +29,12 @@ import {
 } from '../api/queries';
 import { AppDialogs } from '../layout/AppDialogs';
 import { LEFT_PANEL_TAB_STORAGE_KEY, type LeftPanelTab } from '../layout/leftPanel';
+import {
+  DETAIL_PANEL_OPEN_STORAGE_KEY,
+  LEFT_PANEL_OPEN_STORAGE_KEY,
+  NARROW_LAYOUT_QUERY,
+  type SidePanel,
+} from '../layout/sidePanels';
 import { AppActionsContext, type AppActionsValue } from './context';
 import { ContextMenuHost } from './ContextMenuHost';
 import { contextFor, getAction, isSupported, shortcutAction } from './registry';
@@ -41,8 +47,6 @@ import type {
   MenuRequest,
   RequirementClipboard,
 } from './types';
-
-const DETAIL_PANEL_STORAGE_KEY = 'reqman.detailPanelOpen';
 
 /** Shift+F10 or the context menu key: "open the editing menu". */
 function isContextMenuKey(event: KeyboardEvent): boolean {
@@ -76,6 +80,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const projectId = params.projectId ?? null;
   const moduleId = params.projectId ? (params.moduleId ?? null) : null;
   const navigate = useNavigate();
+  const { pathname } = useLocation();
 
   // Same query keys as the pages use, so these share the pages' cache entries.
   const projectQuery = useProject(projectId ?? undefined);
@@ -105,12 +110,26 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
 
   const { setColorScheme } = useMantineColorScheme();
   const colorScheme = useComputedColorScheme('light');
-  const [detailPanelOpen, setDetailPanelOpen] = useLocalStorage<boolean>({
-    key: DETAIL_PANEL_STORAGE_KEY,
+  // Side panels. Wide screens: open/collapsed per browser (localStorage).
+  const [storedDetailPanelOpen, setStoredDetailPanelOpen] = useLocalStorage<boolean>({
+    key: DETAIL_PANEL_OPEN_STORAGE_KEY,
     defaultValue: true,
     // Read synchronously so a hidden panel does not flash open on reload.
     getInitialValueInEffect: false,
   });
+  const [storedLeftPanelOpen, setStoredLeftPanelOpen] = useLocalStorage<boolean>({
+    key: LEFT_PANEL_OPEN_STORAGE_KEY,
+    defaultValue: true,
+    getInitialValueInEffect: false,
+  });
+  // Narrow screens: both panels start collapsed; one may be open as an
+  // overlay, for the page it was opened on (navigating closes it). The
+  // stored wide-screen state is not touched there.
+  const narrowLayout = useMediaQuery(NARROW_LAYOUT_QUERY, false, { getInitialValueInEffect: false });
+  const [overlay, setOverlay] = useState<{ panel: SidePanel; pathname: string } | null>(null);
+  const overlayPanel = narrowLayout && overlay?.pathname === pathname ? overlay.panel : null;
+  const leftPanelOpen = narrowLayout ? overlayPanel === 'left' : storedLeftPanelOpen !== false;
+  const detailPanelOpen = narrowLayout ? overlayPanel === 'right' : storedDetailPanelOpen !== false;
   // The sidebar's active tab (shared with `Sidebar` through the same storage key).
   const [, setLeftPanelTab] = useLocalStorage<LeftPanelTab>({
     key: LEFT_PANEL_TAB_STORAGE_KEY,
@@ -153,6 +172,20 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const requestedViewId = activeView.projectId === projectId ? activeView.viewId : null;
   const activeViewId = views.some((v) => v.id === requestedViewId) ? requestedViewId : null;
 
+  const setPanelOpen = useCallback(
+    (panel: SidePanel, open: boolean) => {
+      if (narrowLayout) {
+        // One overlay at a time; closing only closes this panel's overlay.
+        setOverlay((current) => (open ? { panel, pathname } : current?.panel === panel ? null : current));
+        return;
+      }
+      setOverlay(null);
+      if (panel === 'left') setStoredLeftPanelOpen(open);
+      else setStoredDetailPanelOpen(open);
+    },
+    [narrowLayout, pathname, setStoredLeftPanelOpen, setStoredDetailPanelOpen],
+  );
+
   const commands: AppCommands = useMemo(
     () => ({
       navigate: (path) => navigate(path),
@@ -161,7 +194,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       selectRequirement: (id) => setSelection({ moduleKey, id }),
       setActiveView: (viewId) => setActiveViewState({ projectId, viewId }),
       setViewColumnWidths: (viewId, columnWidths) => setViewColumnWidths.mutateAsync({ viewId, columnWidths }),
-      setDetailPanelOpen,
+      setLeftPanelOpen: (open) => setPanelOpen('left', open),
+      setDetailPanelOpen: (open) => setPanelOpen('right', open),
       setColorScheme,
       enableHistory: () => enableHistory.mutateAsync(),
       gitPush: () => gitPush.mutateAsync(),
@@ -204,6 +238,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       showInTree: (requirementId) => {
         setSelection({ moduleKey, id: requirementId });
         setLeftPanelTab('module');
+        // The tree must be visible to show anything.
+        setPanelOpen('left', true);
       },
       openProject: (openProjectId) => {
         navigate(`/projects/${encodeURIComponent(openProjectId)}`);
@@ -224,7 +260,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       moduleKey,
       projectId,
       moduleId,
-      setDetailPanelOpen,
+      setPanelOpen,
       setLeftPanelTab,
       setColorScheme,
       copyRequirement.mutateAsync,
@@ -254,7 +290,9 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     views,
     gitStatus: projectId ? (gitStatusQuery.data ?? null) : null,
     activeViewId,
+    leftPanelOpen,
     detailPanelOpen,
+    narrowLayout,
     colorScheme,
     templates: {
       data: templatesQuery.data ?? [],

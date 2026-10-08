@@ -44,6 +44,7 @@ import { RequirementDetailPanel } from '../components/RequirementDetailPanel';
 import { ResizableHeaderCell, type ColumnMenuKind } from '../components/ResizableHeaderCell';
 import { RowResizeHandle } from '../components/RowResizeHandle';
 import { useRowAppearance } from '../components/rowStyles';
+import { RightSidePanel } from '../layout/SidePanelLayout';
 import {
   DEFAULT_ID_COLUMN_WIDTH,
   ID_COLUMN,
@@ -478,7 +479,8 @@ export function ModulePage() {
         </Table>
       </div>
 
-      {appState.detailPanelOpen && (
+      {/* Collapsible and resizable; the table takes the width it frees. */}
+      <RightSidePanel>
         <RequirementDetailPanel
           projectId={projectId}
           moduleId={moduleId}
@@ -489,7 +491,7 @@ export function ModulePage() {
           onNavigateToLinked={handleNavigateToLinked}
           onClose={() => run('view.toggleDetailPanel')}
         />
-      )}
+      </RightSidePanel>
       </Group>
 
     </Stack>

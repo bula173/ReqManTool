@@ -243,3 +243,150 @@ th:hover > div > .reqman-col-menu-button,
 .reqman-rich-text li > p {
   margin: 0;
 }
+
+/*
+ * Collapsible, resizable side panels (layout/SidePanelLayout.tsx): the left panel
+ * in the app shell's navbar and the module page's detail panel. An open panel
+ * has a draggable inner border (.reqman-panel-edge) with a collapse chevron on
+ * it; a collapsed one is a thin rail. On narrow screens an open panel is an
+ * overlay above a backdrop, between the header and the footer.
+ */
+.reqman-side-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+
+.reqman-side-panel[data-side='right'] {
+  flex-shrink: 0;
+}
+
+.reqman-side-panel > * {
+  flex: 1;
+  min-height: 0;
+}
+
+.reqman-side-panel > .reqman-panel-edge {
+  flex: none;
+}
+
+.reqman-panel-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  z-index: 3;
+}
+
+.reqman-panel-edge[data-side='left'] {
+  right: -4px;
+}
+
+.reqman-panel-edge[data-side='right'] {
+  left: -4px;
+}
+
+.reqman-panel-edge[data-side='right'][data-in-gap] {
+  left: calc(var(--mantine-spacing-md) / -2 - 4px);
+}
+
+.reqman-panel-resize-handle {
+  position: absolute;
+  inset: 0;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.reqman-panel-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+}
+
+.reqman-panel-resize-handle:hover::after,
+.reqman-panel-resize-handle:focus-visible::after,
+.reqman-panel-resize-handle[data-resizing]::after {
+  background: var(--mantine-color-blue-filled);
+}
+
+.reqman-panel-resize-handle:focus-visible {
+  outline: none;
+}
+
+/* The collapse chevron, centred on the border (`translate`, so ActionIcon's press `transform` still works). */
+.reqman-panel-toggle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  translate: -50% -50%;
+}
+
+.reqman-panel-rail {
+  flex-shrink: 0;
+  width: 28px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--mantine-spacing-xs);
+  padding-top: 6px;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.reqman-panel-rail:hover {
+  background: var(--mantine-color-default-hover);
+}
+
+.reqman-panel-rail[data-bordered] {
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-default);
+}
+
+.reqman-panel-rail-label {
+  writing-mode: vertical-rl;
+  font-size: var(--mantine-font-size-xs);
+  color: var(--mantine-color-dimmed);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.reqman-panel-backdrop {
+  position: fixed;
+  inset: 0;
+  top: var(--app-shell-header-height, 56px);
+  z-index: 180;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.reqman-panel-overlay {
+  position: fixed;
+  top: var(--app-shell-header-height, 56px);
+  bottom: var(--app-shell-footer-height, 28px);
+  z-index: 190;
+  display: flex;
+  flex-direction: column;
+  background: var(--mantine-color-body);
+  box-shadow: var(--mantine-shadow-xl);
+}
+
+.reqman-panel-overlay[data-side='left'] {
+  left: 0;
+  border-right: 1px solid var(--mantine-color-default-border);
+}
+
+.reqman-panel-overlay[data-side='right'] {
+  right: 0;
+  border-left: 1px solid var(--mantine-color-default-border);
+}
+
+.reqman-panel-overlay > .reqman-side-panel {
+  flex: 1;
+}

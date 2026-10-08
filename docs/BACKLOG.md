@@ -927,6 +927,33 @@
       of on every app load. Frontend only; endpoints unchanged. UI: Edit
       menu / requirement context menu, File ▸ Load template ▸, New
       project dialog.
+- [x] **Collapsible and resizable side panels** (2026-10-08; requested
+      2026-10-04). Frontend only; no backend, API or data format change.
+      The left navigation panel and the right requirement-detail panel
+      each collapse to a 28px rail (chevron on the panel edge; a click on
+      the rail expands it). View menu: "Navigation panel"
+      (`view.toggleLeftPanel`, Ctrl/Cmd+B) and the detail panel
+      (`view.toggleDetailPanel`, now Ctrl/Cmd+Alt+B); shortcuts are
+      inactive while typing. Draggable border (`role="separator"`; arrow
+      keys resize, Shift for bigger steps, double-click resets). Widths:
+      left 200–640px (default 280, max 40% of the window), right
+      260–760px (default 320, max 45%); the window fraction is applied at
+      render only. State and widths are kept in localStorage
+      (`reqman.leftPanel.open`, `reqman.leftPanel.width`,
+      `reqman.detailPanel.width`, existing `reqman.detailPanelOpen`), not
+      in git-tracked data. Narrow screens (max-width 48em) start
+      collapsed and open one overlay at a time (backdrop click or Escape
+      closes; a route change closes). The table takes the freed width;
+      "Show in tree" opens the left panel. Endpoints: none. Files:
+      `frontend/src/layout/{sidePanels.ts (new), SidePanelParts.tsx
+      (new), SidePanelLayout.tsx (new), AppLayout.tsx}`,
+      `frontend/src/actions/{AppActionsProvider.tsx, appActions.ts,
+      registry.ts, types.ts}`, `frontend/src/pages/ModulePage.tsx`,
+      `frontend/src/components/RequirementDetailPanel.tsx`,
+      `frontend/src/index.css`, `README.md`. Checked with static headless
+      screenshots at 1400px and 600px. Not covered: interactive browser
+      verification, overlay focus handling, frontend tests; follow-ups in
+      the backlog ("Side panels: follow-ups").
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -1204,15 +1231,15 @@ to the categories above.
       tags); this item adds the UI glue — "lock after baseline", and
       baseline references from sign-off records, verification and test
       execution reports, and impact analysis.
-- [ ] Collapsible (and resizable) side panels. Requested 2026-10-04. The
-      left panel (project/module tree) and the right panel (requirement
-      detail) can each be collapsed to a thin rail and expanded again —
-      via a chevron button on the panel edge, the View menu, and keyboard
-      shortcuts (e.g. Ctrl/Cmd+B left, Ctrl/Cmd+Alt+B right, inactive while
-      typing); dragging the panel border resizes it. Collapsed/expanded
-      state and widths are remembered per browser (not in git-tracked
-      data). On narrow screens both panels start collapsed and open as
-      overlays. The requirements table uses the freed width.
+- [ ] Side panels: follow-ups (2026-10-08). (1) Interactive behaviour is
+      not browser-verified: dragging, shortcuts (including Option+Cmd+B
+      on macOS and Firefox's own Ctrl+B), overlays, Escape. (2) Focus is
+      not moved into or trapped in the narrow-screen overlays. (3) Any
+      route change closes the narrow-screen overlay, also when picking a
+      project — alternative: close only when a module opens. (4) No
+      "Reset panel widths" menu action. (5) Possible gap in the navbar
+      border about 90px above the footer, seen in headless screenshots
+      (unconfirmed). (6) No frontend tests (no runner).
 - [ ] Toolbar → menu: review follow-ups (2026-10-06). (1) Hard-delete
       safety: an open purge confirmation survives a data-folder switch
       (`root_changed`), and the captured project id is then purged in

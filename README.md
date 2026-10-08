@@ -22,6 +22,11 @@ JSON files on disk, so history, review, and backup are just... git.
   import / save templates, CSV import, exports), Edit (clipboard, reordering,
   purge module / project), View (attribute view,
   detail panel, dark mode) and Help (shortcuts, documentation, About)
+- **Collapsible, resizable side panels** — the navigation tree (left) and the
+  requirement detail panel (right) collapse to a thin rail via the chevron on
+  their border, the View menu, or Ctrl/Cmd+B / Ctrl/Cmd+Alt+B; drag the border
+  to resize. State and widths are kept per browser; on narrow screens the
+  panels open as overlays
 - **Project templates** — create a project from a template (attributes,
   modules, link configurations and views, no requirements), including the
   built-in `RBC_Template` for an ERTMS/ETCS RBC under EN 50126/50128/50129;

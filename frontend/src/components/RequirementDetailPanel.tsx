@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { ApiError } from '../api/client';
 import { useRequirementHistory } from '../api/queries';
 import type { AttributeDefinition, HistoryCommit, HistoryDiff, HistoryEntry, Requirement } from '../api/types';
+import { toggleHint } from '../layout/sidePanels';
 import { EditableAttributeCell } from './EditableAttributeCell';
 import { richTextToPlain } from './richText';
 
@@ -85,10 +86,11 @@ export function RequirementDetailPanel({
   const attributeName = (id: string) => attributes.find((a) => a.id === id)?.name ?? id;
 
   return (
-    <Card withBorder w={320} style={{ flexShrink: 0, minHeight: 0 }}>
+    // Fills its side panel (layout/SidePanelLayout.tsx), which owns the width.
+    <Card withBorder style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
       <Group justify="space-between" mb="sm" wrap="nowrap">
         <Title order={5}>Requirement details</Title>
-        <Tooltip label="Hide the detail panel (View › Requirement detail panel)">
+        <Tooltip label={toggleHint('Hide', 'requirement detail panel', 'view.toggleDetailPanel')}>
           <ActionIcon variant="subtle" size="sm" aria-label="Hide requirement details" onClick={onClose}>
             <IconX size={14} />
           </ActionIcon>
