@@ -519,10 +519,11 @@ def test_module_removed_by_hand_is_dropped_from_order_on_next_create(service):
     shutil.rmtree(service.store.root / project.id / "modules" / "a")
 
     assert [m.id for m in service.list_modules(project.id)] == ["c", "b"]
-    assert _project_json(service, project.id)["module_order"] == ["c", "a", "b"]  # not rewritten by reading
+    # Project format 7 entries; not rewritten by reading.
+    assert _project_json(service, project.id)["module_order"] == [{"module": "c"}, {"module": "a"}, {"module": "b"}]
 
     service.create_module(project.id, "D", "R")
-    assert _project_json(service, project.id)["module_order"] == ["c", "b", "d"]
+    assert _project_json(service, project.id)["module_order"] == [{"module": "c"}, {"module": "b"}, {"module": "d"}]
     # A module recreated under the removed id is new: it goes last.
     service.create_module(project.id, "A", "R")
     fresh = ProjectService(ProjectStore(service.store.root))
@@ -540,7 +541,7 @@ def test_module_added_by_hand_is_appended_and_reorderable(service):
 
     assert [m.id for m in service.list_modules(project.id)] == ["c", "b", "a"]
     service.reorder_module(project.id, "a", "up")
-    assert _project_json(service, project.id)["module_order"] == ["c", "a", "b"]
+    assert _project_json(service, project.id)["module_order"] == [{"module": "c"}, {"module": "a"}, {"module": "b"}]
 
 
 def test_project_without_modules_has_no_module_order_key(service):
@@ -566,7 +567,7 @@ def test_module_order_stays_last_and_formatted_across_unrelated_saves(service):
     data = json.loads(text)
     assert list(data)[0] == "format_version"
     assert list(data)[-1] == "module_order"
-    assert data["module_order"] == ["b", "a"]
+    assert data["module_order"] == [{"module": "b"}, {"module": "a"}]
     assert text == json.dumps(data, indent=2) + "\n"
 
 
@@ -588,7 +589,8 @@ def test_module_order_via_rest_create_and_template(client):
 
     rbc = client.post("/projects", json={"name": "RBC", "template_id": "builtin:rbc_template"}).json()["id"]
     names = [m["name"] for m in client.get(f"/projects/{rbc}/modules").json()]
-    assert names == ["StRS", "SyRS", "SwRS", "SysTest", "SwTest"]
+    # The RBC template's module tree, depth-first.
+    assert names == ["StRS", "SyRS", "SwRS", "SysTest", "SwTest", "SysTestExec", "SwTestExec"]
 
 
 # --- module reorder: REST / WebSocket parity ----------------------------------------
@@ -870,5 +872,5 @@ def test_reorder_of_unversioned_project_writes_full_order_and_version(service):
     data = json.loads(text)
     assert list(data)[0] == "format_version"
     assert list(data)[-1] == "module_order"
-    assert data["module_order"] == ["a", "c", "b"]
+    assert data["module_order"] == [{"module": "a"}, {"module": "c"}, {"module": "b"}]
     assert text == json.dumps(data, indent=2) + "\n"

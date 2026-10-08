@@ -165,7 +165,11 @@ def test_import_writes_the_standard_template_form(service):
         "source": "user",
         "name": "Spaced Name",
         "description": source["description"],
-        "modules": [{"key": "a", "name": "Alpha", "prefix": "A"}, {"key": "b", "name": "Beta", "prefix": "B"}],
+        # Listing entries carry the module type (module types, project format 5).
+        "modules": [
+            {"key": "a", "name": "Alpha", "prefix": "A", "type": "requirements"},
+            {"key": "b", "name": "Beta", "prefix": "B", "type": "requirements"},
+        ],
         "error": None,
     }
     templates_dir = service.store.root / "_templates"
@@ -173,7 +177,8 @@ def test_import_writes_the_standard_template_form(service):
     assert not (service.store.root.parent / "outside.json").exists()
 
     expected = {
-        "format_version": 1,
+        # A version 1 file is migrated and written as version 2.
+        "format_version": 2,
         "id": "spaced-name",
         "name": "Spaced Name",
         "description": source["description"],
@@ -372,7 +377,7 @@ def test_rest_builtin_name_with_whitespace_is_409_and_not_broadcast(client, tmp_
         resp = _post(client, _text(_template(name=" rbc_template ")))
         assert resp.status_code == 409
         assert "builtin:rbc_template" in resp.json()["detail"]
-        resp = _post(client, _text(_template(format_version=2)))
+        resp = _post(client, _text(_template(format_version=3)))  # newer than version 2
         assert resp.status_code == 400 and "newer" in resp.json()["detail"]
         _assert_next_event_is_from_new_project(client, ws)
     assert _files(tmp_path / "_templates") == {}
@@ -612,7 +617,7 @@ def test_template_file_nested_just_below_the_parser_limit_is_listed_as_invalid(s
         ("{bad", 400),
         ("", 400),
         ("[]", 400),
-        (_text(_template(format_version=2)), 400),
+        (_text(_template(format_version=3)), 400),  # newer than version 2
         (_text(_template(name="  ")), 400),
         (_text(_template(views=[{"name": "V", "attribute_ids": ["missing"]}])), 400),
         (_text(_template(name=" RBC_Template ")), 409),

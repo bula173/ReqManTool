@@ -282,6 +282,26 @@ def test_invalid_view_modules_are_rejected(service, modules, message):
     assert path.read_bytes() == before
 
 
+def test_view_scoped_to_a_module_deleted_by_hand_can_still_be_saved(service):
+    # R5: ids the view already stores but naming no module any more are pruned
+    # on save; a new unknown id is still refused.
+    import shutil
+
+    project_id, view_id, first, second = _project_with_modules(service)
+    service.update_view(project_id, view_id, {"modules": [first, second]})
+    shutil.rmtree(service.store.root / project_id / "modules" / second)
+    view = service.update_view(project_id, view_id, {"name": "Renamed", "modules": [first, second]})
+    assert view.name == "Renamed" and view.modules == [first]
+    service.update_view(project_id, view_id, {"modules": [first]})
+    path = service.store.root / project_id / "project.json"
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="Unknown module"):
+        service.update_view(project_id, view_id, {"modules": [first, second]})  # no longer stored
+    with pytest.raises(ValueError, match="Unknown module"):
+        service.update_view(project_id, view_id, {"modules": [first, "nope"]})
+    assert path.read_bytes() == before
+
+
 def test_view_modules_travel_through_save_as_template(service):
     project_id, view_id, first, _ = _project_with_modules(service)
     service.update_view(project_id, view_id, {"modules": [first]})

@@ -502,6 +502,23 @@ class ProjectStore:
         self._requirements_dir(project_id, module.id).mkdir(parents=True, exist_ok=True)
         _write_json(self._module_file(project_id, module.id), module.to_dict())
 
+    def discard_new_module(self, project_id: str, module_id: str) -> None:
+        """Undo ``save_module`` of a module that was just created (best effort).
+
+        Deletes its ``module.json``, then its requirements folder and module
+        folder only if they are empty, so a file this call did not write is
+        never deleted. Errors are ignored.
+        """
+        try:
+            self._module_file(project_id, module_id).unlink(missing_ok=True)
+        except OSError:
+            pass
+        for folder in (self._requirements_dir(project_id, module_id), self._module_dir(project_id, module_id)):
+            try:
+                folder.rmdir()
+            except OSError:
+                pass
+
     def load_module(self, project_id: str, module_id: str) -> Module:
         self._check_project_format(project_id)
         path = self._module_file(project_id, module_id)

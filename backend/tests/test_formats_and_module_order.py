@@ -334,7 +334,8 @@ def test_new_modules_are_appended(service):
         service.create_module(project.id, name, "R")
     assert [m.id for m in service.list_modules(project.id)] == ["zeta", "alpha", "mid"]
     data = json.loads((service.store.root / project.id / "project.json").read_text())
-    assert data["module_order"] == ["zeta", "alpha", "mid"]
+    # Project format 7: entries are {"module": id} objects.
+    assert data["module_order"] == [{"module": "zeta"}, {"module": "alpha"}, {"module": "mid"}]
     assert list(data)[-1] == "module_order"
 
 
@@ -364,7 +365,7 @@ def test_module_order_is_tolerant_of_hand_edits(service):
     assert path.read_bytes() == before  # not rewritten by reading
 
     service.reorder_module(project.id, "d", "up")
-    assert json.loads(path.read_text())["module_order"] == ["c", "a", "d", "b"]
+    assert json.loads(path.read_text())["module_order"] == [{"module": m} for m in ("c", "a", "d", "b")]
 
 
 @pytest.mark.parametrize("bad", ["abc", {"a": 1}, None, 5])
@@ -403,7 +404,10 @@ def test_reorder_module_up_down_and_boundaries(service):
 
 def test_template_keeps_declared_module_order(service):
     project = service.create_project("RBC", template_id=RBC)
-    assert [m.name for m in service.list_modules(project.id)] == ["StRS", "SyRS", "SwRS", "SysTest", "SwTest"]
+    # The RBC template's module tree, depth-first (folders Requirements, Tests, Test Execution).
+    assert [m.name for m in service.list_modules(project.id)] == [
+        "StRS", "SyRS", "SwRS", "SysTest", "SwTest", "SysTestExec", "SwTestExec"
+    ]
 
 
 def test_save_as_template_keeps_module_order(service):

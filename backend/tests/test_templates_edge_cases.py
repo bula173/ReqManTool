@@ -364,9 +364,10 @@ _ENUM = {"id": "status", "name": "Status", "type": "enum", "choices": ["A", "B"]
         ({"views": [{"name": "V", "attribute_ids": "object_text"}]}, "'attribute_ids' must be a list of strings"),
         ({"views": [{"name": "V", "attribute_ids": [1]}]}, "'attribute_ids' must be a list of strings"),
         ({"views": [{"attribute_ids": []}]}, "views[0]: 'name' must be a non-empty string"),
-        ({"format_version": "1"}, "'format_version' must be the integer 1, got '1'"),
-        ({"format_version": True}, "'format_version' must be the integer 1, got True"),
-        ({"format_version": 1.0}, "'format_version' must be the integer 1, got 1.0"),
+        # The message names the current version (2); version 1 is still read.
+        ({"format_version": "1"}, "'format_version' must be the integer 2, got '1'"),
+        ({"format_version": True}, "'format_version' must be the integer 2, got True"),
+        ({"format_version": 1.0}, "'format_version' must be the integer 2, got 1.0"),
         ({"format_version": 0}, "Unsupported format_version 0"),
         ({"name": "  "}, "'name' must be a non-empty string"),
         ({"description": 5}, "'description' must be a string"),
@@ -424,7 +425,7 @@ def test_missing_format_version_and_non_object_template_are_invalid(service):
     _write_template(templates_dir, "array", "[1, 2]\n")
     _write_template(templates_dir, "string", '"Mini"\n')
     by_id = {t["id"]: t for t in service.list_templates()}
-    assert "'format_version' must be the integer 1, got None" in by_id["user:noversion"]["error"]
+    assert "'format_version' must be the integer 2, got None" in by_id["user:noversion"]["error"]
     assert by_id["user:noversion"]["name"] == "Mini"  # readable name is still shown
     assert "must be a JSON object" in by_id["user:array"]["error"]
     assert by_id["user:array"]["name"] == "array"
@@ -439,14 +440,18 @@ def test_unknown_keys_at_every_level_are_ignored(service):
     data = _minimal_template(future_top_level={"nested": [1, 2]})
     data["attributes"][0].update({"description": "ignored", "system": False, "ui": {"width": 3}})
     data["modules"][0]["type"] = "requirements"
-    data["modules"][1]["type"] = "tests"
+    # ``type`` is a known module key since module types; use a truly unknown one.
+    data["modules"][1]["category"] = "tests"
     data["link_configurations"][0]["type"] = "verifies"
     data["views"][0]["sort"] = "id"
     _write_template(service.store.root / "_templates", "future", data)
 
     entry = next(t for t in service.list_templates() if t["id"] == "user:future")
     assert entry["error"] is None
-    assert entry["modules"] == [{"key": "a", "name": "Alpha", "prefix": "A"}, {"key": "b", "name": "Beta", "prefix": "B"}]
+    assert entry["modules"] == [
+        {"key": "a", "name": "Alpha", "prefix": "A", "type": "requirements"},
+        {"key": "b", "name": "Beta", "prefix": "B", "type": "requirements"},
+    ]
     project = service.create_project("P", template_id="user:future")
     assert [(m.id, m.name, m.prefix) for m in service.list_modules(project.id)] == [
         ("alpha", "Alpha", "A"),
@@ -536,7 +541,10 @@ def test_save_as_template_round_trips_a_hand_written_template_with_remapped_link
         "source": "user",
         "name": "Mini Copy",
         "description": "",
-        "modules": [{"key": "alpha", "name": "Alpha", "prefix": "A"}, {"key": "beta", "name": "Beta", "prefix": "B"}],
+        "modules": [
+            {"key": "alpha", "name": "Alpha", "prefix": "A", "type": "requirements"},
+            {"key": "beta", "name": "Beta", "prefix": "B", "type": "requirements"},
+        ],
         "error": None,
     }
     data = json.loads((service.store.root / "_templates" / "mini-copy.json").read_text())
@@ -700,21 +708,40 @@ def test_saved_template_json_format_and_contents(service):
     data = json.loads(text)
     assert text == json.dumps(data, indent=2) + "\n"
     assert list(data) == [
-        "format_version", "id", "name", "description", "attributes", "modules", "link_configurations", "views",
+        "format_version", "id", "name", "description", "attributes", "modules",
+        "module_tree",  # the RBC folders are kept
+        "link_configurations", "views",
         "row_styles",  # the RBC template's default row styles are kept
     ]
     assert (data["format_version"], data["id"], data["name"], data["description"]) == (
-        1, "saved", "Saved", "Saved description",
+        2, "saved", "Saved", "Saved description",
     )
     # ``modules`` (module keys) is written only for an attribute scoped to some modules.
+    # ``module_types`` (module types) likewise only for an attribute scoped to module types.
     assert all(
-        list(a) == ["id", "name", "type", "required", "default", "choices"] + (["modules"] if "modules" in a else [])
+        list(a) == ["id", "name", "type", "required", "default", "choices"]
+        + (["modules"] if "modules" in a else [])
+        + (["module_types"] if "module_types" in a else [])
         for a in data["attributes"]
     )
     scoped = {a["id"]: a["modules"] for a in data["attributes"] if "modules" in a}
     assert scoped["sil"] == ["strs", "syrs", "swrs"]
     assert scoped["test_steps"] == ["systest", "swtest"]
-    assert all(list(m) == ["key", "name", "prefix", "description"] for m in data["modules"])
+    # ``type`` is written only for a non-default type, ``skeleton`` only when the module has headings.
+    assert all(
+        list(m) == ["key", "name", "prefix", "description"]
+        + (["type"] if "type" in m else [])
+        + (["skeleton"] if "skeleton" in m else [])
+        for m in data["modules"]
+    )
+    types = {m["key"]: m.get("type", "requirements") for m in data["modules"]}
+    assert types == {
+        "strs": "requirements", "syrs": "requirements", "swrs": "requirements",
+        "systest": "test_cases", "swtest": "test_cases",
+        "systestexec": "test_execution", "swtestexec": "test_execution",
+    }
+    assert all("type" not in m for m in data["modules"] if types[m["key"]] == "requirements")
+    assert {"strs", "syrs", "swrs"} <= {m["key"] for m in data["modules"] if m.get("skeleton")}
     assert all(list(c) == ["key", "name", "source_module", "target_module"] for c in data["link_configurations"])
     assert all(list(v) == ["name", "attribute_ids"] for v in data["views"])
     # Mirror attributes are not saved as attributes; requirements, counters and parent are not saved.
@@ -786,7 +813,7 @@ def test_legacy_project_without_parent_loads_and_is_only_rewritten_by_real_chang
     service.add_requirement("legacy", module.id, {"object_text": "x"})  # bumps id_counters
     expected = {"format_version": PROJECT_FORMAT.current, **json.loads(legacy)}
     expected["id_counters"] = {"R": 1}
-    expected["module_order"] = [module.id]
+    expected["module_order"] = [{"module": module.id}]  # project format 7 entries
     assert path.read_text() == json.dumps(expected, indent=2) + "\n"
     assert "parent_project_id" not in path.read_text()
 

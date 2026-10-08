@@ -166,9 +166,15 @@ def test_blank_project_has_no_rules_and_rbc_template_has_defaults(service):
     assert "row_styles" not in json.loads(_project_file(service, blank.id).read_text())
 
     rbc = service.create_project("Rbc", template_id=RBC)
-    assert [s.to_dict() for s in rbc.row_styles] == RBC_DEFAULTS
+    # The Object Type rules, then (since module types) the test execution Result rules.
+    expected = RBC_DEFAULTS + [
+        {"attribute_id": "result", "value": "Passed", "font_color": "#2f9e44", "background_color": None, "bold": False},
+        {"attribute_id": "result", "value": "Failed", "font_color": "#e03131", "background_color": None, "bold": True},
+        {"attribute_id": "result", "value": "Blocked", "font_color": "#e8590c", "background_color": None, "bold": False},
+    ]
+    assert [s.to_dict() for s in rbc.row_styles] == expected
     stored = json.loads(_project_file(service, rbc.id).read_text())
-    assert stored["row_styles"] == RBC_DEFAULTS
+    assert stored["row_styles"] == expected
 
 
 def test_save_as_template_keeps_rules(service):

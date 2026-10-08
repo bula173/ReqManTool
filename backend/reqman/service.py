@@ -2757,8 +2757,9 @@ class ProjectService:
         ``index`` (a non-negative int) it is placed at that 0-based position
         among the folder's entries (modules and folders) after the move; an
         index past the end appends. Moving within the same folder with an
-        index repositions it. Module ids, requirements and links are
-        unaffected. A move that changes nothing writes nothing.
+        index repositions it; without one it stays where it is. Module ids,
+        requirements and links are unaffected. A move that changes nothing
+        writes nothing.
         """
         index = self._checked_entry_index(index)
         project = self.store.load_project(project_id)
@@ -2769,6 +2770,8 @@ class ProjectService:
         if found is None:  # every existing module is in the effective tree
             raise FileNotFoundError(f"Module '{module_id}' not found in project '{project_id}'")
         source, _ = found
+        if index is None and source is target:
+            return module  # already in that folder: keep its position
         source.remove(module_id)
         target.insert(len(target) if index is None else min(index, len(target)), module_id)
         self._store_module_tree(project, tree)
@@ -2780,7 +2783,8 @@ class ProjectService:
     ) -> dict[str, Any]:
         """Move a folder (with everything in it) into folder ``parent_id`` (``None``: the top level).
 
-        ``index`` works as for ``move_module``. A folder cannot be moved into
+        ``index`` works as for ``move_module`` (no index and the same parent:
+        it stays where it is). A folder cannot be moved into
         itself or one of its subfolders, its name must be unique among the
         new sibling folders, and the result must not nest deeper than
         ``MAX_MODULE_FOLDER_DEPTH``. A move that changes nothing writes
@@ -2800,6 +2804,9 @@ class ProjectService:
         parent_depth = module_tree.depth_of(tree, parent_id) if parent_id is not None else 0
         if parent_depth + module_tree.height(folder) > MAX_MODULE_FOLDER_DEPTH:
             raise ValueError(f"Module folders can be nested at most {MAX_MODULE_FOLDER_DEPTH} levels deep")
+        if index is None and source is target:  # already in that folder: keep its position
+            parent = module_tree.find_folder(tree, parent_id) if parent_id is not None else None
+            return self._folder_summary(folder, parent)
         source.remove(folder)
         target.insert(len(target) if index is None else min(index, len(target)), folder)
         self._store_module_tree(project, tree)
@@ -3746,7 +3753,11 @@ class ProjectService:
             single_line = self._checked_single_line(changes["single_line"], updated)
         else:
             single_line = [k for k in order if k in (view.single_line or [])] or None
-        modules = self._checked_view_modules(project, changes["modules"]) if "modules" in changes else view.modules
+        modules = (
+            self._checked_view_modules(project, changes["modules"], tolerated=view.modules)
+            if "modules" in changes
+            else view.modules
+        )
         view.name = name
         view.modules = modules
         view.attribute_ids = attribute_ids
@@ -3755,14 +3766,19 @@ class ProjectService:
         self.store.save_project(project)
         return view
 
-    def _checked_view_modules(self, project: Project, modules: Any) -> list[str]:
-        """``modules`` as a stored view scope: existing module ids in display order ([]: every module)."""
+    def _checked_view_modules(self, project: Project, modules: Any, tolerated: list[str] | None = None) -> list[str]:
+        """``modules`` as a stored view scope: existing module ids in display order ([]: every module).
+
+        An unknown module id is refused, unless it is in ``tolerated`` (the
+        ids the view already stores: a module deleted by hand from disk);
+        those are dropped, so such a view can still be saved.
+        """
         if modules is None:
             return []
         if not isinstance(modules, list) or not all(isinstance(m, str) for m in modules):
             raise ValueError("View modules must be a list of module ids")
         order = self._module_order(project)
-        unknown = sorted(set(modules) - set(order))
+        unknown = sorted(set(modules) - set(order) - set(tolerated or []))
         if unknown:
             raise ValueError(f"Unknown module(s) for project '{project.id}': {unknown}")
         return [module_id for module_id in order if module_id in set(modules)]
@@ -4616,17 +4632,18 @@ class ProjectService:
         local_id = _unique_slug(name, self.store.user_template_path_exists, fallback="template")
         template_id = make_template_id(USER_SOURCE, local_id)
         modules = self.list_modules(project_id)
-        template = self._template_from_project(
-            project,
-            modules,
-            template_id,
-            name,
-            description,
-            self._module_tree(project),
-            {m.id: self._skeleton_from_module(project, m) for m in modules},
-        )
-        data = template.to_dict()
         try:
+            # Skeletons inside the try: a module with too many headings gets the prefix too.
+            template = self._template_from_project(
+                project,
+                modules,
+                template_id,
+                name,
+                description,
+                self._module_tree(project),
+                {m.id: self._skeleton_from_module(project, m) for m in modules},
+            )
+            data = template.to_dict()
             # Round-trip through the loader so the saved file is exactly what
             # a later "create from template" will accept.
             built = self._validate_template(parse_template(data, template_id))
@@ -4710,6 +4727,20 @@ class ProjectService:
             return False
         attr.modules.append(module.id)
         return True
+
+    @staticmethod
+    def _place_in_scope(scope: list[str], module_id: str, order: list[str]) -> list[str]:
+        """``scope`` with ``module_id`` moved to its display position (``order``); other entries keep their order.
+
+        It goes before the first entry shown after it (ids naming no module
+        count as last), so a scope in display order stays so and an
+        unsorted one is not re-sorted.
+        """
+        position = {m: i for i, m in enumerate(order)}
+        own = position.get(module_id, len(position))
+        rest = [m for m in scope if m != module_id]
+        index = next((i for i, m in enumerate(rest) if position.get(m, len(position)) > own), len(rest))
+        return [*rest[:index], module_id, *rest[index:]]
 
     def _merge_template_attributes(
         self, project: Project, module: Module, attributes: list[ModuleTemplateAttribute]
@@ -4828,17 +4859,22 @@ class ProjectService:
             view.single_line = cls._checked_single_line([key_id(k) for k in tview.single_line], view)
 
     @classmethod
-    def _skeleton_object_type(cls, project: Project, module: Module) -> AttributeDefinition:
+    def _skeleton_object_type(
+        cls, project: Project, module: Module, extended: list[str] | None = None
+    ) -> AttributeDefinition:
         """The Object Type attribute skeleton headings are typed with (made to apply to ``module``).
 
         The first non-system ``enum``/``string`` attribute whose name or id
-        reads "Object Type" (compared like report attributes).
+        reads "Object Type" (compared like report attributes). When its
+        scope had to be extended, its id is appended to ``extended`` (if
+        given and not already listed).
         """
         for attr in project.attributes:
             if attr.system or attr.type not in ("enum", "string"):
                 continue
             if "object type" in (cls._report_key(attr.name), cls._report_key(attr.id)):
-                cls._extend_scope(attr, module)
+                if cls._extend_scope(attr, module) and extended is not None and attr.id not in extended:
+                    extended.append(attr.id)
                 return attr
         raise ValueError(
             "a heading skeleton needs an 'Object Type' attribute (an enum with a 'Heading' choice, "
@@ -4856,7 +4892,12 @@ class ProjectService:
         raise ValueError(f"attribute '{attr.name}' has no '{wanted}' choice, needed by the heading skeleton")
 
     def _skeleton_requirements(
-        self, project: Project, module: Module, skeleton: list[SkeletonNode], allocate: Callable[[], str]
+        self,
+        project: Project,
+        module: Module,
+        skeleton: list[SkeletonNode],
+        allocate: Callable[[], str],
+        extended: list[str] | None = None,
     ) -> list[Requirement]:
         """The requirements of a heading skeleton for new ``module``, in tree order (in memory).
 
@@ -4864,11 +4905,13 @@ class ProjectService:
         Type = Heading; its ``text`` a first child with Object Type =
         Information. Other attributes get their defaults; every requirement
         is validated like ``add_requirement`` (so a required attribute
-        without a default fails here). Ids come from ``allocate``.
+        without a default fails here). Ids come from ``allocate``. An
+        Object Type attribute whose scope is extended is reported in
+        ``extended`` (``_skeleton_object_type``).
         """
         if not skeleton:
             return []
-        object_type = self._skeleton_object_type(project, module)
+        object_type = self._skeleton_object_type(project, module, extended)
         heading_value = self._object_type_value(object_type, "Heading")
         info_value: str | None = None
         result: list[Requirement] = []
@@ -5003,7 +5046,9 @@ class ProjectService:
         else:
             def allocate() -> str:
                 return self._allocate_requirement_id(project, module)
-        requirements = self._skeleton_requirements(project, module, template.skeleton, allocate)
+        requirements = self._skeleton_requirements(
+            project, module, template.skeleton, allocate, merged["extended"]
+        )
         return {
             "module": module,
             "requirements": requirements,
@@ -5109,10 +5154,22 @@ class ProjectService:
         module: Module = applied["module"]
         container.append(module.id)
         project.module_order = tree
-        self._sort_attribute_scopes(project, module_tree.module_ids(tree))
-        self.store.save_module(project_id, module)
-        # Requirement files, then project.json (attributes, tree, counters, view).
-        self._write_new_requirements(project, module.id, applied["requirements"])
+        # Scopes extended to the new module get it at its display position;
+        # no other scope is touched (new attributes list only the module).
+        order = module_tree.module_ids(tree)
+        for attr in project.attributes:
+            if attr.id in applied["extended"]:
+                attr.modules = self._place_in_scope(attr.modules, module.id, order)
+        # Module file, requirement files, then project.json (attributes, tree,
+        # counters, view). On failure the requirement files are removed by
+        # _write_new_requirements and the module file here, so nothing of the
+        # new module is left behind.
+        try:
+            self.store.save_module(project_id, module)
+            self._write_new_requirements(project, module.id, applied["requirements"])
+        except BaseException:
+            self.store.discard_new_module(project_id, module.id)
+            raise
         return {
             "module": module,
             "added_attributes": applied["added"],

@@ -34,6 +34,8 @@ interface TreeDrag {
   id: string;
   /** For a folder: its id and its subfolders' ids (it cannot be dropped into them). */
   blocked: Set<string>;
+  /** The folder it is in now (null: the top level); a drop there is a no-op. */
+  parentId: string | null;
 }
 
 /** Drag data type of module tree nodes (other drop zones ignore it). */
@@ -137,7 +139,12 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
     drag !== null &&
     drag.projectId === projectId &&
     (targetFolderId === null || !drag.blocked.has(targetFolderId));
-  const dragProps = (kind: 'module' | 'folder', id: string, blocked: Set<string> = new Set()) =>
+  const dragProps = (
+    kind: 'module' | 'folder',
+    id: string,
+    parentId: string | null,
+    blocked: Set<string> = new Set(),
+  ) =>
     editable
       ? {
           draggable: true,
@@ -145,7 +152,7 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
             event.stopPropagation();
             event.dataTransfer.effectAllowed = 'move';
             event.dataTransfer.setData(TREE_DRAG_TYPE, JSON.stringify({ projectId, kind, id }));
-            setDrag({ projectId, kind, id, blocked });
+            setDrag({ projectId, kind, id, blocked, parentId });
           },
           onDragEnd: () => {
             setDrag(null);
@@ -169,6 +176,8 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
       const moved = drag;
       setDrag(null);
       setDropTarget(null);
+      // Dropped onto the folder it is already in (or a row inside it, by bubbling): keep its place.
+      if (moved.parentId === targetFolderId) return;
       const request =
         moved.kind === 'module'
           ? state.commands.moduleFolders.moveModule(projectId, moved.id, targetFolderId)
@@ -200,7 +209,7 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
           }
           active={state.projectId === projectId && activeModuleId === module.id}
           onClick={() => onOpenModule(projectId, module.id)}
-          {...dragProps('module', module.id)}
+          {...dragProps('module', module.id, node.parentId)}
           {...menuProps(module.name, MODULE_NODE_MENU, {
             module: { projectId, module, moduleIds, position },
             project: loadedProject,
@@ -218,7 +227,7 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
         onChange={() => toggleFolder(node.id)}
         childrenOffset={14}
         style={dropHighlight(node.id)}
-        {...dragProps('folder', node.id, folderSubtreeIds(node.entry))}
+        {...dragProps('folder', node.id, node.parentId, folderSubtreeIds(node.entry))}
         {...dropProps(node.id)}
         {...menuProps(node.name, FOLDER_NODE_MENU, {
           folder: { projectId, folder: node.entry, position },

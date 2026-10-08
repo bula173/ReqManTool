@@ -50,13 +50,17 @@ def test_builtin_rbc_template_is_listed_and_valid(service):
     rbc = next(t for t in templates if t["id"] == RBC)
     assert rbc["source"] == "builtin"
     assert rbc["error"] is None
-    assert [m["name"] for m in rbc["modules"]] == ["StRS", "SyRS", "SwRS", "SysTest", "SwTest"]
+    assert [m["name"] for m in rbc["modules"]] == [
+        "StRS", "SyRS", "SwRS", "SysTest", "SwTest", "SysTestExec", "SwTestExec"
+    ]
 
 
 def test_create_project_from_rbc_template_builds_structure(service):
     project = service.create_project("RBC GP", template_id=RBC)
     store = service.store
-    assert {m.name for m in service.list_modules(project.id)} == {"StRS", "SyRS", "SwRS", "SysTest", "SwTest"}
+    assert {m.name for m in service.list_modules(project.id)} == {
+        "StRS", "SyRS", "SwRS", "SysTest", "SwTest", "SysTestExec", "SwTestExec"
+    }
     reloaded = store.load_project(project.id)
     configs = {c.name: c for c in reloaded.link_configurations}
     assert configs["Satisfies StRS"].source_module_id == "syrs"
@@ -69,9 +73,11 @@ def test_create_project_from_rbc_template_builds_structure(service):
     requirements_view = next(v for v in reloaded.views if v.name == "Requirements")
     assert configs["Satisfies StRS"].id in requirements_view.attribute_ids
     assert not any(a.startswith("link:") for v in reloaded.views for a in v.attribute_ids)
-    # Requirement ids still come from the module prefix.
+    # Requirement ids still come from the module prefix, after the heading skeleton's.
+    skeleton = service.list_requirements(project.id, "syrs")
+    assert skeleton and [r.id for r in skeleton][0] == "SYRS-0001"
     req = service.add_requirement(project.id, "syrs", {"object_text": "x"})
-    assert req.id == "SYRS-0001"
+    assert req.id == f"SYRS-{len(skeleton) + 1:04d}"
     assert req.attributes["status"] == "Draft"
     assert not (store.root / ".reqman-staging").exists()
 
@@ -106,7 +112,7 @@ def test_create_from_template_rolls_back_when_a_write_fails(service, monkeypatch
 @pytest.mark.parametrize(
     "overrides, message",
     [
-        ({"format_version": 2}, "newer"),
+        ({"format_version": 3}, "newer"),  # version 2 is current
         ({"format_version": None}, "format_version"),
         ({"modules": [{"key": "a", "name": "A", "prefix": "A"}, {"key": "a", "name": "B", "prefix": "B"}]}, "duplicate module key"),
         ({"link_configurations": [{"key": "x", "name": "L", "source_module": "a", "target_module": "zzz"}]}, "zzz"),
@@ -165,10 +171,12 @@ def test_save_as_template_round_trips(service):
     assert summary["id"] == "user:my-rbc"
     path = service.store.root / "_templates" / "my-rbc.json"
     text = path.read_text()
-    assert text.endswith("}\n") and text.startswith('{\n  "format_version": 1,')
+    assert text.endswith("}\n") and text.startswith('{\n  "format_version": 2,')
     data = json.loads(text)
     assert list(data) == [
-        "format_version", "id", "name", "description", "attributes", "modules", "link_configurations", "views",
+        "format_version", "id", "name", "description", "attributes", "modules",
+        "module_tree",  # the RBC folders are kept
+        "link_configurations", "views",
         "row_styles",  # the RBC template's default row styles are kept
     ]
     assert "object_text" not in {a["id"] for a in data["attributes"]}
@@ -182,7 +190,16 @@ def test_save_as_template_round_trips(service):
     original = service.get_project(source.id)
     assert [a.to_dict() for a in copy.attributes] == [a.to_dict() for a in original.attributes]
     assert [v.to_dict() for v in copy.views] == [v.to_dict() for v in original.views]
-    assert service.list_requirements(copy.id, "strs") == []
+    # Only the heading skeleton is carried over, never other requirements.
+    def objects(project_id):
+        return [
+            (r.attributes.get("object_type"), r.attributes.get("object_text"))
+            for r in service.list_requirements(project_id, "strs")
+        ]
+
+    copied = objects(copy.id)
+    assert copied and all(kind in ("Heading", "Information") for kind, _ in copied)
+    assert copied == [o for o in objects(source.id) if o[1] != "not saved"]
 
 
 def test_save_as_template_rejects_name_collisions(service):
@@ -300,7 +317,7 @@ def test_rest_templates_and_subprojects(client):
     assert resp.status_code == 200, resp.text
     gp = resp.json()
     assert gp["parent_project_id"] == "rte"
-    assert len(client.get(f"/projects/{gp['id']}/modules").json()) == 5
+    assert len(client.get(f"/projects/{gp['id']}/modules").json()) == 7
 
     assert client.post("/projects", json={"name": "X", "template_id": "user:none"}).status_code == 404
     assert client.post("/projects", json={"name": "X", "template_id": "bogus"}).status_code == 400

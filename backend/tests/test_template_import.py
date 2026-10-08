@@ -57,7 +57,8 @@ def test_import_saves_canonical_user_template_and_is_usable(service):
 
     path = service.store.root / "_templates" / "imported.json"
     text = path.read_text(encoding="utf-8")
-    assert text.endswith("}\n") and text.startswith('{\n  "format_version": 1,\n  "id": "imported",')
+    # A version 1 file is migrated and written as the current version 2.
+    assert text.endswith("}\n") and text.startswith('{\n  "format_version": 2,\n  "id": "imported",')
     data = json.loads(text)
     assert list(data) == [
         "format_version", "id", "name", "description", "attributes", "modules", "link_configurations", "views",
@@ -80,7 +81,7 @@ def test_import_accepts_utf8_bom(service):
     [
         ("{not json", "not valid JSON"),
         ("[]", "JSON object"),
-        (_text(_template(format_version=2)), "newer"),
+        (_text(_template(format_version=3)), "newer"),
         (_text(_template(name="  ")), "'name'"),
         (_text(_template(views=[{"name": "V", "attribute_ids": ["missing"]}])), "missing"),
         (_text(_template(attributes=[{"id": "s", "name": "S", "type": "enum"}])), "choices"),

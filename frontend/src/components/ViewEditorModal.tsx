@@ -89,6 +89,11 @@ function ViewEditorForm({
   const [formError, setFormError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  // The scope without modules the project no longer has (e.g. a module deleted by hand from
+  // disk), once the modules are loaded: they cannot be ticked and are not saved.
+  const existingModules = modulesQuery.data ? new Set(modulesQuery.data.map((m) => m.id)) : null;
+  const scope = existingModules ? modules.filter((id) => existingModules.has(id)) : modules;
+
   const attributeName = (id: string) => attributes.find((a) => a.id === id)?.name ?? id;
   const unused = attributes.filter((a) => !columns.includes(a.id));
   const busy = updateView.isPending || removeView.isPending;
@@ -116,7 +121,7 @@ function ViewEditorForm({
           name,
           attribute_ids: columns,
           single_line: singleLine.filter((k) => shown.has(k)),
-          modules,
+          modules: scope,
         },
       },
       {
@@ -270,7 +275,7 @@ function ViewEditorForm({
             </Text>
           )}
           {(modulesQuery.data ?? []).length > 0 && (
-            <Checkbox.Group value={modules} onChange={setModules}>
+            <Checkbox.Group value={scope} onChange={setModules}>
               <Stack gap={4} mt={4}>
                 {(modulesQuery.data ?? []).map((module) => (
                   <Checkbox
@@ -288,7 +293,7 @@ function ViewEditorForm({
             </Checkbox.Group>
           )}
           <Text size="xs" c="dimmed" mt={4}>
-            {modules.length === 0
+            {scope.length === 0
               ? 'None ticked: offered on every module.'
               : 'Offered only on the ticked modules (the view selector of other modules does not list it).'}
           </Text>
