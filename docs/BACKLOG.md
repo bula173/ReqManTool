@@ -1000,6 +1000,85 @@
       view, multi-selection drag, browser verification, backend tests
       for `link_options`; follow-ups in the backlog ("Module tabs:
       follow-ups").
+- [x] **Module types + traceability matrix, verification report and test
+      execution report** (2026-10-08; requested 2026-10-04, delivered in
+      three slices). Slice 1, module types (commit c9d5c86):
+      `Module.type` ∈ `requirements` | `test_cases` | `test_execution`,
+      written only when not the default, chosen at creation (Type select
+      in the New module dialog) and immutable; icon in the sidebar
+      Project tab, module tabs and project page. `PROJECT_FORMAT` 4 → 5
+      (the migration rewrites nothing). `AttributeDefinition.module_types`:
+      an attribute applies to the listed modules or to modules of the
+      listed types; required attributes cannot be type-scoped. New link
+      configurations are rejected (not warned) unless requirements →
+      requirements, test_cases → requirements or test_execution →
+      test_cases; stored ones are never re-checked. An unknown module type
+      in a template makes the template invalid. `RBC_Template`:
+      SysTest/SwTest = test_cases; new SysTestExec (SYSTX) / SwTestExec
+      (SWTX) = test_execution with "Executes SysTest" / "Executes SwTest",
+      attributes Result (Passed/Failed/Blocked/Not Run), Executed By,
+      Execution Date, Build/SW Version Under Test, Evidence/Log Ref, a
+      "Test Execution" view and row styles; the old "Test Result" on test
+      cases is kept next to the execution "Result" (duplication, see
+      follow-ups). Endpoints: `POST /projects/{project_id}/modules`
+      (`type`), `POST /projects/{project_id}/attributes` (`module_types`),
+      `PUT /projects/{project_id}/attributes/{attr_id}/modules`
+      (`{modules, module_types, drop_values}`); WS `module.create`,
+      `attribute.add`, `attribute.set_modules`. Slice 2, reports (commit
+      3f9b518), read-only in `ProjectService` with REST + WS parity and no
+      broadcast: traceability matrix over a chain of link configurations
+      (grid, coverage "N of M", orphans, unverified; CSV/XLSX export;
+      `GET /projects/{project_id}/reports/traceability?config=…[&config=…]`,
+      `.../traceability/export/{csv|xlsx}`, WS `report.traceability`);
+      verification report per requirements module (verified / failed /
+      not run / not covered, totals and %; DOCX/XLSX;
+      `GET /projects/{project_id}/modules/{module_id}/reports/verification`
+      `[/export/{docx|xlsx}]`, WS `report.verification`); test execution
+      report per test_execution module (executed vs. planned, counts,
+      failed tests with affected requirements, builds/executors/dates;
+      DOCX/XLSX; `.../reports/execution[/export/{docx|xlsx}]`, WS
+      `report.execution`). Attributes are found by role (name priority
+      lists), not by RBC ids; the latest execution is the greatest
+      Execution Date, then module order, then tree position;
+      Heading/Information object types are excluded. UI: Reports menu,
+      `TraceabilityPage`, `VerificationReportPage`, `ExecutionReportPage`.
+      Slice 3, result import and verification status: JUnit XML and Robot
+      Framework `output.xml` into a test_execution module (stdlib expat,
+      DOCTYPE/entities refused, 64 MiB / 10,000 tests limits); matched on
+      a test-id-role attribute or the requirement id, exact then
+      whole-word; read-only preview, then an all-or-nothing import (one
+      commit, one broadcast); unmatched/ambiguous results are skipped with
+      a warning; JUnit error/failure → Failed, skipped → Not Run.
+      Endpoints: `POST /projects/{project_id}/modules/{module_id}/import/`
+      `test-results/preview` and `.../import/test-results` (raw XML body
+      plus query options, like CSV import; no multipart), WS
+      `requirement.preview_test_results` /
+      `requirement.import_test_results`. Computed read-only Verification
+      status (`GET /projects/{project_id}/modules/{module_id}/`
+      `verification-status`, WS `report.verification_status`): optional
+      per-browser table column (View menu toggle) and detail panel
+      display; never stored, not exported. UI: `ImportTestResultsModal`
+      from File ▸ Import and the module menu "Import test results…".
+      Backend: `backend/reqman/{models.py, service.py, app.py,
+      formats.py, templates.py, templates/rbc_template.json,
+      report_export.py (new), test_results_import.py (new)}`; design in
+      `docs/ARCHITECTURE.md` ("Module types and date attributes",
+      "Reports", "Test result import", "Verification status"). Not
+      covered: tests for all three slices; follow-ups in the backlog
+      ("Module types and reports: follow-ups").
+- [x] **`date` attribute type** (2026-10-08; delivered with slice 1 of the
+      module types item, commit c9d5c86). ISO `YYYY-MM-DD` string; a real
+      calendar date is validated in `ProjectService`, defaults included.
+      Native date picker in the table and the requirement form; CSV
+      import trims and validates; XLSX export writes real date cells;
+      ReqIF export uses `DATATYPE-DEFINITION-DATE` as
+      `YYYY-MM-DDT00:00:00` and leaves invalid stored values out.
+      Endpoints: existing attribute and requirement routes (`type:
+      "date"`). Backend: `backend/reqman/{service.py, csv_import.py,
+      xlsx_export.py, reqif_export.py}`; UI: Add attribute dialog,
+      `EditableAttributeCell`, `RequirementFormModal`. The `user` type is
+      not delivered (remaining item in the backlog); "Attribute schema
+      evolution + multi-valued enum" stays as is.
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -1013,7 +1092,7 @@ custom attribute schema per project ✅, object types beyond plain text
 (headings/chapters) — modeled as a plain requirement used as a parent ✅,
 rich/formatted requirement text (bold/lists/images, not just plain text) ❌,
 attribute types beyond string/text/integer/boolean/enum — notably **date**
-and **user** (who) ❌, requirement templates (pre-filled attribute sets for
+✅ and **user** (who) ❌, requirement templates (pre-filled attribute sets for
 a new requirement) ❌, attribute schema evolution (rename/retire enum
 choices with migration, delete attributes, rename/delete modules/projects)
 and a multi-valued enum ❌, requirement reuse from an ancestor project with
@@ -1023,9 +1102,9 @@ origin/drift tracking ❌.
 configured link type per module pair ✅, **suspect links** (a link is
 flagged when either endpoint's content changes after the link was made, so
 reviewers know to re-verify it) ❌, **traceability matrix** view (grid of
-source × target requirements showing which cells are linked) ❌,
+source × target requirements showing which cells are linked) ✅,
 **coverage analysis** (% of a module's requirements with at least one
-outgoing/incoming link of a given type — finds orphaned requirements) ❌,
+outgoing/incoming link of a given type — finds orphaned requirements) ✅,
 **impact analysis** (transitive upstream/downstream walk) ❌, source/test-
 code tag traceability ❌, versioned reference-document citations (e.g.
 UNISIG subsets) ❌, safety registers — hazard log with closure status, SRAC
@@ -1047,7 +1126,7 @@ full-text search across a module or project ❌, global find-and-replace ❌.
 
 **Import / export** — ReqIF export ✅ (see limitations noted above), CSV
 export ✅, Excel export ✅, Word export ✅, CSV import ✅, ReqIF import ❌,
-test-result import (JUnit XML / Robot Framework) ❌.
+test-result import (JUnit XML / Robot Framework) ✅.
 
 **Collaboration & review** — comments/discussion thread per requirement ❌,
 formal review/approval workflow (reviewer sign-off, review sets) ❌,
@@ -1448,39 +1527,21 @@ to the categories above.
       Interlocking, Neighbouring RBC (SUBSET-098), Operator/TMS; SwRS per
       EN 50128 software requirements specification structure. Exact
       chapter lists are data in the template files and can be edited.
-- [ ] Module types + traceability matrix, verification report and test
-      execution report. Requested 2026-10-04 (absorbs the former
-      "traceability matrix / coverage view" item). (1) Module types:
-      `Module.type` ∈ `requirements` | `test_cases` | `test_execution`
-      (backward-compatible default `requirements`), chosen at creation,
-      shown as an icon in the sidebar/tabs, set by templates. Attribute
-      applicability (see "Per-module attribute applicability") is extended
-      so an attribute can also apply to module types, not only to listed
-      modules. Link configurations are checked for sensible type pairs
-      (requirements→requirements, test_cases→requirements,
-      test_execution→test_cases). (2) `RBC_Template` update: StRS/SyRS/SwRS
-      = requirements, SysTest/SwTest = test_cases, new SysTestExec/SwTestExec
-      = test_execution with links "Executes SysTest" / "Executes SwTest" and
-      execution attributes (Result: Passed/Failed/Blocked/Not Run, Executed
-      By, Execution Date — needs the `date` type item, Build/SW Version
-      Under Test, Evidence/Log Ref). (3) Traceability matrix: pick a link
-      configuration (or a chain, e.g. StRS→SyRS→SwRS→SwTest→SwTestExec) and
-      get a source × target grid plus coverage stats ("N of M covered"),
-      orphan and unverified requirement lists; export XLSX/CSV.
-      (4) Verification report: for a requirements module, each
-      requirement's covering test cases, their latest execution result,
-      and a status (verified / failed / not run / not covered), with
-      totals and % — evidence-style output for EN 50128/EN 50129
-      verification. (5) Test execution report: for a test_execution module
-      (one test campaign / build), executed vs. planned test cases,
-      pass/fail/blocked counts, failed tests with the requirements they
-      affect, version/build under test, executor and date. Reports render
-      in the UI and export to DOCX/XLSX (reusing the existing exporters'
-      patterns); computed by `ProjectService` (read-only, REST + WebSocket).
-      (6) Result import (feature scout, 2026-10-04): JUnit XML / Robot
-      Framework results import into a test_execution module, matched to
-      test cases on a test-id attribute, plus a computed read-only
-      "Verification status" system attribute on requirements.
+- [ ] Module types and reports: follow-ups (2026-10-08). (1) Tests for
+      all three slices (phase B); existing tests that assert project
+      format 4, the old module type list or the old RBC module/attribute
+      lists need updating. (2) No transitive verification (e.g. StRS
+      verified via SyRS → SysTest). (3) No grid between non-adjacent
+      modules of a chain. (4) No cross-project chains (waits for "Project
+      references"). (5) The module tab menu has no report entries.
+      (6) Result import: no heading per run; no option to import
+      unmatched results as unlinked records; other formats (xUnit/NUnit,
+      TestNG, Cucumber JSON). (7) No sort/filter by Verification status.
+      (8) "Verification status column" is shown disabled instead of
+      hidden in the header menus of test modules. (9) The module type
+      cannot be changed after creation. (10) `RBC_Template` keeps the old
+      "Test Result" on test cases next to the execution "Result"
+      (duplication; consider removing it).
 - [ ] Project references + cross-project traceability. Requested
       2026-10-04 (chosen over a links-free tree; widened the same day from
       "ancestors only" to explicit references). (1) Project references: a
@@ -1672,8 +1733,8 @@ to the categories above.
 - [ ] Comments/discussion thread per requirement. Not yet requested.
 - [ ] Multi-select + bulk attribute edit across several requirements at
       once. Not yet requested.
-- [ ] `date` (and possibly `user`) as additional attribute types, alongside
-      the existing string/text/integer/boolean/enum. Not yet requested.
+- [ ] `user` (who) as an additional attribute type. The `date` type is
+      done (see Done, 2026-10-08). Not yet requested.
 - [ ] Printable/publishable document view of a module (formatted export to
       a readable spec document, distinct from the structured ReqIF/CSV/
       Excel/Word exports above), generalized into custom report templates

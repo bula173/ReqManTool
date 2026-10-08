@@ -22,9 +22,13 @@ import type {
   RequirementHistory,
   RowStyle,
   SetAttributeModulesResult,
+  TestResultsImportOptions,
+  TestResultsImportResult,
+  TestResultsPreview,
   TemplateSummary,
   TraceabilityReport,
   VerificationReport,
+  VerificationStatuses,
   VersionInfo,
   View,
 } from './types';
@@ -66,6 +70,9 @@ export const queryKeys = {
     ['projects', projectId, 'reports', 'verification', moduleId] as const,
   executionReport: (projectId: string, moduleId: string) =>
     ['projects', projectId, 'reports', 'execution', moduleId] as const,
+  /** The computed Verification status column / detail field of a requirements module. */
+  verificationStatuses: (projectId: string, moduleId: string) =>
+    ['projects', projectId, 'reports', 'verification-status', moduleId] as const,
   config: ['config'] as const,
   version: ['version'] as const,
   templates: ['templates'] as const,
@@ -294,16 +301,19 @@ export function useSetRowStyles(projectId: string) {
 // --- history (git) -----------------------------------------------------------
 
 /**
- * Invalidates every project's git status, git log and baseline queries.
+ * Invalidates every project's git status, git log, baseline and report queries.
  * Called after any successful mutation (see the QueryClient's MutationCache
  * in main.tsx): each change may add or amend a commit, and a comparison
- * against `current` includes uncommitted changes. Other clients' changes
- * arrive through live sync, which invalidates the whole project prefix.
+ * against `current` includes uncommitted changes. Reports (and the computed
+ * Verification status column) are derived from the data, so any change may
+ * alter them; only the ones in use refetch. Other clients' changes arrive
+ * through live sync, which invalidates the whole project prefix.
  */
 export function invalidateGitStatus(qc: QueryClient): void {
   qc.invalidateQueries({
     predicate: (query) =>
-      query.queryKey[0] === 'projects' && (query.queryKey[2] === 'git' || query.queryKey[2] === 'baselines'),
+      query.queryKey[0] === 'projects' &&
+      (query.queryKey[2] === 'git' || query.queryKey[2] === 'baselines' || query.queryKey[2] === 'reports'),
   });
 }
 
@@ -708,6 +718,57 @@ export function useImportCsv(projectId: string, moduleId: string) {
   });
 }
 
+function testResultsQuery(options: TestResultsImportOptions): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(options)) {
+    if (typeof value === 'string' && value.trim() !== '') query.set(key, value.trim());
+  }
+  const text = query.toString();
+  return text ? `?${text}` : '';
+}
+
+function testResultsPath(projectId: string, moduleId: string): string {
+  return `/projects/${encodeURIComponent(projectId)}/modules/${encodeURIComponent(moduleId)}/import/test-results`;
+}
+
+/**
+ * Read-only preview of a test result import (JUnit XML / Robot output.xml):
+ * how each result matches a test case. A mutation (it uploads the file) that
+ * changes nothing on the server.
+ */
+export function usePreviewTestResults(projectId: string, moduleId: string) {
+  return useMutation({
+    mutationFn: ({ file, options }: { file: Blob; options: TestResultsImportOptions }) =>
+      api.postBody<TestResultsPreview>(
+        `${testResultsPath(projectId, moduleId)}/preview${testResultsQuery(options)}`,
+        file,
+        'application/xml',
+      ),
+  });
+}
+
+/**
+ * Imports test results as execution records of a test_execution module,
+ * linked to the matched test cases (all-or-nothing). Records and the linked
+ * test cases (their link attribute) change, so every module's requirements
+ * and the project (id counters) are refreshed.
+ */
+export function useImportTestResults(projectId: string, moduleId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ file, options }: { file: Blob; options: TestResultsImportOptions }) =>
+      api.postBody<TestResultsImportResult>(
+        `${testResultsPath(projectId, moduleId)}${testResultsQuery(options)}`,
+        file,
+        'application/xml',
+      ),
+    onSuccess: () => {
+      invalidateProjectRequirements(qc, projectId);
+      qc.invalidateQueries({ queryKey: queryKeys.project(projectId), exact: true });
+    },
+  });
+}
+
 // --- requirements -----------------------------------------------------------
 
 export function useRequirements(
@@ -906,4 +967,23 @@ export function moduleReportExportUrl(
   format: 'docx' | 'xlsx',
 ): string {
   return `${API_BASE_URL}/projects/${encodeURIComponent(projectId)}/modules/${encodeURIComponent(moduleId)}/reports/${report}/export/${format}`;
+}
+
+/**
+ * The computed Verification status of each requirement of a requirements
+ * module (read-only; never stored). Disabled for other module types.
+ */
+export function useVerificationStatuses(
+  projectId: string | undefined,
+  moduleId: string | undefined,
+  enabled: boolean,
+): UseQueryResult<VerificationStatuses> {
+  return useQuery({
+    queryKey: queryKeys.verificationStatuses(projectId ?? '', moduleId ?? ''),
+    queryFn: () =>
+      api.get<VerificationStatuses>(
+        `/projects/${encodeURIComponent(projectId ?? '')}/modules/${encodeURIComponent(moduleId ?? '')}/verification-status`,
+      ),
+    enabled: enabled && !!projectId && !!moduleId,
+  });
 }

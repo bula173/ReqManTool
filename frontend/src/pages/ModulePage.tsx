@@ -38,9 +38,18 @@ import {
 import { contextMenuTargetProps } from '../actions/shortcuts';
 import { applicableAttributes } from '../api/applicability';
 import { ApiError } from '../api/client';
-import { useModule, useProject, useRequirements, useUpdateRequirement, useViews } from '../api/queries';
+import { moduleTypeOf } from '../api/moduleTypes';
+import {
+  useModule,
+  useProject,
+  useRequirements,
+  useUpdateRequirement,
+  useVerificationStatuses,
+  useViews,
+} from '../api/queries';
 import { EditableAttributeCell } from '../components/EditableAttributeCell';
 import { RequirementDetailPanel } from '../components/RequirementDetailPanel';
+import { StatusBadge } from '../components/ReportParts';
 import { ResizableHeaderCell, type ColumnMenuKind } from '../components/ResizableHeaderCell';
 import { RowResizeHandle } from '../components/RowResizeHandle';
 import { useRowAppearance } from '../components/rowStyles';
@@ -53,7 +62,9 @@ import { useDropLink } from '../hooks/useDropLink';
 import { RightSidePanel } from '../layout/SidePanelLayout';
 import {
   DEFAULT_ID_COLUMN_WIDTH,
+  DEFAULT_VERIFICATION_COLUMN_WIDTH,
   ID_COLUMN,
+  VERIFICATION_COLUMN,
   defaultColumnWidth,
   moduleTableKey,
   useResizableColumns,
@@ -114,6 +125,10 @@ export function ModulePage() {
   const requirementsQuery = useRequirements(projectId, moduleId);
   const viewsQuery = useViews(projectId);
   const updateRequirement = useUpdateRequirement(projectId ?? '', moduleId ?? '');
+  // The computed Verification status (requirements modules only): the optional
+  // table column and the detail panel. Read-only; refetched after any change.
+  const isRequirementsModule = moduleQuery.data !== undefined && moduleTypeOf(moduleQuery.data) === 'requirements';
+  const verificationQuery = useVerificationStatuses(projectId, moduleId, isRequirementsModule);
   // Selection, clipboard, active view and the detail panel are shared with
   // the menu bar and keyboard shortcuts through the action registry.
   const { state: appState, run, isAvailable, openMenu } = useAppActions();
@@ -218,9 +233,17 @@ export function ModulePage() {
     ? attributes.filter((a) => activeView.attribute_ids.includes(a.id))
     : attributes;
   const columnWidth = (key: string, fallback: number) => columns.widthOf(key, fallback);
+  const showVerification = isRequirementsModule && appState.verificationColumn;
+  const statuses = verificationQuery.data?.statuses;
+  const verificationOf = (requirementId: string) => ({
+    status: statuses?.[requirementId] ?? null,
+    loading: verificationQuery.isLoading,
+    error: verificationQuery.isError,
+  });
   const tableMinWidth =
     columnWidth(ID_COLUMN, DEFAULT_ID_COLUMN_WIDTH) +
     visibleAttributes.reduce((sum, attr) => sum + columnWidth(attr.id, defaultColumnWidth(attr)), 0) +
+    (showVerification ? columnWidth(VERIFICATION_COLUMN, DEFAULT_VERIFICATION_COLUMN_WIDTH) : 0) +
     ACTIONS_COLUMN_MIN_WIDTH;
   // Column header menus: left click / ⋮ = view menu, right click = editing menu.
   const openColumnMenu = (
@@ -346,6 +369,12 @@ export function ModulePage() {
                 style={{ width: columnWidth(attr.id, defaultColumnWidth(attr)) }}
               />
             ))}
+            {showVerification && (
+              <col
+                ref={colRef(VERIFICATION_COLUMN)}
+                style={{ width: columnWidth(VERIFICATION_COLUMN, DEFAULT_VERIFICATION_COLUMN_WIDTH) }}
+              />
+            )}
             {/* Actions: no width, so it takes whatever the resized columns leave. */}
             <col />
           </colgroup>
@@ -368,13 +397,25 @@ export function ModulePage() {
                   onOpenMenu={(kind, position) => openColumnMenu(attr.id, attr.name, attr, kind, position)}
                 />
               ))}
+              {showVerification && (
+                // Computed, read-only: only the view (layout) menu, never attribute properties.
+                <ResizableHeaderCell
+                  columnKey={VERIFICATION_COLUMN}
+                  label="Verification status"
+                  defaultWidth={DEFAULT_VERIFICATION_COLUMN_WIDTH}
+                  columns={columns}
+                  onOpenMenu={(_kind, position) =>
+                    openColumnMenu(VERIFICATION_COLUMN, 'Verification status', null, 'view', position)
+                  }
+                />
+              )}
               <Table.Th>Actions</Table.Th>
             </Table.Tr>
           </Table.Thead>
           <Table.Tbody ref={tbodyRef}>
             {rows.length === 0 && (
               <Table.Tr>
-                <Table.Td colSpan={visibleAttributes.length + 2}>
+                <Table.Td colSpan={visibleAttributes.length + (showVerification ? 3 : 2)}>
                   <Text c="dimmed" ta="center" py="md">
                     No requirements yet.
                   </Text>
@@ -483,6 +524,23 @@ export function ModulePage() {
                       <RowResizeHandle rowId={req.id} rows={rowSizes} />
                     </Table.Td>
                   ))}
+                  {showVerification && (
+                    <Table.Td
+                      data-column-key={VERIFICATION_COLUMN}
+                      title="Computed from the linked test cases and their latest executions (read-only)"
+                    >
+                      <div className="reqman-cell-clip">
+                        {statuses?.[req.id] ? (
+                          <StatusBadge status={statuses[req.id]} />
+                        ) : (
+                          <Text size="sm" c="dimmed">
+                            {verificationQuery.isLoading ? '…' : verificationQuery.isError ? '?' : '–'}
+                          </Text>
+                        )}
+                      </div>
+                      <RowResizeHandle rowId={req.id} rows={rowSizes} />
+                    </Table.Td>
+                  )}
                   <Table.Td>
                     <div className="reqman-cell-clip">
                       <Group gap={4} wrap="nowrap">
@@ -532,6 +590,7 @@ export function ModulePage() {
           saving={updateRequirement.isPending}
           onNavigateToLinked={handleNavigateToLinked}
           onClose={() => run('view.toggleDetailPanel')}
+          verification={isRequirementsModule && selectedRequirement ? verificationOf(selectedRequirement.id) : undefined}
         />
       </RightSidePanel>
       </Group>

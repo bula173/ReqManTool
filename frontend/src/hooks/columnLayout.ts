@@ -14,6 +14,15 @@ import type { AttributeDefinition, View } from '../api/types';
 
 /** Column key of the Id column (the backend's `VIEW_ID_COLUMN`). Attribute ids name the other columns. */
 export const ID_COLUMN = '@id';
+/**
+ * Column key of the computed, read-only Verification status column of a
+ * requirements module (not an attribute: never stored, never in a view's
+ * stored attributes or widths; its width is a per-browser preference).
+ */
+export const VERIFICATION_COLUMN = '@verification';
+export const DEFAULT_VERIFICATION_COLUMN_WIDTH = 150;
+/** Per browser: whether requirements tables show the Verification status column. */
+export const VERIFICATION_COLUMN_STORAGE_KEY = 'reqman.verificationColumn';
 /** Width range in pixels; the same bounds the backend enforces for `View.column_widths`. */
 export const MIN_COLUMN_WIDTH = 40;
 export const MAX_COLUMN_WIDTH = 4000;

@@ -126,6 +126,8 @@ export type DialogRequest =
   | { kind: 'rowStyles'; project: Project }
   | { kind: 'importTemplate' }
   | { kind: 'importCsv'; projectId: string; moduleId: string; moduleName: string }
+  /** JUnit XML / Robot output.xml results into a test_execution module. */
+  | { kind: 'importTestResults'; projectId: string; moduleId: string; moduleName: string }
   | { kind: 'newModule'; projectId: string }
   /** New requirement under `parentId` (null: top level); with `insertIndex`, then placed at that sibling position. */
   | { kind: 'addRequirement'; projectId: string; moduleId: string; parentId: string | null; insertIndex?: number }
@@ -152,6 +154,8 @@ export interface AppCommands {
   setLeftPanelOpen: (open: boolean) => void;
   setDetailPanelOpen: (open: boolean) => void;
   setColorScheme: (scheme: 'light' | 'dark') => void;
+  /** Show / hide the computed Verification status column of requirements modules (per browser). */
+  setVerificationColumn: (show: boolean) => void;
   /** "Enable history (git)" for the open project; resolves with its new git status. */
   enableHistory: () => Promise<GitStatus>;
   /** Push / Pull the open project's git remote (explicit sync; see the Git panel). */
@@ -227,6 +231,8 @@ export interface AppState {
   detailPanelOpen: boolean;
   narrowLayout: boolean;
   colorScheme: 'light' | 'dark';
+  /** Whether requirements tables show the computed Verification status column (per browser). */
+  verificationColumn: boolean;
   /** The open module tabs (this data folder), in tab bar order; empty in a detached window. */
   tabs: ModuleTabRef[];
   /** Whether this window is a detached module window (minimal chrome, no tab bar). */

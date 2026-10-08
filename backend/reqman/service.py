@@ -130,7 +130,25 @@ REPORT_ATTRIBUTE_ROLES: dict[str, dict[str, Any]] = {
         "contains": ("evidence",),
     },
     "object_type": {"types": ("enum", "string"), "names": ("object type",)},
+    # The test case attribute a test result import matches on by default (else the requirement id).
+    "test_id": {
+        "types": ("string", "integer", "enum"),
+        "names": (
+            "test id", "test case id", "automated test id", "automation id", "external test id",
+            "external id", "test key", "test ref",
+        ),
+    },
 }
+
+# Test result import: the pseudo attribute id meaning "match on the test
+# case's requirement id", the attribute types a test case can be matched on,
+# the value written to a ``string``/``text`` result attribute per result
+# category, and the request options.
+RESULT_MATCH_ID = "@id"
+RESULT_MATCH_TYPES = ("string", "integer", "enum")
+RESULT_TEXT_VALUES = {"passed": "Passed", "failed": "Failed", "blocked": "Blocked", "not_run": "Not Run"}
+RESULT_IMPORT_OPTIONS = ("config_id", "match_attribute", "executed_by", "version", "execution_date", "file_name")
+MAX_RESULT_IMPORT_ERRORS = 20
 
 # Result values (compared like attribute names) per result category; any other
 # value, and no value, counts as not run.
@@ -3092,6 +3110,396 @@ class ProjectService:
         project = self.store.load_project(project_id)
         writer = execution_to_docx if fmt == "docx" else execution_to_xlsx
         return writer(report, project.name)
+
+    def verification_statuses(self, project_id: str, module_id: str) -> dict[str, Any]:
+        """The computed, read-only "Verification status" of every requirement of a requirements module.
+
+        The same status as ``verification_report`` (``verified | failed |
+        not_run | not_covered``) per requirement id, for the table column and
+        the detail panel. Objects the reports leave out (headings...) have
+        none. Never stored, never exported, not an attribute definition: it
+        cannot be written, imported or put in a view's stored attributes.
+        """
+        report = self.verification_report(project_id, module_id)
+        return {
+            "project_id": project_id,
+            "module_id": module_id,
+            "statuses": {row["id"]: row["status"] for row in report["requirements"]},
+        }
+
+    # --- test result import (JUnit XML, Robot Framework output.xml) ---------------
+    #
+    # Results of automated test runs become execution records (requirements)
+    # of a test_execution module, each linked to the test case it executes.
+    # See docs/ARCHITECTURE.md "Test result import".
+
+    def _result_import_links(
+        self, project: Project, module: Module
+    ) -> list[tuple[LinkConfiguration, Module, bool]]:
+        """The link configurations joining ``module`` to a test_cases module.
+
+        Each as ``(configuration, test cases module, records are the link
+        source)``; new configurations always go test_execution -> test_cases,
+        but a stored one the other way round works too.
+        """
+        modules = {m.id: m for m in self.list_modules(project.id)}
+        joined: list[tuple[LinkConfiguration, Module, bool]] = []
+        for config in project.link_configurations:
+            if config.source_module_id == module.id and config.target_module_id != module.id:
+                other, record_is_source = config.target_module_id, True
+            elif config.target_module_id == module.id and config.source_module_id != module.id:
+                other, record_is_source = config.source_module_id, False
+            else:
+                continue
+            test_module = modules.get(other)
+            if test_module is not None and test_module.type == "test_cases":
+                joined.append((config, test_module, record_is_source))
+        return joined
+
+    @staticmethod
+    def _checked_result_options(options: Any) -> dict[str, Any]:
+        """The import options with blanks as None; ``execution_date`` must be a date."""
+        if options is None:
+            options = {}
+        if not isinstance(options, dict):
+            raise ValueError("Import options must be an object")
+        checked: dict[str, Any] = {}
+        for key in RESULT_IMPORT_OPTIONS:
+            value = options.get(key)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"Option '{key}' must be a string")
+            checked[key] = value.strip() if isinstance(value, str) and value.strip() else None
+        if checked["execution_date"] is not None and not ProjectService._is_iso_date(checked["execution_date"]):
+            raise ValueError(f"Execution date '{checked['execution_date']}' is not a date (expected YYYY-MM-DD)")
+        name = checked["file_name"] or "results.xml"
+        checked["file_name"] = re.split(r"[\\/]", name)[-1][:200] or "results.xml"
+        return checked
+
+    @classmethod
+    def _result_value(cls, attr: AttributeDefinition, category: str) -> str | None:
+        """The value of result attribute ``attr`` meaning ``category``, or None when it has none."""
+        if attr.type == "enum":
+            for choice in attr.choices or []:
+                if isinstance(choice, str) and cls._report_result(choice) == category:
+                    return choice
+            return None
+        return RESULT_TEXT_VALUES.get(category)
+
+    def _test_results_plan(
+        self, project_id: str, module_id: str, content: Any, options: Any
+    ) -> dict[str, Any]:
+        """Parse a result file and match it to test cases, writing nothing.
+
+        Shared by ``preview_test_results`` and ``import_test_results``: the
+        import writes exactly what the preview showed, or nothing when the
+        plan has ``errors``.
+        """
+        from .test_results_import import MAX_TEST_RESULTS_IMPORT_BYTES, parse_test_results
+
+        if not isinstance(content, (str, bytes)):
+            raise ValueError("The result file content must be a string")
+        if len(content) > MAX_TEST_RESULTS_IMPORT_BYTES:
+            raise ValueError(
+                f"The result file is too large: the limit is {MAX_TEST_RESULTS_IMPORT_BYTES // (1024 * 1024)} MiB"
+            )
+        opts = self._checked_result_options(options)
+        project = self.store.load_project(project_id)
+        module = self.store.load_module(project_id, module_id)
+        if module.type != "test_execution":
+            raise ValueError(
+                f"Module '{module.name}' is a {module.type} module; "
+                "test results are imported into a test_execution module"
+            )
+
+        joined = self._result_import_links(project, module)
+        if not joined:
+            raise ValueError(
+                f"Module '{module.name}' is not linked to a test cases module: "
+                "add a link configuration from it to a test_cases module first"
+            )
+        if opts["config_id"] is None:
+            config, test_module, record_is_source = joined[0]
+        else:
+            chosen = next((j for j in joined if j[0].id == opts["config_id"]), None)
+            if chosen is None:
+                self._get_link_configuration(project, opts["config_id"])  # 404 when unknown
+                raise ValueError(
+                    f"Link configuration '{opts['config_id']}' does not join module '{module.name}' "
+                    "to a test cases module"
+                )
+            config, test_module, record_is_source = chosen
+
+        match_options = [{"id": RESULT_MATCH_ID, "name": "Requirement id"}] + [
+            {"id": a.id, "name": a.name}
+            for a in project.attributes
+            if not a.system and a.type in RESULT_MATCH_TYPES
+            and self._attribute_applies(a, test_module.id, test_module.type)
+        ]
+        default_match = self._report_attribute(project, test_module, "test_id")
+        match = opts["match_attribute"] or (default_match.id if default_match else RESULT_MATCH_ID)
+        if match not in {o["id"] for o in match_options}:
+            raise ValueError(
+                f"Cannot match on '{match}': pick the requirement id or a string, integer or enum "
+                f"attribute of module '{test_module.name}'"
+            )
+
+        file_format, results = parse_test_results(content)
+
+        # Test cases by their match key (lower-cased, punctuation collapsed).
+        tests, _ = self._report_items(project, test_module)
+        by_key: dict[str, list[dict[str, Any]]] = {}
+        for test in tests:
+            raw = test["id"] if match == RESULT_MATCH_ID else test["requirement"].attributes.get(match)
+            if raw is None or isinstance(raw, bool):
+                continue
+            key = self._report_key(str(raw))
+            if key:
+                by_key.setdefault(key, []).append(test)
+
+        def lookup(keys: list[str], partial: bool) -> dict[str, dict[str, Any]]:
+            found: dict[str, dict[str, Any]] = {}
+            for text in keys:
+                tokens = self._report_key(text).split()
+                if not partial:
+                    spans = [" ".join(tokens)]
+                else:
+                    # every run of whole words: "SWT-0001 Login" contains "swt 0001"
+                    spans = [
+                        " ".join(tokens[i:j]) for i in range(len(tokens)) for j in range(i + 1, len(tokens) + 1)
+                    ]
+                for span in spans:
+                    for test in by_key.get(span, ()):
+                        found.setdefault(test["id"], test)
+            return found
+
+        reader = self._execution_reader(project, module)
+        roles: dict[str, AttributeDefinition | None] = reader["roles"]
+        errors: list[str] = []
+        warnings: list[str] = []
+        result_attr = roles["result"]
+        if result_attr is None:
+            errors.append(
+                f"Module '{module.name}' has no result attribute (e.g. 'Result') to store the test results in"
+            )
+        for role, label, value in (
+            ("executed_by", "Executed by", opts["executed_by"]),
+            ("version", "Build/version", opts["version"]),
+        ):
+            if value is not None and roles[role] is None:
+                warnings.append(f"{label} is not stored: module '{module.name}' has no such attribute")
+        if roles["execution_date"] is None:
+            warnings.append(f"Execution dates are not stored: module '{module.name}' has no date attribute")
+        if roles["evidence"] is None:
+            warnings.append(f"Evidence is not stored: module '{module.name}' has no evidence/log attribute")
+
+        today = date.today().isoformat()
+        text_ids = {a.id for a in project.attributes if a.type == "text"}
+        rows: list[dict[str, Any]] = []
+        records: list[dict[str, Any]] = []
+        seen_errors: set[str] = set()
+        matched_tests: set[str] = set()
+        for result in results:
+            keys = result.keys()
+            found = lookup(keys, partial=False)
+            how = "exact" if found else None
+            if not found:
+                found = lookup(keys, partial=True)
+                how = "partial" if found else None
+            state = "matched" if len(found) == 1 else ("ambiguous" if found else "unmatched")
+            test = next(iter(found.values())) if state == "matched" else None
+            execution_date = opts["execution_date"] or result.date or today
+            row = {
+                "index": result.index,
+                "name": result.name,
+                "full_name": result.full_name,
+                "status": result.status,
+                "raw_status": result.raw_status,
+                "message": result.message,
+                "execution_date": execution_date,
+                "state": state,
+                "match": how if state == "matched" else None,
+                "test_case_id": test["id"] if test else None,
+                "candidates": sorted(found) if state == "ambiguous" else [],
+            }
+            rows.append(row)
+            if test is None or result_attr is None:
+                continue
+            matched_tests.add(test["id"])
+
+            result_value = self._result_value(result_attr, result.status)
+            if result_value is None:
+                problem = (
+                    f"Result attribute '{result_attr.name}' has no value for {result.status.replace('_', ' ')} "
+                    f"results (choices: {', '.join(map(str, result_attr.choices or []))})"
+                )
+                if problem not in seen_errors:
+                    seen_errors.add(problem)
+                    errors.append(problem)
+                continue
+            values: dict[str, Any] = {
+                "object_text": result.name or result.full_name or test["id"],
+                result_attr.id: result_value,
+            }
+            if roles["execution_date"] is not None:
+                values[roles["execution_date"].id] = execution_date
+            if roles["executed_by"] is not None and opts["executed_by"] is not None:
+                values[roles["executed_by"].id] = opts["executed_by"]
+            if roles["version"] is not None and opts["version"] is not None:
+                values[roles["version"].id] = opts["version"]
+            if roles["evidence"] is not None:
+                values[roles["evidence"].id] = f"{opts['file_name']}: {result.full_name or result.name}"
+            # Result files are plain text: never read a value as rich text markup.
+            values = {k: richtext.from_plain(v) if k in text_ids and isinstance(v, str) else v for k, v in values.items()}
+            for problem in self._attribute_problems(
+                project, values, is_create=True, module_id=module.id, module_type=module.type
+            ):
+                if problem not in seen_errors:
+                    seen_errors.add(problem)
+                    errors.append(problem)
+            records.append({"row": row, "values": values, "test_id": test["id"]})
+
+        counts = {state: sum(1 for r in rows if r["state"] == state) for state in ("matched", "unmatched", "ambiguous")}
+        if not errors and counts["matched"] == 0:
+            errors.append(
+                f"No test result matches a test case of module '{test_module.name}' by "
+                f"{next(o['name'] for o in match_options if o['id'] == match)}"
+            )
+        if counts["ambiguous"]:
+            warnings.append(
+                f"{counts['ambiguous']} result(s) match several test cases and are skipped; "
+                "pick a more specific match attribute"
+            )
+        if counts["unmatched"]:
+            warnings.append(f"{counts['unmatched']} result(s) match no test case and are skipped")
+        if len(errors) > MAX_RESULT_IMPORT_ERRORS:
+            hidden = len(errors) - MAX_RESULT_IMPORT_ERRORS
+            errors = errors[:MAX_RESULT_IMPORT_ERRORS] + [f"... and {hidden} more problem(s)"]
+
+        return {
+            "project": project,
+            "module": module,
+            "config": config,
+            "test_module": test_module,
+            "record_is_source": record_is_source,
+            "records": records,
+            "public": {
+                "project_id": project_id,
+                "format": file_format,
+                "file_name": opts["file_name"],
+                "module": self._report_module(module),
+                "test_module": self._report_module(test_module),
+                "config": config.to_dict(),
+                "link_configurations": [
+                    {"id": c.id, "name": c.name, "test_module": self._report_module(tm)} for c, tm, _ in joined
+                ],
+                "match_attribute": match,
+                "match_options": match_options,
+                "options": {k: opts[k] for k in ("executed_by", "version", "execution_date")},
+                "attributes": reader["attributes"],
+                "results": rows,
+                "summary": {
+                    "total": len(rows),
+                    **counts,
+                    **{s: sum(1 for r in rows if r["status"] == s) for s in ("passed", "failed", "not_run")},
+                },
+                "test_cases_not_in_file": [
+                    {"id": t["id"], "text": t["text"]} for t in tests if t["id"] not in matched_tests
+                ],
+                "errors": errors,
+                "warnings": warnings,
+            },
+        }
+
+    def preview_test_results(
+        self, project_id: str, module_id: str, content: Any, options: Any = None
+    ) -> dict[str, Any]:
+        """What ``import_test_results`` would do with a result file; writes nothing.
+
+        Lists every result with its match (``matched`` to one test case,
+        ``ambiguous``, ``unmatched``), the test cases the file does not
+        cover, the link configuration and match attribute used (and the
+        alternatives), and the ``errors`` that would refuse the import.
+        """
+        return self._test_results_plan(project_id, module_id, content, options)["public"]
+
+    @_records_history
+    def import_test_results(
+        self, project_id: str, module_id: str, content: Any, options: Any = None
+    ) -> dict[str, Any]:
+        """Create one execution record per matched test result, linked to its test case.
+
+        ``content`` is a JUnit XML or Robot Framework output.xml file
+        (``test_results_import.py``). Options (all optional): ``config_id``
+        (the link configuration to a test_cases module; default the first),
+        ``match_attribute`` (``@id`` or a test case attribute id; default the
+        test case's "Test ID"-like attribute, else ``@id``), ``executed_by``,
+        ``version``, ``execution_date`` (``YYYY-MM-DD``; default the date in
+        the file, else today) and ``file_name`` (for Evidence/Log Ref).
+
+        A result matches a test case whose key equals its name, qualified name,
+        a Robot tag or a JUnit property value, else whose key is a run of whole
+        words of one of those (``SWT-0001 Login`` matches ``SWT-0001``).
+        Results matching no or several test cases are skipped (reported in the
+        preview). All-or-nothing: any validation problem refuses the whole
+        file before anything is written. Records get server-allocated ids and
+        are appended at the module root in file order.
+        """
+        plan = self._test_results_plan(project_id, module_id, content, options)
+        public = plan["public"]
+        if public["errors"]:
+            raise ValueError("; ".join(public["errors"]))
+        project: Project = plan["project"]
+        module: Module = plan["module"]
+        config: LinkConfiguration = plan["config"]
+        test_module: Module = plan["test_module"]
+        record_is_source: bool = plan["record_is_source"]
+
+        existing = self.store.load_all_requirements(project_id, module.id)
+        order = self._next_sibling_order(existing, None)
+        created: list[Requirement] = []
+        new_pairs: list[LinkPair] = []
+        for record in plan["records"]:
+            requirement_id = self._allocate_requirement_id(project, module)
+            attributes = self._merged_attributes(project, record["values"], module.id, module.type)
+            test_id = record["test_id"]
+            attributes[config.id] = f"> {test_id}" if record_is_source else f"< {test_id}"
+            created.append(Requirement(id=requirement_id, attributes=attributes, parent_id=None, order=order))
+            order += 1
+            new_pairs.append(
+                LinkPair(source_id=requirement_id, target_id=test_id)
+                if record_is_source
+                else LinkPair(source_id=test_id, target_id=requirement_id)
+            )
+
+        self._write_new_requirements(project, module.id, created)
+        pairs = self.store.load_link_pairs(project_id, config.id) + new_pairs
+        self.store.save_link_pairs(project_id, config.id, pairs)
+        # Refresh the linked test cases' mirror attribute (like ``_refresh_link_attribute``,
+        # but from the pairs in memory: one file read for any number of test cases).
+        linked_tests = set(r["test_id"] for r in plan["records"])
+        outgoing: dict[str, list[str]] = {}
+        incoming: dict[str, list[str]] = {}
+        for pair in pairs:
+            if pair.source_id in linked_tests:
+                outgoing.setdefault(pair.source_id, []).append(pair.target_id)
+            if pair.target_id in linked_tests:
+                incoming.setdefault(pair.target_id, []).append(pair.source_id)
+        for test_id in sorted(linked_tests):
+            entries = [f"> {t}" for t in outgoing.get(test_id, [])] + [f"< {s}" for s in incoming.get(test_id, [])]
+            test_case = self.store.load_requirement(project_id, test_module.id, test_id)
+            test_case.attributes[config.id] = "; ".join(entries)
+            self.store.save_requirement(project_id, test_module.id, test_case)
+
+        return {
+            "imported": len(created),
+            "requirement_ids": [r.id for r in created],
+            "linked": len(new_pairs),
+            "skipped": public["summary"]["unmatched"] + public["summary"]["ambiguous"],
+            "format": public["format"],
+            "config_id": config.id,
+            "test_module_id": test_module.id,
+            "warnings": public["warnings"],
+        }
 
     # --- export ----------------------------------------------------------------
 

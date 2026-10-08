@@ -539,3 +539,77 @@ export interface ExecutionReport {
   /** [first, last] execution date of the executed records, or null. */
   date_range: [string, string] | null;
 }
+
+/** GET /projects/{id}/modules/{module}/verification-status (WS `report.verification_status`): computed, never stored. */
+export interface VerificationStatuses {
+  project_id: string;
+  module_id: string;
+  /** Per requirement id; objects the reports leave out (headings…) are absent. */
+  statuses: Record<string, VerificationStatus>;
+}
+
+// --- test result import (JUnit XML, Robot Framework output.xml) ---------------------------
+
+/** Query options of the test result preview / import (all optional; blanks mean default). */
+export interface TestResultsImportOptions {
+  /** Link configuration to the test_cases module (default: the first one joining the module). */
+  config_id?: string;
+  /** `@id` (the test case's requirement id) or a test case attribute id. */
+  match_attribute?: string;
+  executed_by?: string;
+  version?: string;
+  /** YYYY-MM-DD; default: the date in the file, else today. */
+  execution_date?: string;
+  /** Written to the evidence attribute with the test name. */
+  file_name?: string;
+}
+
+export interface TestResultRow {
+  index: number;
+  name: string;
+  full_name: string;
+  /** Result category of the file's status (skipped tests: not_run). */
+  status: 'passed' | 'failed' | 'not_run';
+  raw_status: string;
+  message: string;
+  execution_date: string;
+  state: 'matched' | 'unmatched' | 'ambiguous';
+  /** How a matched result matched: the whole name/tag, or a run of words in it. */
+  match: 'exact' | 'partial' | null;
+  test_case_id: string | null;
+  /** Ambiguous: every test case it matches. */
+  candidates: string[];
+}
+
+/** POST …/import/test-results/preview (WS `requirement.preview_test_results`): read-only. */
+export interface TestResultsPreview {
+  project_id: string;
+  format: 'junit' | 'robot';
+  file_name: string;
+  module: ReportModule;
+  test_module: ReportModule;
+  config: LinkConfiguration;
+  link_configurations: { id: string; name: string; test_module: ReportModule }[];
+  match_attribute: string;
+  match_options: { id: string; name: string }[];
+  options: { executed_by: string | null; version: string | null; execution_date: string | null };
+  attributes: ExecutionAttributes;
+  results: TestResultRow[];
+  summary: Record<'total' | 'matched' | 'unmatched' | 'ambiguous' | 'passed' | 'failed' | 'not_run', number>;
+  test_cases_not_in_file: { id: string; text: string }[];
+  /** Non-empty: the import would be refused (nothing written). */
+  errors: string[];
+  warnings: string[];
+}
+
+/** POST …/import/test-results (WS `requirement.import_test_results`). */
+export interface TestResultsImportResult {
+  imported: number;
+  requirement_ids: string[];
+  linked: number;
+  skipped: number;
+  format: 'junit' | 'robot';
+  config_id: string;
+  test_module_id: string;
+  warnings: string[];
+}

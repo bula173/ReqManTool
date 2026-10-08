@@ -27,9 +27,10 @@ from pydantic import BaseModel
 
 from .config import DEFAULT_DATA_DIR, check_config_writable, load_saved_data_dir, save_data_dir
 from .csv_import import MAX_CSV_IMPORT_BYTES
+from .test_results_import import MAX_TEST_RESULTS_IMPORT_BYTES
 from .formats import NewerFormatError
 from .git_repo import GitHistory, GitSettings
-from .service import ConflictError, ProjectService
+from .service import RESULT_IMPORT_OPTIONS, ConflictError, ProjectService
 from .store import ProjectStore
 from .templates import MAX_TEMPLATE_IMPORT_BYTES
 from .version import build_id, version_info
@@ -759,6 +760,62 @@ async def import_csv(project_id: str, module_id: str, request: Request):
     return result
 
 
+# Test result import (JUnit XML / Robot Framework output.xml) into a
+# test_execution module. Like the CSV import, the file is the raw request body
+# (Content-Type application/xml or text/xml: no multipart parser dependency, and
+# no cross-origin "simple" request can import); the options are query parameters.
+_XML_MEDIA_TYPES = ("application/xml", "text/xml")
+
+
+async def _read_result_file(request: Request) -> bytes:
+    if _media_type(request) not in _XML_MEDIA_TYPES:
+        raise HTTPException(
+            status_code=415, detail="The result file must be sent with Content-Type application/xml or text/xml"
+        )
+    return await _read_limited_body(request, MAX_TEST_RESULTS_IMPORT_BYTES, "result")
+
+
+def _result_options(
+    config_id: str | None, match_attribute: str | None, executed_by: str | None,
+    version: str | None, execution_date: str | None, file_name: str | None,
+) -> dict[str, Any]:
+    return {
+        "config_id": config_id, "match_attribute": match_attribute, "executed_by": executed_by,
+        "version": version, "execution_date": execution_date, "file_name": file_name,
+    }
+
+
+@app.post("/projects/{project_id}/modules/{module_id}/import/test-results/preview")
+async def preview_test_results(
+    project_id: str, module_id: str, request: Request,
+    config_id: str | None = None, match_attribute: str | None = None, executed_by: str | None = None,
+    version: str | None = None, execution_date: str | None = None, file_name: str | None = None,
+):
+    """Read-only: how the file's results match the test cases (no write, no broadcast)."""
+    raw = await _read_result_file(request)
+    options = _result_options(config_id, match_attribute, executed_by, version, execution_date, file_name)
+    return _wrap(service.preview_test_results, project_id, module_id, raw, options)
+
+
+@app.post("/projects/{project_id}/modules/{module_id}/import/test-results")
+async def import_test_results(
+    project_id: str, module_id: str, request: Request,
+    config_id: str | None = None, match_attribute: str | None = None, executed_by: str | None = None,
+    version: str | None = None, execution_date: str | None = None, file_name: str | None = None,
+):
+    raw = await _read_result_file(request)
+    options = _result_options(config_id, match_attribute, executed_by, version, execution_date, file_name)
+    result = _wrap(service.import_test_results, project_id, module_id, raw, options)
+    await manager.broadcast(project_id)
+    return result
+
+
+@app.get("/projects/{project_id}/modules/{module_id}/verification-status")
+def verification_statuses(project_id: str, module_id: str):
+    """The computed Verification status per requirement of a requirements module (read-only)."""
+    return _wrap(service.verification_statuses, project_id, module_id)
+
+
 @app.post("/projects/{project_id}/modules/{module_id}/purge")
 async def purge_module(project_id: str, module_id: str):
     purged = _wrap(service.purge_module, project_id, module_id)
@@ -865,6 +922,11 @@ async def unlink_requirements(project_id: str, body: LinkBody):
 
 # --- WebSocket JSON-RPC -----------------------------------------------------
 
+def _rpc_result_options(params: dict) -> dict[str, Any]:
+    """The test result import options of a WebSocket request (same names as the REST query)."""
+    return {key: params.get(key) for key in RESULT_IMPORT_OPTIONS}
+
+
 RPC_METHODS = {
     "version.get": lambda p: version_info(),
     "project.create": lambda p: service.create_project(
@@ -965,7 +1027,14 @@ RPC_METHODS = {
     "requirement.link_options": lambda p: service.link_options(
         p["project_id"], p["from_id"], p["to_id"]
     ),
+    "requirement.preview_test_results": lambda p: service.preview_test_results(
+        p["project_id"], p["module_id"], p["xml"], _rpc_result_options(p)
+    ),
+    "requirement.import_test_results": lambda p: service.import_test_results(
+        p["project_id"], p["module_id"], p["xml"], _rpc_result_options(p)
+    ),
     # Reports: read-only, never broadcast (not in MUTATING_METHODS).
+    "report.verification_status": lambda p: service.verification_statuses(p["project_id"], p["module_id"]),
     "report.traceability": lambda p: service.traceability_matrix(p["project_id"], p.get("config_ids")),
     "report.verification": lambda p: service.verification_report(p["project_id"], p["module_id"]),
     "report.execution": lambda p: service.execution_report(p["project_id"], p["module_id"]),
@@ -996,7 +1065,7 @@ MUTATING_METHODS = {
     "link_configuration.create", "link_configuration.remove",
     "view.create", "view.set_column_widths", "view.remove",
     "requirement.add", "requirement.update", "requirement.remove", "requirement.move",
-    "requirement.reorder", "requirement.copy", "requirement.import_csv",
+    "requirement.reorder", "requirement.copy", "requirement.import_csv", "requirement.import_test_results",
     "requirement.link", "requirement.unlink",
 }
 

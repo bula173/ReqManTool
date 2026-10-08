@@ -155,7 +155,7 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
         kind: 'submenu',
         label: 'Import',
         icon: IconFileImport,
-        entries: [action('file.importCsv')],
+        entries: [action('file.importCsv'), action('module.importTestResults')],
       },
       {
         kind: 'submenu',
@@ -200,6 +200,7 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
     label: 'View',
     entries: [
       action('view.attributeView'),
+      action('view.verificationColumn'),
       action('view.toggleLeftPanel'),
       action('view.toggleDetailPanel'),
       divider,
@@ -248,6 +249,8 @@ const TABLE_LAYOUT_ENTRIES: MenuEntry[] = [
 export const COLUMN_HEADER_VIEW_MENU: MenuEntry[] = [
   action('column.wrapText'),
   action('column.autoFit'),
+  divider,
+  action('view.verificationColumn'),
   divider,
   ...TABLE_LAYOUT_ENTRIES,
 ];
@@ -340,6 +343,7 @@ export const MODULE_NODE_MENU: MenuEntry[] = [
   divider,
   action('module.verificationReport'),
   action('module.executionReport'),
+  action('module.importTestResults'),
   divider,
   action('project.newModule'),
 ];

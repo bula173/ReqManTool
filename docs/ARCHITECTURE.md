@@ -415,6 +415,92 @@ case; the distinct builds/versions and executors over all records and the
 first/last execution date of the executed ones. DOCX and XLSX (Summary, Test
 cases, Failed and blocked, Records).
 
+### Test result import
+
+Automated test results become execution records of a `test_execution`
+module (`ProjectService.preview_test_results` / `import_test_results`,
+parser `reqman/test_results_import.py`). Formats: JUnit XML (`<testsuites>`
+or `<testsuite>`; nested suites; `<failure>`/`<error>` → failed,
+`<skipped>` → not run, else passed) and Robot Framework `output.xml`
+(`<robot>`, RF 3–7: the test's own `<status status=PASS|FAIL|SKIP|NOT RUN>`,
+`<tag>`s). The format is told by the document element.
+
+- **Safe XML without a new dependency**: the file is parsed with the
+  standard library's expat parser directly (`defusedxml` is not a
+  dependency); any DOCTYPE, entity declaration or external entity reference
+  refuses the file (result files never contain one), so entity expansion and
+  XXE cannot happen. Subtrees never read (Robot keywords and messages, JUnit
+  `system-out`/`system-err`) are skipped while parsing. At most 64 MiB and
+  10 000 tests.
+- **Target**: the records are linked through a link configuration joining
+  the execution module to a `test_cases` module (`config_id`; default the
+  first such configuration). None → 400 ("not linked to a test cases
+  module"); a configuration that does not join the two → 400; unknown → 404.
+- **Matching** (`match_attribute`): `@id` (the test case's requirement id)
+  or a `string`/`integer`/`enum` attribute of the test cases module. Default:
+  the attribute found by the `test_id` role (Test ID, Test Case ID,
+  Automation ID, External ID, …; see `REPORT_ATTRIBUTE_ROLES`), else `@id`.
+  Values are compared like report attribute names (lower case, punctuation
+  collapsed). A result's keys are its name, qualified name (JUnit
+  `classname.name`, Robot `Suite.Sub.Test`), Robot tags and JUnit property
+  values. A test case whose value *equals* a key matches; failing that, one
+  whose value is a run of whole words of a key (`SWT-0001 Login works` and
+  `test_swt_0001_login` both contain `SWT-0001`). Only reportable test cases
+  (not headings…) are candidates. A result matching no test case
+  (`unmatched`) or several (`ambiguous`) is skipped and reported, never an
+  error.
+- **Records**: one per matched result, appended at the module root in file
+  order, server-allocated ids. Values by role (as the reports find them):
+  ObjectText = the test name; result = the result attribute's enum choice for
+  the category (`string` attribute: Passed/Failed/Not Run); execution date =
+  the `execution_date` option, else the file's (JUnit `timestamp`, Robot
+  `start`/`starttime`, else `generated`), else today; executed by /
+  build-version = the user's input (optional); evidence = `"<file name>:
+  <qualified test name>"`. Defaults of other attributes apply as for a new
+  requirement. A role without an attribute in the module is a warning (value
+  not stored), except the result attribute, which is required.
+- **All-or-nothing**: every record is validated with `_attribute_problems`
+  before anything is written (e.g. a version not among an enum's choices, a
+  result category the enum has no choice for); any problem, or no matched
+  result at all, refuses the whole file (400 / -32602, at most 20 problems
+  listed). Then the record files and project (id counters) are written,
+  the link pairs file once, and the linked test cases' link mirror attribute.
+  One `changed` broadcast; with history on, one commit.
+- **Preview** (read-only, no broadcast): the format, the configuration and
+  match attribute used plus the alternatives (`link_configurations`,
+  `match_options`), the role attributes, each result with its state and test
+  case, the test cases the file does not cover, and the `errors` that would
+  refuse the import and `warnings`. The UI (`ImportTestResultsModal`, opened
+  by `module.importTestResults` — module context menu and File ▸ Import, only
+  for `test_execution` modules) re-runs the preview whenever the file or a
+  matching option changes and imports with the previewed configuration and
+  match attribute.
+
+### Verification status
+
+A computed, read-only "Verification status" of each requirement of a
+`requirements` module: the verification report's status (`verified`,
+`failed`, `not_run`, `not_covered`; headings and other excluded objects have
+none). `GET /projects/{id}/modules/{m}/verification-status` / WS
+`report.verification_status` → `{project_id, module_id, statuses: {id:
+status}}`; other module types 400 / -32602. It is not an attribute
+definition: never written to requirement files or project.json, so it cannot
+be edited, imported (a CSV column of that name is an unknown column unless
+the project defines such an attribute) or stored in a view (`View.
+attribute_ids` / shared column widths). Exports leave it out: the CSV export
+is re-importable and the verification report already exports it (DOCX/XLSX).
+
+UI: View ▸ "Verification status column" (also in the column header view
+menu; enabled in requirements modules) shows it as the last column of the
+table in every view, a per-browser preference (`reqman.verificationColumn`,
+off by default; its width is per browser like other columns, key
+`@verification`, and never saved to a view). The detail panel always shows
+it for a requirements module. Query key `['projects', id, 'reports',
+'verification-status', module]`: every successful mutation of this client
+invalidates the `reports` queries (with git status and baselines,
+`invalidateGitStatus`), and live sync refetches them for other clients'
+changes.
+
 ### Subprojects
 
 `Project.parent_project_id` forms a generic → specific product-line tree
@@ -1048,7 +1134,8 @@ resource:
 | Requirements | `POST/GET .../requirements`, `GET/PUT/DELETE .../requirements/{id}`, `PUT .../requirements/{id}/parent` (move; body `parent_id`, optional `index`), `POST .../requirements/{id}/reorder`, `POST .../requirements/{id}/copy` |
 | Links | `POST/DELETE /projects/{id}/links` |
 | Export | `GET /projects/{id}/export/reqif`, `GET /projects/{id}/export/csv` |
-| Import | `POST /projects/{id}/modules/{module_id}/import/csv` (raw UTF-8 CSV request body, `Content-Type: text/csv` required (415 otherwise), at most 10 MiB (413); WS: `requirement.import_csv`) |
+| Import | `POST /projects/{id}/modules/{module_id}/import/csv` (raw UTF-8 CSV request body, `Content-Type: text/csv` required (415 otherwise), at most 10 MiB (413); WS: `requirement.import_csv`), `POST .../modules/{m}/import/test-results/preview` and `POST .../modules/{m}/import/test-results` (raw JUnit XML / Robot output.xml body, `Content-Type: application/xml` or `text/xml` (415 otherwise), at most 64 MiB (413), options as query parameters; WS `requirement.preview_test_results` (read-only) / `requirement.import_test_results` with `xml` — see "Test result import") |
+| Verification status | `GET .../modules/{m}/verification-status` (WS `report.verification_status`; read-only, requirements modules only) |
 | Purge | `POST /projects/{id}/purge` |
 | Data directory | `GET/POST /config`, `GET /fs/browse` |
 | Version | `GET /version` → `{version, build}` (WS: `version.get`, read-only, no broadcast) |

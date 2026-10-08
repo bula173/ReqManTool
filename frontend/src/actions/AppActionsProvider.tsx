@@ -27,6 +27,7 @@ import {
   useViews,
   type FindRequirementResult,
 } from '../api/queries';
+import { VERIFICATION_COLUMN_STORAGE_KEY } from '../hooks/columnLayout';
 import { AppDialogs } from '../layout/AppDialogs';
 import { LEFT_PANEL_TAB_STORAGE_KEY, type LeftPanelTab } from '../layout/leftPanel';
 import {
@@ -151,6 +152,11 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     defaultValue: 'workspace',
     getInitialValueInEffect: false,
   });
+  const [verificationColumn, setVerificationColumn] = useLocalStorage<boolean>({
+    key: VERIFICATION_COLUMN_STORAGE_KEY,
+    defaultValue: false,
+    getInitialValueInEffect: false,
+  });
   const [menu, setMenu] = useState<MenuRequest | null>(null);
 
   // Project, module and requirement ids repeat across data folders (clones,
@@ -249,6 +255,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       setLeftPanelOpen: (open) => setPanelOpen('left', open),
       setDetailPanelOpen: (open) => setPanelOpen('right', open),
       setColorScheme,
+      setVerificationColumn,
       enableHistory: () => enableHistory.mutateAsync(),
       gitPush: () => gitPush.mutateAsync(),
       gitPull: () => gitPull.mutateAsync(),
@@ -351,6 +358,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       setPanelOpen,
       setLeftPanelTab,
       setColorScheme,
+      setVerificationColumn,
       copyRequirement.mutateAsync,
       moveRequirement.mutateAsync,
       reorderRequirement.mutateAsync,
@@ -382,6 +390,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     detailPanelOpen,
     narrowLayout,
     colorScheme,
+    verificationColumn: verificationColumn === true,
     tabs: detached ? [] : moduleTabs.tabs,
     detached,
     templates: {

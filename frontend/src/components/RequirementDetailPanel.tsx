@@ -3,9 +3,17 @@ import { IconGitCommit, IconHistory, IconX } from '@tabler/icons-react';
 import { useState } from 'react';
 import { ApiError } from '../api/client';
 import { useRequirementHistory } from '../api/queries';
-import type { AttributeDefinition, HistoryCommit, HistoryDiff, HistoryEntry, Requirement } from '../api/types';
+import type {
+  AttributeDefinition,
+  HistoryCommit,
+  HistoryDiff,
+  HistoryEntry,
+  Requirement,
+  VerificationStatus,
+} from '../api/types';
 import { toggleHint } from '../layout/sidePanels';
 import { EditableAttributeCell } from './EditableAttributeCell';
+import { StatusBadge } from './ReportParts';
 import { richTextToPlain } from './richText';
 
 interface RequirementDetailPanelProps {
@@ -17,6 +25,11 @@ interface RequirementDetailPanelProps {
   saving: boolean;
   onNavigateToLinked: (requirementId: string) => void;
   onClose: () => void;
+  /**
+   * The computed, read-only Verification status (requirements modules only;
+   * omitted elsewhere). `status` null: none (e.g. a heading) or not loaded.
+   */
+  verification?: { status: VerificationStatus | null; loading: boolean; error: boolean };
 }
 
 const MAX_VALUE_LENGTH = 120;
@@ -78,6 +91,7 @@ export function RequirementDetailPanel({
   saving,
   onNavigateToLinked,
   onClose,
+  verification,
 }: RequirementDetailPanelProps) {
   const [tab, setTab] = useState<string | null>('details');
   const historyQuery = useRequirementHistory(projectId, moduleId, requirement?.id, requirement !== null);
@@ -123,6 +137,34 @@ export function RequirementDetailPanel({
                 </Text>
                 <Text fw={600}>{requirement.id}</Text>
               </div>
+              {verification && (
+                <div>
+                  <Tooltip
+                    label="Computed from the linked test cases and their latest executions (read-only, never stored)"
+                    multiline
+                    w={280}
+                    withArrow
+                    openDelay={300}
+                  >
+                    <Text size="xs" c="dimmed" style={{ cursor: 'help', width: 'fit-content' }}>
+                      Verification status
+                    </Text>
+                  </Tooltip>
+                  {verification.loading ? (
+                    <Loader size="xs" />
+                  ) : verification.error ? (
+                    <Text size="sm" c="red">
+                      Could not be computed
+                    </Text>
+                  ) : verification.status ? (
+                    <StatusBadge status={verification.status} />
+                  ) : (
+                    <Text size="sm" c="dimmed">
+                      – (not a reportable object)
+                    </Text>
+                  )}
+                </div>
+              )}
               {attributes.map((attr) => {
                 const lastChange = blame[attr.id];
                 return (

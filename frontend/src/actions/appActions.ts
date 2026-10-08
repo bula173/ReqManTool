@@ -18,12 +18,14 @@ import {
   IconLineHeight,
   IconMoon,
   IconPalette,
+  IconShieldCheck,
   IconTable,
   IconTemplate,
   IconUpload,
 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { API_BASE_URL, ApiError } from '../api/client';
+import { moduleTypeOf } from '../api/moduleTypes';
 import {
   hasColumnWidthOverrides,
   hasRowHeightOverrides,
@@ -272,6 +274,16 @@ export const appActions: Action<'app'>[] = [
     isAvailable: (ctx) => ctx.module !== null,
     run: (ctx) => ctx.commands.setActiveView(null),
     items: viewItems,
+  },
+  {
+    // The computed, read-only Verification status column of requirements modules (per browser).
+    id: 'view.verificationColumn',
+    element: 'app',
+    label: 'Verification status column',
+    icon: IconShieldCheck,
+    isAvailable: (ctx) => ctx.module !== null && moduleTypeOf(ctx.module) === 'requirements',
+    isChecked: (ctx) => ctx.verificationColumn,
+    run: (ctx) => ctx.commands.setVerificationColumn(!ctx.verificationColumn),
   },
   {
     // The left panel (project/module tree): collapses to a rail; an overlay on narrow screens.

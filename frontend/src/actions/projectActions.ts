@@ -3,6 +3,7 @@ import {
   IconArrowDown,
   IconArrowUp,
   IconChecklist,
+  IconFileImport,
   IconFileText,
   IconFolderOpen,
   IconFolderPlus,
@@ -165,6 +166,26 @@ export const moduleActions: Action<'module'>[] = [
     isAvailable: (ctx) => ctx.target !== null && moduleTypeOf(ctx.target.module) === 'test_execution',
     run: (ctx) => {
       if (ctx.target) ctx.commands.navigate(moduleReportPath(ctx.target, 'execution'));
+    },
+  },
+  {
+    // JUnit XML / Robot output.xml results as execution records: only for a test_execution module.
+    // Also File ▸ Import ▸ Test results (the open module).
+    id: 'module.importTestResults',
+    element: 'module',
+    label: 'Import test results',
+    icon: IconFileImport,
+    opensDialog: true,
+    isAvailable: (ctx) => ctx.target !== null && moduleTypeOf(ctx.target.module) === 'test_execution',
+    run: (ctx) => {
+      const target = ctx.target;
+      if (!target) return;
+      ctx.commands.openDialog({
+        kind: 'importTestResults',
+        projectId: target.projectId,
+        moduleId: target.module.id,
+        moduleName: target.module.name,
+      });
     },
   },
 ];

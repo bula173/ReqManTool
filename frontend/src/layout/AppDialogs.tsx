@@ -10,6 +10,7 @@ import { DataDirModal } from '../components/DataDirSettings';
 import { DropLinkModal } from '../components/DropLinkModal';
 import { ImportCsvModal } from '../components/ImportCsvModal';
 import { ImportTemplateModal } from '../components/ImportTemplateModal';
+import { ImportTestResultsModal } from '../components/ImportTestResultsModal';
 import { KeyboardShortcutsModal } from '../components/KeyboardShortcutsModal';
 import { LinkModal } from '../components/LinkModal';
 import { MoveRequirementModal } from '../components/MoveRequirementModal';
@@ -109,6 +110,15 @@ export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; 
       return (
         <ImportCsvModal
           opened
+          onClose={onClose}
+          projectId={dialog.projectId}
+          moduleId={dialog.moduleId}
+          moduleName={dialog.moduleName}
+        />
+      );
+    case 'importTestResults':
+      return (
+        <ImportTestResultsModal
           onClose={onClose}
           projectId={dialog.projectId}
           moduleId={dialog.moduleId}
