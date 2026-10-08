@@ -357,6 +357,73 @@ def _parse_tag_object(raw: bytes) -> dict[str, Any]:
     return {**fields, "tagger": tagger, "tagger_date": tagger_date}
 
 
+COMMIT_HASH_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_REQUIREMENT_PATH = re.compile(r"^modules/([^/]+)/requirements/([^/]+)\.json$")
+_IDENT = re.compile(rb"^(.*?) <(.*?)> (\d+)(?: ([+-]\d{4}))?$")
+
+
+def _parse_ident(value: bytes) -> tuple[str, str, str | None]:
+    """``(name, email, ISO date)`` of a commit object's ``author``/``committer`` value."""
+    match = _IDENT.match(value)
+    if match is None:
+        return value.decode("utf-8", "replace"), "", None
+    try:
+        offset = match.group(4).decode() if match.group(4) else "+0000"
+        tz = timezone(timedelta(hours=int(offset[:3]), minutes=int(offset[0] + offset[3:])))
+        date = datetime.fromtimestamp(int(match.group(3)), tz).isoformat()
+    except (ValueError, OverflowError, OSError):
+        date = None
+    return match.group(1).decode("utf-8", "replace"), match.group(2).decode("utf-8", "replace"), date
+
+
+def _parse_commit_object(commit: str, raw: bytes) -> dict[str, Any]:
+    """Parents, author, committer and message of a raw commit object (``cat-file``).
+
+    Parsed from the object itself rather than a ``git log --format`` with
+    separators, so no control character in a message or name can split it.
+    """
+    header, _sep, message_bytes = raw.partition(b"\n\n")
+    parents: list[str] = []
+    author_ident = committer_ident = ("", "", None)
+    for line in header.split(b"\n"):
+        if line.startswith(b" "):
+            continue  # continuation of a multi-line header (gpgsig, mergetag)
+        key, _space, value = line.partition(b" ")
+        if key == b"parent":
+            parents.append(value.decode("ascii", "replace"))
+        elif key == b"author":
+            author_ident = _parse_ident(value)
+        elif key == b"committer":
+            committer_ident = _parse_ident(value)
+    message = message_bytes.decode("utf-8", "replace")
+    first_paragraph = message.strip("\n").split("\n\n", 1)[0]
+    # Like ``%s``: the first paragraph on one line (``split("\n")``, not
+    # ``splitlines()``, which would also split at \x1c-\x1e).
+    subject = " ".join(line.strip() for line in first_paragraph.split("\n") if line.strip())
+    return {
+        "commit": commit,
+        "parents": parents,
+        "author_name": author_ident[0],
+        "author_email": author_ident[1],
+        "authored_date": author_ident[2],
+        "committer_name": committer_ident[0],
+        "committer_email": committer_ident[1],
+        "date": committer_ident[2],
+        "subject": subject,
+        "message": message,
+    }
+
+
+def _commit_summary(obj: dict[str, Any]) -> dict[str, Any]:
+    """A commit list entry: the parsed commit without its full message."""
+    return {key: value for key, value in obj.items() if key != "message"}
+
+
+def _requirement_count(paths: list[str]) -> int:
+    """How many distinct requirements (module, id) the data file ``paths`` touch."""
+    return len({m.groups() for p in paths if (m := _REQUIREMENT_PATH.match(p))})
+
+
 def data_pathspec(path: str) -> str | None:
     """The ``DATA_PATHSPECS`` entry matching a project-relative path, or ``None`` if it is no data file."""
     for pattern, spec in _DATA_FILES:
@@ -1439,14 +1506,262 @@ class GitHistory:
         commit = self._rev(info, f"refs/tags/{BASELINE_TAG_PREFIX}{name}")
         if commit is None:
             raise missing
-        tree = self._repo(info, ["ls-tree", "-r", "-z", "--name-only", commit], read_only=True)
-        paths = [
-            p
-            for p in tree.stdout.decode("utf-8", "surrogateescape").split("\x00")
-            if p and data_pathspec(p) is not None
-        ]
-        blobs = self._blobs(info, [f"{commit}:{path}" for path in paths], read_only=True)
-        return commit, dict(zip(paths, blobs))
+        return commit, self._tree_files(info, commit)
+
+    def _tree_files(self, info: RepoInfo, commit: str) -> dict[str, bytes | None]:
+        """``{relative path: bytes}`` of every data file in ``commit``'s tree (``ls-tree`` + ``cat-file``).
+
+        The blobs are requested by object id, never by ``<commit>:<path>``, so
+        a file name with a newline cannot break the ``cat-file --batch``
+        protocol.
+        """
+        entries = self._ls_tree(info, commit, ["-r"])
+        blobs = self._blobs(info, [oid for _path, oid in entries], read_only=True)
+        return {path: blob for (path, _oid), blob in zip(entries, blobs)}
+
+    def _ls_tree(self, info: RepoInfo, commit: str, options: list[str], paths: list[str] | None = None) -> list[tuple[str, str]]:
+        """``(path, blob id)`` of the data files ``git ls-tree -z`` lists (optionally limited to literal ``paths``)."""
+        args = ["ls-tree", "-z", *options, commit]
+        if paths is not None:
+            if not paths:
+                return []
+            args += ["--", *paths]
+        tree = self._repo(info, args, read_only=True, env=_LITERAL_PATHS if paths is not None else None)
+        entries: list[tuple[str, str]] = []
+        for record in tree.stdout.decode("utf-8", "surrogateescape").split("\x00"):
+            meta, tab, path = record.partition("\t")
+            fields = meta.split()
+            if tab and len(fields) == 3 and fields[1] == "blob" and data_pathspec(path) is not None:
+                entries.append((path, fields[2]))
+        return entries
+
+    # --- commit browser -----------------------------------------------------------
+
+    def _usable_or_none(self, project_dir: Path) -> RepoInfo | None:
+        info = self.detect(project_dir)
+        return info if info.state in (STATE_READY, STATE_PAUSED) else None
+
+    def _commit_objects(self, info: RepoInfo, commits: list[str]) -> list[dict[str, Any] | None]:
+        """Parsed commit objects (``cat-file --batch``; ``None`` for anything that is no commit)."""
+        raws = self._blobs(info, commits, read_only=True, kinds=(b"commit",))
+        return [_parse_commit_object(c, raw) if raw is not None else None for c, raw in zip(commits, raws)]
+
+    def _baseline_tags(self, info: RepoInfo) -> dict[str, list[str]]:
+        """Commit -> the names of the ``baseline/*`` tags on it (oldest name first)."""
+        result = self._repo(
+            info,
+            [
+                "for-each-ref",
+                "--sort=creatordate",
+                "--format=%(refname)%00%(objectname)%00%(*objectname)",
+                f"refs/tags/{BASELINE_TAG_PREFIX}",
+            ],
+            read_only=True,
+        )
+        tags: dict[str, list[str]] = {}
+        # Ref names cannot contain newlines or NULs (git check-ref-format).
+        for line in result.stdout.decode("utf-8", "replace").splitlines():
+            parts = line.split("\x00")
+            if len(parts) == 3:
+                commit = parts[2] or parts[1]
+                tags.setdefault(commit, []).append(parts[0].removeprefix(f"refs/tags/{BASELINE_TAG_PREFIX}"))
+        return tags
+
+    def _changed_data_paths(self, info: RepoInfo, pairs: list[tuple[str, str | None]]) -> dict[str, list[str]]:
+        """Commit -> the data files it changed against the given parent (``None``: a root commit).
+
+        One ``git diff-tree --stdin -z``; its output is NUL-separated commit
+        ids and paths. Only data files are listed (``DATA_PATHSPECS``), and no
+        data path is a bare hex object id, so the two cannot be confused.
+        """
+        if not pairs:
+            return {}
+        stdin = "".join(f"{c} {p}\n" if p else f"{c}\n" for c, p in pairs).encode()
+        result = self._repo(
+            info,
+            ["diff-tree", "--stdin", "--root", "-r", "-z", "--name-only", "--no-renames", "--", *DATA_PATHSPECS],
+            input=stdin,
+            read_only=True,
+        )
+        changed: dict[str, list[str]] = {}
+        current: str | None = None
+        for token in result.stdout.decode("utf-8", "surrogateescape").split("\x00"):
+            token = token.strip("\n")
+            if not token:
+                continue
+            if COMMIT_HASH_PATTERN.match(token):
+                current = token
+                changed.setdefault(current, [])
+            elif current is not None:
+                changed[current].append(token)
+        return changed
+
+    def list_commits(
+        self,
+        project_dir: Path,
+        *,
+        offset: int,
+        limit: int,
+        path: str | None = None,
+        author: str | None = None,
+        text: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> dict[str, Any]:
+        """One page of ``current``'s commits (first-parent, newest first) for the commit browser.
+
+        ``path`` limits the log to the commits that changed a project-relative
+        folder or file (a module's folder, a requirement file; literal, no
+        pathspec magic). ``author`` and ``text`` are fixed strings matched
+        case-insensitively against the author and the message; ``since`` /
+        ``until`` are ISO dates/times (validated by the caller). Each entry
+        carries its parents, the baseline tags on it and how many
+        requirements it changed (within ``path`` when given). The arguments
+        are validated by ``ProjectService.git_commits``.
+        """
+        empty: dict[str, Any] = {
+            "available": False,
+            "reason": None,
+            "entries": [],
+            "offset": offset,
+            "has_more": False,
+        }
+        info = self.detect(project_dir)
+        if info.state not in (STATE_READY, STATE_PAUSED):
+            return {**empty, "reason": info.message}
+        try:
+            if self._head(info, read_only=True) is None:
+                return {**empty, "available": True}
+            args = ["rev-list", "--first-parent", f"--skip={offset}", f"--max-count={limit + 1}"]
+            if author or text:
+                args += ["--fixed-strings", "--regexp-ignore-case"]
+            if author:
+                args.append(f"--author={author}")
+            if text:
+                args.append(f"--grep={text}")
+            if since:
+                args.append(f"--since={since}")
+            if until:
+                args.append(f"--until={until}")
+            args.append("HEAD")
+            if path is not None:
+                args += ["--", path]
+            listed = self._repo(info, args, read_only=True, env=_LITERAL_PATHS if path is not None else None)
+            commits = [c for c in listed.stdout.decode("ascii", "replace").split() if COMMIT_HASH_PATTERN.match(c)]
+            has_more = len(commits) > limit
+            commits = commits[:limit]
+            objects = self._commit_objects(info, commits)
+            tags = self._baseline_tags(info)
+            changed = self._changed_data_paths(
+                info,
+                [(c, obj["parents"][0] if obj and obj["parents"] else None) for c, obj in zip(commits, objects)],
+            )
+            prefix = None
+            if path is not None:
+                prefix = path if path.endswith(".json") else path.rstrip("/") + "/"
+            entries = []
+            for commit, obj in zip(commits, objects):
+                if obj is None:
+                    continue
+                paths = changed.get(commit, [])
+                if prefix is not None:
+                    paths = [p for p in paths if p == prefix or (prefix.endswith("/") and p.startswith(prefix))]
+                entries.append(
+                    {
+                        **_commit_summary(obj),
+                        "baselines": tags.get(commit, []),
+                        "changed_requirements": _requirement_count(paths),
+                    }
+                )
+            return {**empty, "available": True, "entries": entries, "has_more": has_more}
+        except GitError as exc:
+            return {**empty, "reason": f"The commits cannot be read: {exc}"}
+
+    def commit_change(self, project_dir: Path, commit: str) -> dict[str, Any]:
+        """A commit and the data files it changed, with their contents before and after.
+
+        ``commit`` must be a full object id (``FileNotFoundError`` otherwise,
+        and for a missing commit or repository). Compared with the first
+        parent (or nothing, for a root commit). Returns ``{"commit": parsed
+        commit, "baselines", "old": {path: bytes}, "new": {path: bytes}}``,
+        where both sides also hold ``project.json`` and the ``module.json`` of
+        every module the commit touched, changed or not (for names).
+        """
+        info, obj = self._resolve_commit(project_dir, commit)
+        parent = obj["parents"][0] if obj["parents"] else None
+        try:
+            stdin = f"{commit} {parent}\n" if parent else f"{commit}\n"
+            raw = self._repo(
+                info,
+                ["diff-tree", "--stdin", "--root", "-r", "-z", "--no-commit-id", "--no-renames", "--", *DATA_PATHSPECS],
+                input=stdin.encode(),
+                read_only=True,
+            )
+            # ``:<old mode> <new mode> <old id> <new id> <status>\0<path>\0`` per file.
+            tokens = raw.stdout.decode("utf-8", "surrogateescape").split("\x00")
+            old_ids: dict[str, str | None] = {}
+            new_ids: dict[str, str | None] = {}
+            index = 0
+            while index + 1 < len(tokens):
+                meta, path = tokens[index].strip("\n"), tokens[index + 1]
+                index += 2
+                fields = meta.lstrip(":").split()
+                if len(fields) < 5 or data_pathspec(path) is None:
+                    continue
+                zero = set("0")
+                old_ids[path] = None if set(fields[2]) == zero else fields[2]
+                new_ids[path] = None if set(fields[3]) == zero else fields[3]
+            extra = {"project.json"}
+            for path in list(old_ids):
+                match = re.match(r"^modules/([^/]+)/", path)
+                if match:
+                    extra.add(f"modules/{match.group(1)}/module.json")
+            extra -= set(old_ids)
+            wanted = sorted(extra)
+            for side, ids in ((parent, old_ids), (commit, new_ids)):
+                found = dict(self._ls_tree(info, side, [], wanted)) if side else {}
+                for path in wanted:
+                    ids[path] = found.get(path)
+            paths = list(old_ids)
+            old_blobs = self._blobs(info, [old_ids[p] for p in paths if old_ids[p]], read_only=True)
+            new_blobs = self._blobs(info, [new_ids[p] for p in paths if new_ids[p]], read_only=True)
+            old_iter, new_iter = iter(old_blobs), iter(new_blobs)
+            old_files = {p: next(old_iter) if old_ids[p] else None for p in paths}
+            new_files = {p: next(new_iter) if new_ids[p] else None for p in paths}
+            tags = self._baseline_tags(info)
+        except GitError as exc:
+            raise ValueError(f"The commit cannot be read: {exc}") from exc
+        return {
+            "commit": obj,
+            "baselines": tags.get(commit, []),
+            "changed_paths": sorted(p for p in paths if p not in extra),
+            "old": {p: c for p, c in old_files.items() if c is not None},
+            "new": {p: c for p, c in new_files.items() if c is not None},
+        }
+
+    def commit_files(self, project_dir: Path, commit: str) -> tuple[dict[str, Any], dict[str, bytes | None]]:
+        """``(parsed commit, {relative path: bytes})`` of the data files at ``commit`` (in memory, no checkout)."""
+        info, obj = self._resolve_commit(project_dir, commit)
+        try:
+            return obj, self._tree_files(info, commit)
+        except GitError as exc:
+            raise ValueError(f"The commit cannot be read: {exc}") from exc
+
+    def _resolve_commit(self, project_dir: Path, commit: str) -> tuple[RepoInfo, dict[str, Any]]:
+        """The repository and the parsed commit object of a full commit id; ``FileNotFoundError`` if missing."""
+        missing = FileNotFoundError(f"Commit '{commit}' not found")
+        if not isinstance(commit, str) or not COMMIT_HASH_PATTERN.match(commit):
+            raise missing
+        info = self._usable_or_none(project_dir)
+        if info is None:
+            raise missing
+        try:
+            obj = self._commit_objects(info, [commit])[0]
+        except GitError as exc:
+            raise ValueError(f"The commit cannot be read: {exc}") from exc
+        if obj is None:
+            raise missing
+        return info, obj
 
     def log(self, project_dir: Path, limit: int) -> dict[str, Any]:
         """The newest ``limit`` commits of ``current`` (first-parent, newest first), for the Git panel."""

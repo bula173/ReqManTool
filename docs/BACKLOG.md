@@ -1214,6 +1214,44 @@
       template…", module action "Save module as template…", File menu
       entries; `SaveModuleAsTemplateModal` (new). Not covered: tests;
       follow-ups in the backlog ("Module templates: follow-ups").
+- [x] **Commit browser for project, module and requirement** (2026-10-08;
+      requested 2026-10-07). One `CommitList` component at three scopes:
+      project (all commits), module (`git log` limited to the module
+      folder), requirement. Rows: short hash, date, author, message,
+      baseline tags, changed-requirement count; "Load more" paging (50);
+      filters by author, text and since/until (committer date, server
+      time zone, years clamped to 1970–2099). Commit details: full
+      message, author/committer, parents, baseline tags, project/module
+      change notes (module renames/reorders as text notes from
+      `describe_changes`), requirement-level compare against the first
+      parent via the baseline compare engine (older-format `project.json`
+      migrated in memory), and "Browse project at this commit" read-only
+      (`BaselinePage` reused). Full 40/64-hex hashes only (rev
+      expressions → 404). Decisions: the requirement History tab keeps
+      its inline diffs/blame and links into the browser instead of being
+      replaced by `CommitList`; a requirement moved between modules
+      counts twice in the changed count; module renames/reorders are
+      notes, not structured compare fields. Endpoints:
+      `GET /projects/{project_id}/git/commits` (`module_id`,
+      `requirement_id`, `offset`, `limit`, `author`, `text`, `since`,
+      `until`); `GET .../git/commits/{commit}`;
+      `GET .../git/commits/{commit}/snapshot`;
+      `GET .../git/commits/{commit}/modules/{module_id}/requirements`; WS
+      `commit.list`, `commit.get`, `commit.snapshot`,
+      `commit.requirements`; read-only, no broadcast. Backend:
+      `backend/reqman/{git_repo.py (GitHistory.list_commits via rev-list
+      --first-parent, cat-file --batch, for-each-ref tags, diff-tree -z
+      counts; commit_change, commit_files), service.py (git_commits,
+      git_commit, get_commit_snapshot, commit_requirements; snapshot
+      helpers shared with baselines), app.py}`; design in
+      `docs/ARCHITECTURE.md` ("Commit browser"). UI: `CommitBrowserPage`,
+      `CommitDetailsPage`, `CommitList` (new); `CompareResult` extracted
+      from `BaselineComparePage`; reachable from the Git panel (hash links,
+      "Browse all commits"), the requirement History tab ("Show in the
+      commit browser", hash links), the View menu, project/module node
+      menus and both requirement menus ("Project commits", "Module
+      commits", "Requirement commits"). Not covered: tests; follow-ups
+      in the backlog ("Commit browser: follow-ups").
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -1314,12 +1352,15 @@ to the categories above.
       review). Browse reads the whole baseline tree into memory per
       request — scope `ls-tree`/`cat-file` to the requested module;
       hand-made nested tags like `baseline/x/y` are listed but not
-      browsable (filter or mark them); a committed data file with a
-      newline in its name silently vanishes from browse/compare
-      (`cat-file --batch` line protocol; also affects 2a's
-      pending-changes specs) — exclude control characters or use `-z`;
-      a hand commit whose subject contains `\x1f`/`\x1e` corrupts that
-      git-log entry; `moduleId` is not URL-encoded in the baseline
+      browsable (filter or mark them); done 2026-10-08: a committed data
+      file with a newline in its name silently vanished from
+      browse/compare (`cat-file --batch` line protocol) —
+      `baseline_files` now reads blobs by object id via a shared
+      NUL-safe `_tree_files`; still open: the same issue in 2a's
+      pending-changes specs; a hand commit whose subject contains
+      `\x1f`/`\x1e` corrupts that git-log entry (handled in the commit
+      browser; the existing git-log entry path unchanged); `moduleId`
+      is not URL-encoded in the baseline
       requirements query; mutations refetch active immutable baseline
       snapshots despite `staleTime: Infinity`; a description whose final
       paragraph looks like `Reqman-*:` trailers is swallowed when
@@ -1348,22 +1389,13 @@ to the categories above.
       still expects plain ReqIF and must be updated. (2) No ReqIF
       importer reads the XHTML back yet. (3) Later slice: rich-text
       tables and images.
-- [ ] Commit browser for project, module and requirement. Requested
-      2026-10-07. Builds on git history (done: requirement History tab,
-      `GET /projects/{id}/git/log`, recent commits in the Git panel).
-      One commit list component at three scopes: project (all commits),
-      module (`git log` limited to the module folder), requirement (the
-      existing history, same component). Each row: short hash, date,
-      author, message, baseline tags on it, changed-requirement count;
-      paging / "load more", filters by author, date range and text.
-      Opening a commit shows its details: full message, parent, and the
-      changes as requirement-level semantics (added / removed / modified
-      requirements with per-attribute and link diffs, module renames/
-      reorders) — reusing the baseline compare engine between the commit
-      and its first parent; "browse project at this commit" read-only
-      (same mechanism as browsing a baseline). Reachable from the Git
-      panel, the left/right-click menus of project/module/requirement and
-      View menu. Read-only; REST + WebSocket parity.
+- [ ] Commit browser: follow-ups (2026-10-08). (1) Structured module
+      rename/reorder/folder entries in the compare engine (today shown as
+      text notes from `describe_changes`). (2) Text search matching hash
+      prefixes. (3) Total commit count. (4) Requirement picker on the
+      browser page. (5) Stale filter inputs when a menu action navigates
+      to the same scope (cosmetic). (6) Browse-at-commit reads the whole
+      tree into memory (as baselines). (7) Tests pending (phase B).
 - [ ] GitLab and GitHub API integration. Requested 2026-10-07. Builds on
       git remotes (done). Provider connections (GitLab.com / self-hosted
       GitLab URL, GitHub.com / GitHub Enterprise URL) authenticated with a

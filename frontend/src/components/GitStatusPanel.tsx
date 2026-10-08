@@ -38,6 +38,7 @@ import {
   useSetGitRemote,
 } from '../api/queries';
 import type { GitRemoteStatus, GitState } from '../api/types';
+import { commitBrowserPath, commitPath } from './commits';
 import { CreateBaselineModal } from './CreateBaselineModal';
 
 const STATE_LABELS: Record<GitState, { label: string; color: string }> = {
@@ -88,20 +89,18 @@ function RecentCommits({ projectId }: { projectId: string }) {
     <Stack gap={2}>
       {log.entries.map((entry) => (
         <Text size="sm" key={entry.commit} lineClamp={1}>
-          <Text span c="dimmed" ff="monospace">
+          <Anchor component={Link} to={commitPath(projectId, entry.commit)} c="dimmed" ff="monospace" size="sm">
             {entry.commit.slice(0, 8)}
-          </Text>{' '}
+          </Anchor>{' '}
           {entry.subject}{' '}
           <Text span c="dimmed" size="xs">
             — {entry.author_name}, {formatDate(entry.date)}
           </Text>
         </Text>
       ))}
-      {log.truncated && (
-        <Text size="xs" c="dimmed">
-          Older commits are not shown (git log in the project folder lists them all).
-        </Text>
-      )}
+      <Anchor component={Link} to={commitBrowserPath(projectId)} size="xs">
+        {log.truncated ? 'Browse all commits' : 'Open the commit browser'}
+      </Anchor>
     </Stack>
   );
 }

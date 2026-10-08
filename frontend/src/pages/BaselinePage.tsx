@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { applicableAttributes } from '../api/applicability';
 import { ApiError } from '../api/client';
-import { useBaseline, useBaselineRequirements } from '../api/queries';
+import { useBaseline, useBaselineRequirements, useCommitRequirements, useCommitSnapshot } from '../api/queries';
 import type { Requirement } from '../api/types';
 import { ResizableHeaderCell } from '../components/ResizableHeaderCell';
 import { RowResizeHandle } from '../components/RowResizeHandle';
@@ -50,19 +50,33 @@ function formatValue(value: unknown): string {
 }
 
 /**
- * Read-only view of a project at a baseline (`baseline/<name>` tag). There is
- * deliberately no editing, no context menu and no shortcut here: nothing on
- * this page can change data (the backend accepts no mutation on a baseline
- * either).
+ * Read-only view of a project at a baseline (`baseline/<name>` tag) or at any
+ * commit ("Browse project at this commit" in the commit browser; route
+ * parameter `commit`). There is deliberately no editing, no context menu and
+ * no shortcut here: nothing on this page can change data (the backend
+ * accepts no mutation on a baseline or commit either).
  */
 export function BaselinePage() {
-  const { projectId, baselineName } = useParams<{ projectId: string; baselineName: string }>();
-  const baselineQuery = useBaseline(projectId, baselineName);
+  const { projectId, baselineName, commit } = useParams<{
+    projectId: string;
+    baselineName: string;
+    commit: string;
+  }>();
+  // Exactly one of the two routes' parameters is set; the other query stays disabled.
+  const baselineQuery = useBaseline(projectId, commit ? undefined : baselineName);
+  const commitQuery = useCommitSnapshot(projectId, commit);
   const [selectedModule, setSelectedModule] = useState<string | null>(null);
 
-  const snapshot = baselineQuery.data;
+  const snapshotQuery = commit ? commitQuery : baselineQuery;
+  const snapshot = snapshotQuery.data;
   const moduleId = selectedModule ?? snapshot?.modules[0]?.id ?? null;
-  const requirementsQuery = useBaselineRequirements(projectId, baselineName, moduleId ?? undefined);
+  const baselineRequirements = useBaselineRequirements(
+    projectId,
+    commit ? undefined : baselineName,
+    moduleId ?? undefined,
+  );
+  const commitRequirements = useCommitRequirements(projectId, commit, moduleId ?? undefined);
+  const requirementsQuery = commit ? commitRequirements : baselineRequirements;
   // The module's own "All attributes" layout: a baseline looks like the module's table.
   const tableKey = moduleTableKey(projectId ?? '', moduleId ?? '', null);
   const columns = useResizableColumns(tableKey);
@@ -72,19 +86,20 @@ export function BaselinePage() {
   // The baseline's own row styling rules (none if its project.json predates them).
   const rowAppearance = useRowAppearance(snapshot?.project.row_styles, snapshot?.project.attributes);
 
-  if (!projectId || !baselineName) return null;
-  if (baselineQuery.isLoading) {
+  if (!projectId || !(baselineName || commit)) return null;
+  const what = commit ? `commit ${commit.slice(0, 8)}` : `baseline "${baselineName}"`;
+  if (snapshotQuery.isLoading) {
     return (
       <Center h="60vh">
         <Loader />
       </Center>
     );
   }
-  if (baselineQuery.isError || !snapshot) {
+  if (snapshotQuery.isError || !snapshot) {
     return (
-      <Alert icon={<IconInfoCircle size={16} />} color="red" title={`Failed to load baseline "${baselineName}"`}>
-        {baselineQuery.error instanceof ApiError || baselineQuery.error instanceof Error
-          ? baselineQuery.error.message
+      <Alert icon={<IconInfoCircle size={16} />} color="red" title={`Failed to load ${what}`}>
+        {snapshotQuery.error instanceof ApiError || snapshotQuery.error instanceof Error
+          ? snapshotQuery.error.message
           : 'Unknown error'}
       </Alert>
     );
@@ -113,7 +128,7 @@ export function BaselinePage() {
       <div>
         <Group gap="xs">
           <Title order={2}>
-            Baseline {snapshot.name}{' '}
+            {'name' in snapshot ? `Baseline ${snapshot.name}` : `Commit ${snapshot.commit.slice(0, 8)}`}{' '}
             <Text span c="dimmed" fw={400}>
               (read-only)
             </Text>
@@ -123,11 +138,32 @@ export function BaselinePage() {
           </Badge>
         </Group>
         <Text size="sm" c="dimmed">
-          Project "{snapshot.project.name}" as it was at baseline {snapshot.name} (commit{' '}
-          <Text span ff="monospace">
-            {snapshot.commit.slice(0, 8)}
-          </Text>
-          ). Nothing here can be edited.{' '}
+          {'name' in snapshot ? (
+            <>
+              Project "{snapshot.project.name}" as it was at baseline {snapshot.name} (commit{' '}
+              <Text span ff="monospace">
+                {snapshot.commit.slice(0, 8)}
+              </Text>
+              ).
+            </>
+          ) : (
+            <>
+              Project "{snapshot.project.name}" as it was at commit{' '}
+              <Text span ff="monospace">
+                {snapshot.commit.slice(0, 8)}
+              </Text>{' '}
+              ({snapshot.subject}).
+            </>
+          )}{' '}
+          Nothing here can be edited.{' '}
+          {commit && (
+            <>
+              <Anchor component={Link} to={`/projects/${projectId}/commits/${commit}`} size="sm">
+                Commit details
+              </Anchor>
+              {' · '}
+            </>
+          )}
           <Anchor component={Link} to={`/projects/${projectId}`} size="sm">
             Back to the project
           </Anchor>
@@ -152,7 +188,7 @@ export function BaselinePage() {
         </Group>
         {snapshot.modules.length === 0 && (
           <Text size="sm" c="dimmed">
-            This baseline has no modules.
+            This {commit ? 'commit' : 'baseline'} has no modules.
           </Text>
         )}
         {requirementsQuery.isLoading && <Loader size="sm" />}
@@ -166,7 +202,7 @@ export function BaselinePage() {
         )}
         {module && requirementsQuery.data && rows.length === 0 && (
           <Text size="sm" c="dimmed">
-            This module had no requirements at the baseline.
+            This module had no requirements at the {commit ? 'commit' : 'baseline'}.
           </Text>
         )}
         {rows.length > 0 && (

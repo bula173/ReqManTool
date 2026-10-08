@@ -7,6 +7,7 @@ import {
   IconFileText,
   IconFolderOpen,
   IconFolderPlus,
+  IconGitCommit,
   IconGridDots,
   IconLink,
   IconPlus,
@@ -16,6 +17,7 @@ import {
 import { ApiError } from '../api/client';
 import { moduleTypeOf } from '../api/moduleTypes';
 import { isProjectStub, type Project } from '../api/types';
+import { commitBrowserPath } from '../components/commits';
 import type { Action, ActionContext } from './types';
 
 /**
@@ -131,6 +133,18 @@ export const projectActions: Action<'project'>[] = [
       if (project) ctx.commands.navigate(`/projects/${encodeURIComponent(project.id)}/reports/traceability`);
     },
   },
+  {
+    // The commit browser at project scope (read-only; the page explains a project without history).
+    id: 'project.commits',
+    element: 'project',
+    label: 'Project commits',
+    icon: IconGitCommit,
+    isAvailable: (ctx) => loadedProject(ctx) !== null,
+    run: (ctx) => {
+      const project = loadedProject(ctx);
+      if (project) ctx.commands.navigate(commitBrowserPath(project.id));
+    },
+  },
 ];
 
 /** The path of a module report page (see `App.tsx`). */
@@ -212,6 +226,17 @@ export const moduleActions: Action<'module'>[] = [
         moduleId: target.module.id,
         moduleName: target.module.name,
       });
+    },
+  },
+  {
+    // The commit browser limited to the module's folder.
+    id: 'module.commits',
+    element: 'module',
+    label: 'Module commits',
+    icon: IconGitCommit,
+    isAvailable: (ctx) => ctx.target !== null,
+    run: (ctx) => {
+      if (ctx.target) ctx.commands.navigate(commitBrowserPath(ctx.target.projectId, ctx.target.module.id));
     },
   },
   {

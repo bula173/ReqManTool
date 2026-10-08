@@ -10,6 +10,7 @@ import {
   IconClipboardPlus,
   IconCopy,
   IconCut,
+  IconGitCommit,
   IconLayoutSidebarRight,
   IconLink,
   IconListTree,
@@ -20,6 +21,7 @@ import {
 } from '@tabler/icons-react';
 import { ApiError } from '../api/client';
 import type { Requirement } from '../api/types';
+import { commitBrowserPath } from '../components/commits';
 import { linksOf } from './links';
 import type { Action, ActionContext } from './types';
 
@@ -398,6 +400,19 @@ export const requirementActions: Action<'requirement'>[] = [
       if (!requirement) return;
       ctx.commands.selectRequirement(requirement.id);
       ctx.commands.setDetailPanelOpen(true);
+    },
+  },
+  {
+    // The commit browser limited to the requirement's file (its History tab lists the same commits with diffs).
+    id: 'requirement.commits',
+    element: 'requirement',
+    label: 'Requirement commits',
+    icon: IconGitCommit,
+    isAvailable: (ctx) => targetOf(ctx) !== null && ctx.projectId !== null,
+    run: (ctx) => {
+      const requirement = targetOf(ctx);
+      if (!requirement || !ctx.projectId || !ctx.module) return;
+      ctx.commands.navigate(commitBrowserPath(ctx.projectId, ctx.module.id, requirement.id));
     },
   },
   {

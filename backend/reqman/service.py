@@ -161,6 +161,10 @@ RESULT_MATCH_TYPES = ("string", "integer", "enum")
 RESULT_TEXT_VALUES = {"passed": "Passed", "failed": "Failed", "blocked": "Blocked", "not_run": "Not Run"}
 RESULT_IMPORT_OPTIONS = ("config_id", "match_attribute", "executed_by", "version", "execution_date", "file_name")
 MAX_RESULT_IMPORT_ERRORS = 20
+# Commit browser: page size, the deepest page and the longest author/text filter.
+DEFAULT_COMMIT_PAGE = 50
+MAX_COMMIT_OFFSET = 1_000_000
+MAX_COMMIT_FILTER_LENGTH = 200
 
 # Result values (compared like attribute names) per result category; any other
 # value, and no value, counts as not run.
@@ -427,6 +431,176 @@ class ProjectService:
             raise ValueError(f"Invalid limit {limit!r}: expected an integer >= 1")
         return self.history.log(self.store.project_path(project_id), min(limit, LOG_LIMIT))
 
+    # --- commit browser (git) -------------------------------------------------------
+
+    @staticmethod
+    def _commit_filter_text(value: Any, what: str) -> str | None:
+        """A commit browser author/text filter: ``None`` when empty; 400 when too long or not one line."""
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError(f"Invalid {what} filter: expected a string")
+        value = value.strip()
+        if not value:
+            return None
+        if len(value) > MAX_COMMIT_FILTER_LENGTH:
+            raise ValueError(f"Invalid {what} filter: at most {MAX_COMMIT_FILTER_LENGTH} characters")
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+            raise ValueError(f"Invalid {what} filter: control characters are not allowed")
+        return value
+
+    @staticmethod
+    def _commit_filter_date(value: Any, what: str, end_of_day: bool) -> str | None:
+        """A commit browser date filter (``YYYY-MM-DD``) as a git ``--since``/``--until`` value."""
+        if value is None or value == "":
+            return None
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            raise ValueError(f"Invalid {what} date {value!r}: expected YYYY-MM-DD")
+        try:
+            date.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError(f"Invalid {what} date {value!r}: {exc}") from exc
+        # git's date parser only understands years 1970-2099: clamp (an open
+        # bound beyond them limits nothing).
+        year = int(value[:4])
+        if (end_of_day and year > 2099) or (not end_of_day and year < 1970):
+            return None
+        if year > 2099:
+            value = "2099-12-31"
+        elif year < 1970:
+            value = "1970-01-01"
+        return f"{value} 23:59:59" if end_of_day else f"{value} 00:00:00"
+
+    def git_commits(
+        self,
+        project_id: str,
+        module_id: str | None = None,
+        requirement_id: str | None = None,
+        offset: int | None = 0,
+        limit: int | None = None,
+        author: str | None = None,
+        text: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> dict[str, Any]:
+        """One page of the project's commits for the commit browser (read-only).
+
+        Scope: the whole project, one module (commits that changed its
+        folder) or one requirement (``requirement_id`` needs ``module_id``;
+        commits that changed its file). The module/requirement must exist
+        now (404). Filters: ``author`` and ``text`` (message) are
+        case-insensitive fixed strings; ``since``/``until`` are inclusive
+        ``YYYY-MM-DD`` dates (committer date, server time zone). Paging with
+        ``offset`` and ``limit`` (default ``DEFAULT_COMMIT_PAGE``, capped at
+        ``LOG_LIMIT``); ``has_more`` tells whether another page exists. A
+        project without a readable repository answers ``available: false``.
+        """
+        self.store.load_project(project_id)
+        if limit is None:
+            limit = DEFAULT_COMMIT_PAGE
+        for name, value, minimum in (("limit", limit, 1), ("offset", offset or 0, 0)):
+            if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+                raise ValueError(f"Invalid {name} {value!r}: expected an integer >= {minimum}")
+        offset = offset or 0
+        if offset > MAX_COMMIT_OFFSET:
+            raise ValueError(f"Invalid offset {offset}: at most {MAX_COMMIT_OFFSET}")
+        path: str | None = None
+        if requirement_id is not None and module_id is None:
+            raise ValueError("A requirement scope needs its module_id")
+        if module_id is not None:
+            self.store.load_module(project_id, module_id)  # 404 for an unknown module
+            path = f"modules/{module_id}/"
+            if requirement_id is not None:
+                self.store.load_requirement(project_id, module_id, requirement_id)
+                path = self.store.requirement_relative_path(module_id, requirement_id)
+        return self.history.list_commits(
+            self.store.project_path(project_id),
+            offset=offset,
+            limit=min(limit, LOG_LIMIT),
+            path=path,
+            author=self._commit_filter_text(author, "author"),
+            text=self._commit_filter_text(text, "text"),
+            since=self._commit_filter_date(since, "from", end_of_day=False),
+            until=self._commit_filter_date(until, "to", end_of_day=True),
+        )
+
+    def _snapshot_project_dict(self, project_id: str, data: Any, what: str) -> Any:
+        """A snapshot's project.json upgraded to the current format for comparing (best effort).
+
+        A newer format is refused (``NewerFormatError``, 409); a project.json
+        the migrations cannot read is compared as it is.
+        """
+        if not isinstance(data, dict):
+            return data
+        try:
+            return upgrade(data, PROJECT_FORMAT, what)
+        except NewerFormatError:
+            raise
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return data
+
+    def git_commit(self, project_id: str, commit: str) -> dict[str, Any]:
+        """A commit's details for the commit browser (read-only).
+
+        The full message, parents, baseline tags and what the commit changed
+        compared with its first parent (nothing, for the first commit), at
+        requirement level: the baseline compare engine (``compare_snapshots``:
+        modules, requirements with per-attribute diffs, links, attribute
+        definitions) plus ``notes`` describing project and module file
+        changes (module renames, module tree reorders and moves, views, …).
+        Older commits' project.json is upgraded through the format
+        migrations first. ``commit`` must be a full commit id (404 otherwise).
+        """
+        self.store.load_project(project_id)
+        change = self.history.commit_change(self.store.project_path(project_id), commit)
+        what = f"Commit {commit[:12]} of project '{project_id}'"
+        old_snapshot = build_snapshot(change["old"])
+        new_snapshot = build_snapshot(change["new"])
+        old_snapshot["project"] = self._snapshot_project_dict(project_id, old_snapshot["project"], what)
+        new_snapshot["project"] = self._snapshot_project_dict(project_id, new_snapshot["project"], what)
+        result = compare_snapshots(old_snapshot, new_snapshot)
+        self._add_compare_row_styles(result, old_snapshot, new_snapshot)
+        structural = [
+            FileChange(path, change["old"].get(path), change["new"].get(path))
+            for path in change["changed_paths"]
+            if path == "project.json" or re.fullmatch(r"modules/[^/]+/module\.json", path)
+        ]
+        notes = describe_changes(structural, new_snapshot["project"]) if structural else []
+        obj = change["commit"]
+        return {
+            **obj,
+            "baselines": change["baselines"],
+            "changed_files": len(change["changed_paths"]),
+            "notes": notes,
+            **result,
+        }
+
+    def get_commit_snapshot(self, project_id: str, commit: str) -> dict[str, Any]:
+        """The project and modules as they were at a commit ("browse at this commit"). Read-only.
+
+        Same as a baseline (``get_baseline``): read from the commit in memory,
+        upgraded like ``load_project``; 404 for an unknown commit, 409 for a
+        newer format.
+        """
+        self.store.load_project(project_id)
+        obj, files = self.history.commit_files(self.store.project_path(project_id), commit)
+        project = self._snapshot_project(f"Commit {commit[:12]} of project '{project_id}'", files)
+        return {
+            "commit": commit,
+            "subject": obj["subject"],
+            "date": obj["date"],
+            "author_name": obj["author_name"],
+            "project": project.to_dict(),
+            "modules": [m.to_dict() for m in self._baseline_modules(project, files)],
+        }
+
+    def commit_requirements(self, project_id: str, commit: str, module_id: str) -> list[Requirement]:
+        """A module's requirements as they were at a commit (read-only), sorted by id."""
+        self.store.load_project(project_id)
+        _obj, files = self.history.commit_files(self.store.project_path(project_id), commit)
+        self._snapshot_project(f"Commit {commit[:12]} of project '{project_id}'", files)  # rejects a newer format
+        return self._snapshot_requirements(files, module_id, f"commit {commit[:12]}")
+
     # --- remotes (git) -----------------------------------------------------------
 
     def _require_no_sync_conflict(self, project_id: str) -> None:
@@ -599,7 +773,11 @@ class ProjectService:
         A baseline written by a newer ReqManTool raises ``NewerFormatError``
         (REST 409); an unreadable one raises ``ValueError``.
         """
-        what = f"Baseline '{name}' of project '{project_id}'"
+        return self._snapshot_project(f"Baseline '{name}' of project '{project_id}'", files)
+
+    @staticmethod
+    def _snapshot_project(what: str, files: dict[str, bytes | None]) -> Project:
+        """A snapshot's (baseline's, commit's) project.json as a ``Project``, upgraded like ``load_project``."""
         raw = files.get("project.json")
         if raw is None:
             raise ValueError(f"{what} has no readable project.json")
@@ -652,8 +830,13 @@ class ProjectService:
         commit, files = self._baseline_files(project_id, name)
         project = self._baseline_project(project_id, name, files)  # also rejects a newer format
         del commit, project
+        return self._snapshot_requirements(files, module_id, f"baseline '{name}'")
+
+    @staticmethod
+    def _snapshot_requirements(files: dict[str, bytes | None], module_id: str, where: str) -> list[Requirement]:
+        """A module's requirements in a snapshot's files, sorted by id; 404 when the module is not there."""
         if f"modules/{module_id}/module.json" not in files:
-            raise FileNotFoundError(f"Module '{module_id}' not found in baseline '{name}'")
+            raise FileNotFoundError(f"Module '{module_id}' not found in {where}")
         requirements = []
         prefix = f"modules/{module_id}/requirements/"
         for path, content in files.items():

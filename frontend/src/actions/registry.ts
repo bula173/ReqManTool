@@ -230,6 +230,11 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
       divider,
       action('view.rowStyles'),
       action('view.toggleDarkMode'),
+      divider,
+      // Commit browser (read-only) of the open project / module / selected requirement.
+      action('project.commits'),
+      action('module.commits'),
+      action('requirement.commits'),
     ],
   },
   {
@@ -295,6 +300,8 @@ export const REQUIREMENT_CONTEXT_MENU: MenuEntry[] = [
   divider,
   action('requirement.link'),
   divider,
+  action('requirement.commits'),
+  divider,
   action('requirement.delete'),
 ];
 
@@ -308,6 +315,8 @@ export const REQUIREMENT_NAVIGATION_MENU: MenuEntry[] = [
   action('requirement.goToLinked'),
   divider,
   action('requirement.openInWindow'),
+  divider,
+  action('requirement.commits'),
 ];
 
 /** Right click of a module tab in the tab bar (left click switches to it). */
@@ -343,6 +352,7 @@ export const PROJECT_NODE_MENU: MenuEntry[] = [
   action('project.references'),
   divider,
   action('report.traceability'),
+  action('project.commits'),
   divider,
   action('file.saveAsTemplate'),
 ];
@@ -365,6 +375,7 @@ export const MODULE_NODE_MENU: MenuEntry[] = [
   action('module.verificationReport'),
   action('module.executionReport'),
   action('module.importTestResults'),
+  action('module.commits'),
   divider,
   action('module.saveAsTemplate'),
   divider,

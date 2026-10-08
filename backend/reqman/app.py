@@ -515,6 +515,41 @@ def get_git_log(project_id: str, limit: int = Query(default=20, ge=1)):
     return _wrap(service.git_log, project_id, limit)
 
 
+# --- commit browser (git, read-only) ---------------------------------------------
+
+
+@app.get("/projects/{project_id}/git/commits")
+def list_git_commits(
+    project_id: str,
+    module_id: str | None = None,
+    requirement_id: str | None = None,
+    offset: int = Query(default=0, ge=0),
+    limit: int | None = Query(default=None, ge=1),
+    author: str | None = None,
+    text: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+):
+    return _wrap(
+        service.git_commits, project_id, module_id, requirement_id, offset, limit, author, text, since, until
+    )
+
+
+@app.get("/projects/{project_id}/git/commits/{commit}")
+def get_git_commit(project_id: str, commit: str):
+    return _wrap(service.git_commit, project_id, commit)
+
+
+@app.get("/projects/{project_id}/git/commits/{commit}/snapshot")
+def get_git_commit_snapshot(project_id: str, commit: str):
+    return _wrap(service.get_commit_snapshot, project_id, commit)
+
+
+@app.get("/projects/{project_id}/git/commits/{commit}/modules/{module_id}/requirements")
+def list_git_commit_requirements(project_id: str, commit: str, module_id: str):
+    return [r.to_dict() for r in _wrap(service.commit_requirements, project_id, commit, module_id)]
+
+
 # --- remotes (git) ----------------------------------------------------------
 
 
@@ -1123,6 +1158,14 @@ RPC_METHODS = {
         p["project_id"], p["name"], p["module_id"]
     ),
     "baseline.compare": lambda p: service.compare_baselines(p["project_id"], p["from"], p["to"]),
+    # Commit browser: read-only, never broadcast (not in MUTATING_METHODS).
+    "commit.list": lambda p: service.git_commits(
+        p["project_id"], p.get("module_id"), p.get("requirement_id"), p.get("offset", 0), p.get("limit"),
+        p.get("author"), p.get("text"), p.get("since"), p.get("until"),
+    ),
+    "commit.get": lambda p: service.git_commit(p["project_id"], p["commit"]),
+    "commit.snapshot": lambda p: service.get_commit_snapshot(p["project_id"], p["commit"]),
+    "commit.requirements": lambda p: service.commit_requirements(p["project_id"], p["commit"], p["module_id"]),
     "attribute.add": lambda p: service.add_attribute_definition(
         p["project_id"], p["id"], p["name"], p.get("type", "string"),
         p.get("required", False), p.get("default"), p.get("choices"), p.get("modules"),

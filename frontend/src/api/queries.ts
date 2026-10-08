@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { API_BASE_URL, api } from './client';
 import type {
   AttributeDefinition,
@@ -6,6 +6,10 @@ import type {
   BaselineCompare,
   BaselineList,
   BaselineSnapshot,
+  CommitDetails,
+  CommitList,
+  CommitQuery,
+  CommitSnapshot,
   CreateModuleFromTemplateResult,
   CsvImportResult,
   ExecutionReport,
@@ -56,6 +60,29 @@ export const queryKeys = {
     ['projects', projectId, 'modules', moduleId, 'requirements', requirementId, 'history'] as const,
   gitStatus: (projectId: string) => ['projects', projectId, 'git'] as const,
   gitLog: (projectId: string, limit: number) => ['projects', projectId, 'git', 'log', limit] as const,
+  /**
+   * Commit browser: under the project's git key, so live sync and every
+   * mutation that refreshes the git status refetch the lists too.
+   */
+  commits: (projectId: string, query: CommitQuery) =>
+    [
+      'projects',
+      projectId,
+      'git',
+      'commits',
+      'list',
+      query.moduleId ?? '',
+      query.requirementId ?? '',
+      query.author ?? '',
+      query.text ?? '',
+      query.since ?? '',
+      query.until ?? '',
+    ] as const,
+  commit: (projectId: string, commit: string) => ['projects', projectId, 'git', 'commits', 'detail', commit] as const,
+  commitSnapshot: (projectId: string, commit: string) =>
+    ['projects', projectId, 'git', 'commits', 'snapshot', commit] as const,
+  commitRequirements: (projectId: string, commit: string, moduleId: string) =>
+    ['projects', projectId, 'git', 'commits', 'snapshot', commit, 'modules', moduleId] as const,
   baselines: (projectId: string) => ['projects', projectId, 'baselines'] as const,
   baseline: (projectId: string, name: string) => ['projects', projectId, 'baselines', name] as const,
   baselineRequirements: (projectId: string, name: string, moduleId: string) =>
@@ -547,6 +574,77 @@ export function useGitLog(projectId: string | undefined, limit = 20, enabled = t
     queryKey: queryKeys.gitLog(projectId ?? '', limit),
     queryFn: () => api.get<GitLog>(`/projects/${projectId}/git/log?limit=${limit}`),
     enabled: enabled && !!projectId,
+  });
+}
+
+// --- commit browser (git, read-only) -------------------------------------------------
+
+/** Commits per page of the commit browser ("Load more" fetches the next). */
+export const COMMIT_PAGE_SIZE = 50;
+
+function commitListUrl(projectId: string, query: CommitQuery, offset: number): string {
+  const params = new URLSearchParams({ offset: String(offset), limit: String(COMMIT_PAGE_SIZE) });
+  if (query.moduleId) params.set('module_id', query.moduleId);
+  if (query.requirementId) params.set('requirement_id', query.requirementId);
+  if (query.author) params.set('author', query.author);
+  if (query.text) params.set('text', query.text);
+  if (query.since) params.set('since', query.since);
+  if (query.until) params.set('until', query.until);
+  return `/projects/${encodeURIComponent(projectId)}/git/commits?${params.toString()}`;
+}
+
+/**
+ * The commit browser's list at project, module or requirement scope, with
+ * author/text/date filters; pages of `COMMIT_PAGE_SIZE` (`fetchNextPage` =
+ * "Load more"). Refetched by live sync (`changed` for the project).
+ */
+export function useCommits(projectId: string | undefined, query: CommitQuery) {
+  return useInfiniteQuery({
+    queryKey: queryKeys.commits(projectId ?? '', query),
+    queryFn: ({ pageParam }) => api.get<CommitList>(commitListUrl(projectId ?? '', query, pageParam)),
+    initialPageParam: 0,
+    getNextPageParam: (last: CommitList) => (last.has_more ? last.offset + last.entries.length : undefined),
+    enabled: !!projectId,
+  });
+}
+
+/** A commit's details and requirement-level changes (immutable, except the baseline tags on it). */
+export function useCommit(projectId: string | undefined, commit: string | undefined): UseQueryResult<CommitDetails> {
+  return useQuery({
+    queryKey: queryKeys.commit(projectId ?? '', commit ?? ''),
+    queryFn: () =>
+      api.get<CommitDetails>(`/projects/${encodeURIComponent(projectId ?? '')}/git/commits/${encodeURIComponent(commit ?? '')}`),
+    enabled: !!projectId && !!commit,
+    staleTime: Infinity,
+  });
+}
+
+/** The project and modules as they were at a commit (read-only; never changes). */
+export function useCommitSnapshot(projectId: string | undefined, commit: string | undefined): UseQueryResult<CommitSnapshot> {
+  return useQuery({
+    queryKey: queryKeys.commitSnapshot(projectId ?? '', commit ?? ''),
+    queryFn: () =>
+      api.get<CommitSnapshot>(
+        `/projects/${encodeURIComponent(projectId ?? '')}/git/commits/${encodeURIComponent(commit ?? '')}/snapshot`,
+      ),
+    enabled: !!projectId && !!commit,
+    staleTime: Infinity,
+  });
+}
+
+export function useCommitRequirements(
+  projectId: string | undefined,
+  commit: string | undefined,
+  moduleId: string | undefined,
+): UseQueryResult<Requirement[]> {
+  return useQuery({
+    queryKey: queryKeys.commitRequirements(projectId ?? '', commit ?? '', moduleId ?? ''),
+    queryFn: () =>
+      api.get<Requirement[]>(
+        `/projects/${encodeURIComponent(projectId ?? '')}/git/commits/${encodeURIComponent(commit ?? '')}/modules/${encodeURIComponent(moduleId ?? '')}/requirements`,
+      ),
+    enabled: !!projectId && !!commit && !!moduleId,
+    staleTime: Infinity,
   });
 }
 

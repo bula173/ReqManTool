@@ -1,6 +1,7 @@
-import { ActionIcon, Alert, Badge, Card, Center, Group, Loader, Stack, Tabs, Text, Timeline, Title, Tooltip } from '@mantine/core';
+import { ActionIcon, Alert, Anchor, Badge, Card, Center, Group, Loader, Stack, Tabs, Text, Timeline, Title, Tooltip } from '@mantine/core';
 import { IconGitCommit, IconHistory, IconX } from '@tabler/icons-react';
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import { useIncomingLinks, useRequirementHistory } from '../api/queries';
 import type {
@@ -12,6 +13,7 @@ import type {
   VerificationStatus,
 } from '../api/types';
 import { toggleHint } from '../layout/sidePanels';
+import { commitBrowserPath, commitPath } from './commits';
 import { EditableAttributeCell } from './EditableAttributeCell';
 import { StatusBadge } from './ReportParts';
 import { richTextToPlain } from './richText';
@@ -315,6 +317,9 @@ export function RequirementDetailPanel({
                           </Text>
                         </Tooltip>
                         <Text size="xs" c="dimmed" lineClamp={2} title={entry.subject}>
+                          <Anchor component={Link} to={commitPath(projectId, entry.commit)} ff="monospace" size="xs">
+                            {entry.commit.slice(0, 8)}
+                          </Anchor>{' '}
                           {entry.subject}
                         </Text>
                         {entry.unreadable && (
@@ -334,6 +339,11 @@ export function RequirementDetailPanel({
                   <Text size="xs" c="dimmed">
                     Older changes are not shown.
                   </Text>
+                )}
+                {history.entries.length > 0 && (
+                  <Anchor component={Link} to={commitBrowserPath(projectId, moduleId, requirement.id)} size="xs">
+                    Show in the commit browser
+                  </Anchor>
                 )}
               </Stack>
             )}

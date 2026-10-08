@@ -485,6 +485,72 @@ export interface GitLog {
   truncated: boolean;
 }
 
+/** The requirement-level differences of the baseline compare engine (also a commit's changes). */
+export type CompareChanges = Omit<BaselineCompare, 'from' | 'to'>;
+
+/** One commit of the commit browser (parsed from the commit object itself). */
+export interface CommitListEntry {
+  commit: string;
+  /** Parent commit ids; the first is the one the commit is compared with. Empty for the first commit. */
+  parents: string[];
+  author_name: string;
+  author_email: string;
+  authored_date: string | null;
+  committer_name: string;
+  committer_email: string;
+  /** Committer date (ISO 8601). */
+  date: string | null;
+  subject: string;
+  /** Names of the `baseline/*` tags on this commit. */
+  baselines: string[];
+  /** Requirements whose files the commit changed (within the module/requirement scope, if any). */
+  changed_requirements: number;
+}
+
+/**
+ * GET /projects/{id}/git/commits (WS `commit.list`): one page, newest first.
+ * `available: false` (with `reason`) when the project has no readable repository.
+ */
+export interface CommitList {
+  available: boolean;
+  reason: string | null;
+  entries: CommitListEntry[];
+  offset: number;
+  has_more: boolean;
+}
+
+/** The scope and filters of a commit list (all optional; dates are YYYY-MM-DD, inclusive). */
+export interface CommitQuery {
+  moduleId?: string;
+  requirementId?: string;
+  author?: string;
+  text?: string;
+  since?: string;
+  until?: string;
+}
+
+/**
+ * GET /projects/{id}/git/commits/{commit} (WS `commit.get`): a commit and what it
+ * changed against its first parent, at requirement level, plus `notes` on
+ * project/module file changes (module renames, module tree reorders, views, …).
+ */
+export interface CommitDetails extends Omit<CommitListEntry, 'changed_requirements'>, CompareChanges {
+  /** The full commit message. */
+  message: string;
+  changed_files: number;
+  notes: string[];
+}
+
+/** GET /projects/{id}/git/commits/{commit}/snapshot (WS `commit.snapshot`): the project at a commit, read-only. */
+export interface CommitSnapshot {
+  commit: string;
+  subject: string;
+  date: string | null;
+  author_name: string;
+  project: Project;
+  modules: Module[];
+}
+
 /** One difference of a history entry: an attribute value, the parent, or the sibling order. */
 export interface HistoryDiff {
   kind: 'attribute' | 'parent' | 'order';

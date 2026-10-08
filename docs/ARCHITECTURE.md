@@ -1236,6 +1236,56 @@ so a project's repository never contains another project's files.
   per-requirement change list. Baseline and git-log queries live under the
   project's query-key prefix, so live sync refreshes them; every local
   mutation invalidates the `git` and `baselines` keys.
+- **Commit browser** (read-only, never broadcast; rules in
+  `ProjectService.git_commits`/`git_commit`/`get_commit_snapshot`/
+  `commit_requirements`, git work in `GitHistory.list_commits`/
+  `commit_change`/`commit_files`):
+  - List: `GET /projects/{id}/git/commits?module_id=&requirement_id=&offset=&limit=&author=&text=&since=&until=`
+    (WS `commit.list` with the same names plus `project_id`). The
+    first-parent history of `current`, newest first, at project scope, module
+    scope (`git rev-list -- modules/<id>/`) or requirement scope (its file;
+    needs `module_id`); the module/requirement must exist (404). `author` and
+    `text` (message) are case-insensitive fixed strings (`--fixed-strings
+    --regexp-ignore-case`, ≤ 200 chars, no control characters), `since`/
+    `until` inclusive `YYYY-MM-DD` committer dates (server time zone; years
+    outside git's 1970–2099 are clamped). Paging: `offset` + `limit`
+    (default 50, cap 200) and `has_more`. Each entry is parsed from the raw
+    commit object (`rev-list` for the ids, one `cat-file --batch` for the
+    objects — no `--format` separators, so `\x1e`/`\x1f` in a message or
+    name cannot split records), with its parents, the `baseline/*` tags on
+    it, and `changed_requirements`: distinct requirement files changed
+    against the first parent (one `diff-tree --stdin -z --name-only` over
+    `DATA_PATHSPECS` for the whole page; within the scope's folder/file).
+  - Details: `GET /projects/{id}/git/commits/{commit}` (WS `commit.get`
+    `{project_id, commit}`). `commit` must be a full 40/64-hex object id
+    (anything else, or no such commit, is 404 — never a ref or rev
+    expression). The commit is compared with its first parent (nothing for
+    a root commit) with the baseline compare engine (`compare_snapshots`,
+    row styles included), from partial snapshots: the changed data files
+    (`diff-tree -z` raw output; blobs read by object id) plus `project.json`
+    and the touched modules' `module.json` on both sides (for names). Both
+    project.json versions go through the format migrations first (newer
+    format is 409; unreadable ones are compared as they are). `notes` adds
+    `describe_changes` lines for changed project/module files (module
+    renames, module tree reorders/moves, views, …). Also returns the full
+    `message`, author/committer, `baselines` and `changed_files`.
+  - Browse at a commit: `GET .../git/commits/{commit}/snapshot` and
+    `.../git/commits/{commit}/modules/{m}/requirements` (WS
+    `commit.snapshot`/`commit.requirements`): the baseline browse mechanism
+    (`_tree_files`: `ls-tree -z` + `cat-file --batch` by blob id) at any
+    commit.
+  - Frontend: `CommitBrowserPage.tsx` (`/projects/{id}/commits?module=&requirement=&author=&text=&since=&until=`)
+    with the shared `CommitList.tsx` (infinite query, "Load more");
+    `CommitDetailsPage.tsx` (`/projects/{id}/commits/{commit}`) renders the
+    shared `CompareResult.tsx` (also used by `BaselineComparePage`);
+    `BaselinePage.tsx` doubles as the read-only "browse at commit" page
+    (`/projects/{id}/commits/{commit}/browse`). Reachable from the Git panel
+    (commit hashes, "Open the commit browser"), the requirement History tab
+    (hash links, "Show in the commit browser"), the registry actions
+    `project.commits`/`module.commits`/`requirement.commits` (sidebar
+    project/module menus, requirement left- and right-click menus, View
+    menu). Query keys live under `['projects', id, 'git', 'commits', …]`, so
+    live sync and git-status invalidation refetch the lists.
 - **Remote URLs** (set remote, "Add project from remote"; validated in
   `GitHistory._check_remote_url` before git runs): `ssh://`,
   `git+ssh://`/`ssh+git://`, `git://` and `https://` URLs, the scp-like
