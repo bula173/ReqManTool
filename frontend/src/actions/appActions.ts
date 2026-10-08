@@ -255,6 +255,7 @@ export const appActions: Action<'app'>[] = [
     id: 'file.importCsv',
     element: 'app',
     edits: true,
+    editsModule: true,
     label: 'CSV',
     icon: IconFileImport,
     opensDialog: true,

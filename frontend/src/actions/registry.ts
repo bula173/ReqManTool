@@ -1,4 +1,6 @@
 import { IconFileExport, IconFileImport, IconTemplate } from '@tabler/icons-react';
+import { findModuleLock } from '../api/moduleLocks';
+import type { ModuleLock } from '../api/types';
 import { appActions } from './appActions';
 import { columnActions } from './columnActions';
 import { treePosition } from '../components/moduleTree';
@@ -130,6 +132,80 @@ export function isProjectReadOnly(state: AppState, projectId: string | null | un
   return isProjectLocked(state, projectId) || !state.access.canEdit(projectId);
 }
 
+/**
+ * Server edition: the live edit lock of a module of the open project, or null
+ * (local edition, no lock, or a module of another project: only the open
+ * project's locks are loaded).
+ */
+export function moduleLockOf(
+  state: AppState,
+  projectId: string | null | undefined,
+  moduleId: string | null | undefined,
+): ModuleLock | null {
+  if (!state.access.serverMode || !projectId || projectId !== state.projectId) return null;
+  return findModuleLock(state.moduleLocks, moduleId);
+}
+
+/** Whether the module is checked out by another user (server edition). */
+export function isModuleLockedByOther(
+  state: AppState,
+  projectId: string | null | undefined,
+  moduleId: string | null | undefined,
+): boolean {
+  const lock = moduleLockOf(state, projectId, moduleId);
+  return lock !== null && lock.user_id !== state.userId;
+}
+
+/** Whether the server requires a checkout before changes and nobody holds this module's (server edition). */
+export function moduleNeedsCheckout(
+  state: AppState,
+  projectId: string | null | undefined,
+  moduleId: string | null | undefined,
+): boolean {
+  return (
+    !!moduleId &&
+    projectId === state.projectId &&
+    !!state.moduleLocks?.require_checkout &&
+    moduleLockOf(state, projectId, moduleId) === null
+  );
+}
+
+/**
+ * Whether a module's content cannot be changed here: its project is
+ * read-only, another user has the module checked out, or the server requires
+ * a checkout that nobody holds. Always just `isProjectReadOnly` in the local edition.
+ */
+export function isModuleReadOnly(
+  state: AppState,
+  projectId: string | null | undefined,
+  moduleId: string | null | undefined,
+): boolean {
+  if (isProjectReadOnly(state, projectId)) return true;
+  if (!state.access.serverMode || !moduleId) return false;
+  return isModuleLockedByOther(state, projectId, moduleId) || moduleNeedsCheckout(state, projectId, moduleId);
+}
+
+/** The module whose content an action changes: the target module/tab, a link's source module, else the open module. */
+function actionModuleId(ctx: ActionContext): string | null {
+  switch (ctx.element) {
+    case 'module':
+      return (ctx.target as ActionTargets['module'])?.module.id ?? null;
+    case 'tab':
+      return (ctx.target as ActionTargets['tab'])?.moduleId ?? null;
+    case 'link': {
+      const link = ctx.target as ActionTargets['link'];
+      const config = link ? ctx.project?.link_configurations.find((c) => c.id === link.configId) : undefined;
+      return config?.source_module_id ?? ctx.moduleId;
+    }
+    default:
+      return ctx.moduleId;
+  }
+}
+
+function editsModuleContent(action: Action): boolean {
+  return action.editsModule ?? (action.element === 'requirement' || action.element === 'link');
+}
+
 function meets(state: AppState, requirement: AccessRequirement, projectId: string | null): boolean {
   switch (requirement) {
     case 'projectEditor':
@@ -148,13 +224,23 @@ function meets(state: AppState, requirement: AccessRequirement, projectId: strin
 /**
  * Whether an action can run: its own `isAvailable`; for an action that
  * `edits`, its project is not read-only (locked, or the user's role does
- * not allow changes); and the permissions it `requires`. Every menu,
+ * not allow changes) and, when it changes a module's content
+ * (`editsModule`), that module is not checked out by someone else (server
+ * edition); and the permissions it `requires`. Every menu,
  * shortcut and button goes through this (never `action.isAvailable` alone).
  */
 export function isActionAvailable<E extends ElementType>(action: Action<E>, ctx: ActionContext<E>): boolean {
   if (action.edits || action.requires) {
     const projectId = actionProjectId(ctx as ActionContext);
     if (action.edits && isProjectReadOnly(ctx, projectId)) return false;
+    if (
+      action.edits &&
+      ctx.access.serverMode &&
+      editsModuleContent(action as Action) &&
+      isModuleReadOnly(ctx, projectId, actionModuleId(ctx as ActionContext))
+    ) {
+      return false;
+    }
     if (action.requires && !action.requires.every((r) => meets(ctx, r, projectId))) return false;
   }
   return action.isAvailable(ctx);
@@ -288,6 +374,11 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
       action('project.lock'),
       action('project.unlock'),
       action('project.remove'),
+      divider,
+      // Server edition only: the open module's edit lock.
+      action('module.checkOut'),
+      action('module.release'),
+      action('module.breakLock'),
     ],
   },
   {
@@ -476,6 +567,11 @@ export const MODULE_NODE_MENU: MenuEntry[] = [
   action('module.executionReport'),
   action('module.importTestResults'),
   action('module.commits'),
+  divider,
+  // Server edition only (hidden in the local edition).
+  action('module.checkOut'),
+  action('module.release'),
+  action('module.breakLock'),
   divider,
   action('module.aiPrompts'),
   divider,

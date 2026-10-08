@@ -11,6 +11,7 @@ import { ProviderConnectionsModal } from '../components/ProviderConnectionsModal
 import { PublishProjectModal } from '../components/PublishProjectModal';
 import { StartReviewDialog } from '../components/StartReviewDialog';
 import { AttributeModulesModal } from '../components/AttributeModulesModal';
+import { CheckOutModuleModal } from '../components/CheckOutModuleModal';
 import { DataDirModal } from '../components/DataDirSettings';
 import { DropLinkModal } from '../components/DropLinkModal';
 import { ImportCsvModal } from '../components/ImportCsvModal';
@@ -231,6 +232,8 @@ export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; 
       return <ProjectReferencesModal project={dialog.project} onClose={onClose} />;
     case 'lockProject':
       return <LockProjectModal project={dialog.project} onClose={onClose} />;
+    case 'checkOutModule':
+      return <CheckOutModuleModal projectId={dialog.projectId} module={dialog.module} onClose={onClose} />;
     case 'removeProject':
       return (
         <RemoveProjectModal

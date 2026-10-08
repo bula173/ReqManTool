@@ -10,7 +10,8 @@
   ``permissions.Permissions.summary``) and the session's CSRF token (401
   without a session — the middleware answers).
 - ``POST /auth/logout``: ends the session and clears the cookie (needs the
-  CSRF token when a session exists).
+  CSRF token when a session exists). The user's module edit locks are
+  released when no other session of theirs is left.
 - ``GET /health``: liveness probe, public.
 """
 
@@ -20,6 +21,7 @@ import logging
 import secrets
 import time
 import urllib.parse
+from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -52,6 +54,8 @@ def build_router(
     pending: PendingLogins,
     users: UserRegistry,
     permissions: Permissions | None = None,
+    locks: Any = None,
+    broadcast: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -165,12 +169,17 @@ def build_router(
         return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
     @router.post("/auth/logout")
-    def logout(request: Request):
+    async def logout(request: Request):
         token = cookie_value(request.scope, settings.cookie_name)
         session = sessions.get(token, touch=False)
         sessions.delete(token)
         if session is not None:
             logger.info("User %s logged out", session.user_id)
+            # ``module_locks.ModuleLockRegistry``: give the user's module locks back on the last logout.
+            if locks is not None and not sessions.has_user(session.user_id):
+                for project_id in locks.release_user(session.user_id):
+                    if broadcast is not None:
+                        await broadcast({"event": "module_locks_changed", "project_id": project_id})
         response = JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
         response.delete_cookie(settings.cookie_name, path="/", secure=settings.cookie_secure, samesite="lax")
         return response

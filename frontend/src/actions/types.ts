@@ -7,6 +7,8 @@ import type {
   GitStatus,
   LinkOption,
   Module,
+  ModuleLockResult,
+  ModuleLocks,
   ModuleTreeEntry,
   ModuleTreeFolderEntry,
   Project,
@@ -200,6 +202,8 @@ export type DialogRequest =
   | { kind: 'projectReferences'; project: Project }
   /** Lock a project (reason); unlocking needs no dialog. */
   | { kind: 'lockProject'; project: Project }
+  /** Server edition: check out a module for editing (optional reason); releasing needs no dialog. */
+  | { kind: 'checkOutModule'; projectId: string; module: Module }
   /**
    * Remove a project (typed-name confirmation). `dataDir` is the data folder
    * the dialog was opened in: it closes (and the server refuses) when that changed.
@@ -238,6 +242,9 @@ export interface AppCommands {
   purgeProject: (projectId: string) => Promise<{ purged: number }>;
   /** Unlock a project (`DELETE /projects/{id}/lock`); locking and removing go through their dialogs. */
   unlockProject: (projectId: string) => Promise<Project>;
+  /** Server edition: give back one's own module lock / break anyone's (project admins); checking out has a dialog. */
+  releaseModule: (projectId: string, moduleId: string) => Promise<ModuleLockResult>;
+  breakModuleLock: (projectId: string, moduleId: string) => Promise<ModuleLockResult>;
   /**
    * Two-step linking: remember a requirement as the pending link source
    * (shared by every window of this browser and data folder), drop it (with
@@ -329,6 +336,14 @@ export interface AppState {
   lockedProjectIds: ReadonlySet<string>;
   /** What the user may do in which project (server edition roles; everything in the local edition). */
   access: ProjectAccess;
+  /**
+   * Server edition: the open project's module edit locks (null in the local
+   * edition, outside a project or while loading). A module checked out by
+   * someone else is read-only (see `isModuleReadOnly`).
+   */
+  moduleLocks: ModuleLocks | null;
+  /** The logged-in user's id (server edition), else null. */
+  userId: string | null;
   /** The data folder (null until known); dialogs that delete capture it. */
   dataDir: string | null;
   activeViewId: string | null;
@@ -404,6 +419,13 @@ export interface Action<E extends ElementType = ElementType> {
    * a change anyway (423).
    */
   edits?: boolean;
+  /**
+   * The action changes a module's content (requirements, the links it is the
+   * source of, imports): with `edits`, it is also unavailable while another
+   * user has that module checked out (server edition; the server answers 423).
+   * Default: true for requirement and link actions, false otherwise.
+   */
+  editsModule?: boolean;
   /**
    * Further permissions the action needs (server edition; always met in the
    * local edition): `projectEditor` / `projectAdmin` a role in the action's

@@ -21,6 +21,8 @@ Example (``config.json``)::
           {"group": "acme/auditors", "role": "viewer", "projects": ["brake-system"]}
         ],
         "project_creation": "everyone",
+        "module_lock_idle_minutes": 60,
+        "require_module_checkout": false,
         "auth_providers": [
           {"id": "gitlab", "type": "gitlab", "name": "GitLab", "url": "https://gitlab.example.com",
            "client_id": "...", "client_secret_env": "REQMAN_GITLAB_SECRET"},
@@ -43,6 +45,12 @@ the ``group_roles`` rules matching one of their identity provider groups
 makes a group's members server admins at login. ``project_creation``:
 ``everyone`` (default; the creator becomes the project admin) or
 ``admins`` (server admins only).
+
+Module edit locks (``module_locks.py``): a lock nobody used for
+``module_lock_idle_minutes`` (default 60) expires; with
+``require_module_checkout: true`` (default false) a module must be checked
+out before anyone can change it, otherwise unlocked modules stay freely
+editable and a checkout is opt-in.
 
 Other environment overrides: ``REQMAN_SERVER_BASE_URL``,
 ``REQMAN_SERVER_FRONTEND_URL``, ``REQMAN_SERVER_COOKIE_SECURE`` (``0``/``1``),
@@ -117,6 +125,8 @@ class ServerSettings:
     admin_groups: tuple[str, ...] = ()
     group_roles: tuple[GroupRole, ...] = ()
     project_creation: str = "everyone"
+    module_lock_idle_seconds: int = 60 * 60
+    require_module_checkout: bool = False
 
     @property
     def wants_groups(self) -> bool:
@@ -310,6 +320,7 @@ def load_server_settings(
 
     max_age = _positive(raw.get("session_max_age_hours"), "server.session_max_age_hours", 12) * 3600
     idle = _positive(raw.get("session_idle_minutes"), "server.session_idle_minutes", 120) * 60
+    lock_idle = _positive(raw.get("module_lock_idle_minutes"), "server.module_lock_idle_minutes", 60) * 60
 
     return ServerSettings(
         providers=providers,
@@ -325,4 +336,8 @@ def load_server_settings(
         admin_groups=_string_list(raw.get("admin_groups"), "server.admin_groups"),
         group_roles=_parse_group_roles(raw.get("group_roles")),
         project_creation=project_creation,
+        module_lock_idle_seconds=int(lock_idle),
+        require_module_checkout=_bool(
+            raw.get("require_module_checkout"), "server.require_module_checkout", False
+        ),
     )

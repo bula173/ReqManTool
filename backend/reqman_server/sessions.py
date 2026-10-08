@@ -135,6 +135,12 @@ class SessionStore:
             if keys:
                 self._persist(force=True)
 
+    def has_user(self, user_id: str) -> bool:
+        """Whether the user has a live session left (e.g. in another browser)."""
+        with self._lock:
+            now = self.clock()
+            return any(s.user_id == user_id and self._alive(s, now) for s in self._sessions.values())
+
     def _persist(self, force: bool) -> None:
         if self.path is None:
             return

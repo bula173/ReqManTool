@@ -32,6 +32,7 @@ export const appPromptActions: Action<'app'>[] = [
     id: 'tools.pasteAiResult',
     element: 'app',
     edits: true,
+    editsModule: true,
     label: 'Paste AI result',
     icon: IconClipboardText,
     opensDialog: true,

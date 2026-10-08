@@ -27,6 +27,7 @@ export const purgeActions: Action<'app'>[] = [
     id: 'module.purge',
     element: 'app',
     edits: true,
+    editsModule: true,
     label: 'Purge module',
     icon: IconTrash,
     color: 'red',

@@ -29,8 +29,13 @@ plugs in through exactly these interfaces:
 - **WebSocket methods** (``Hooks.rpc_methods``): JSON-RPC methods an
   edition adds to ``/ws`` (sync or async callables taking the params).
 - **Module lock service** (``ModuleLockService``): asked before a write to
-  a module; raises ``ModuleLockedError`` when another user holds the lock.
-  Defined now, implemented by a later slice.
+  the content of a module (its requirements, the links it is the source
+  of); raises ``ModuleLockedError`` (REST 423, WebSocket -32005) when
+  another user has the module checked out. ``ProjectService`` asks it at
+  its choke points (``_records_history`` for methods taking a
+  ``module_id``, plus the link, attribute-scope and purge cascades). The
+  local edition's ``NoLocks`` is skipped without a call
+  (``module_locks_active``).
 
 ``HOOKS`` holds the active guard, lock service, project event listener and
 extra WebSocket methods (no-ops / empty by default).
@@ -148,7 +153,11 @@ class AllowAllGuard:
 
 
 class ModuleLockedError(Exception):
-    """A write to a module that another user has checked out (REST 423)."""
+    """A write to a module that another user has checked out (REST 423; WebSocket error code -32005).
+
+    Also raised when the server requires a checkout before editing
+    (``server.require_module_checkout``) and the writer holds none.
+    """
 
 
 class ModuleLockService(Protocol):
@@ -205,6 +214,18 @@ def guard_active() -> bool:
     return type(HOOKS.permission_guard) is not AllowAllGuard
 
 
+def module_locks_active() -> bool:
+    """Whether a module lock service other than the local ``NoLocks`` is installed."""
+    return type(HOOKS.lock_service) is not NoLocks
+
+
+def check_module_write(project_id: str, module_id: str) -> None:
+    """Ask the lock service whether the current identity may write ``module_id``. Free in local mode."""
+    service = HOOKS.lock_service
+    if type(service) is not NoLocks:
+        service.check_write(_current_identity.get(), project_id, module_id)
+
+
 def check_permission(action: str, project_id: str | None = None) -> None:
     """Ask the active guard about the current identity; ``AccessDeniedError`` to refuse. Free in local mode."""
     guard = HOOKS.permission_guard
@@ -238,6 +259,8 @@ class EditionContext:
     broadcast: Callable[[dict[str, Any]], Awaitable[None]] | None = None
     # Whether a project id exists in the current data folder.
     project_exists: Callable[[str], bool] | None = None
+    # Whether a module exists in a project of the current data folder.
+    module_exists: Callable[[str, str], bool] | None = None
 
 
 class ServerEdition(Protocol):

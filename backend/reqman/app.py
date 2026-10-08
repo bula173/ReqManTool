@@ -4,7 +4,8 @@ endpoint, and the live-sync broadcast connection manager.
 Route handlers are intentionally thin — parse the request, call a
 ``ProjectService`` method via ``_wrap`` (which maps ``FileNotFoundError``
 to 404, ``AccessDeniedError`` (the server edition's permission guard) to
-403, ``ProjectLockedError`` to 423, ``ConflictError`` and
+403, ``ProjectLockedError`` and ``ModuleLockedError`` (a module another
+user checked out, server edition) to 423, ``ConflictError`` and
 ``NewerFormatError`` to 409 and ``ValueError`` to 400), broadcast on success. All real business
 logic lives in ``service.py``; see its module docstring and
 docs/ARCHITECTURE.md for why. ``RPC_METHODS`` mirrors the REST surface
@@ -44,6 +45,7 @@ from .extensions import (
     MODE_SERVER,
     AccessDeniedError,
     EditionContext,
+    ModuleLockedError,
     RequestIdentity,
     current_identity,
     guard_active,
@@ -125,6 +127,8 @@ else:
             # Late-bound: the manager and the service (replaced on a data folder switch) are defined below.
             broadcast=lambda message: manager.send_event(message),
             project_exists=lambda project_id: service.store.project_exists(project_id),
+            module_exists=lambda project_id, module_id: service.store.project_exists(project_id)
+            and service.store.module_exists(project_id, module_id),
         ),
     )
     logger.info("Server edition: %s", SERVER_EDITION.name)
@@ -629,7 +633,7 @@ def _wrap(fn, *args, **kwargs):
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ProjectLockedError as exc:
+    except (ProjectLockedError, ModuleLockedError) as exc:
         raise HTTPException(status_code=423, detail=str(exc)) from exc
     except (ConflictError, NewerFormatError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1809,6 +1813,8 @@ def _error_response(request_id, code: int, message: str) -> dict:
 PROJECT_LOCKED_RPC_CODE = -32004
 # WebSocket error code of an action the permission guard refused (server edition; REST 403).
 ACCESS_DENIED_RPC_CODE = -32003
+# WebSocket error code of a write to a module another user checked out (server edition; REST 423).
+MODULE_LOCKED_RPC_CODE = -32005
 
 MUTATING_METHODS = {
     "project.create", "project.set_parent", "project.purge", "project.git_enable", "baseline.create",
@@ -1878,6 +1884,8 @@ async def _dispatch(request: dict, sender: WebSocket | None = None) -> dict:
         return _error_response(request_id, -32001, str(exc))
     except ProjectLockedError as exc:
         return _error_response(request_id, PROJECT_LOCKED_RPC_CODE, str(exc))
+    except ModuleLockedError as exc:
+        return _error_response(request_id, MODULE_LOCKED_RPC_CODE, str(exc))
     except (ValueError, KeyError) as exc:
         if method_name in MUTATING_METHODS and _changed_despite_failure(exc):
             project_id = _project_id_of(method_name, params, None)

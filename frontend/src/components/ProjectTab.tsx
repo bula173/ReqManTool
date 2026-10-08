@@ -12,7 +12,7 @@ import {
 } from '@tabler/icons-react';
 import { useState, type DragEvent, type MouseEvent, type ReactNode } from 'react';
 import { useAppActions } from '../actions/context';
-import { FOLDER_NODE_MENU, MODULE_NODE_MENU, PROJECT_NODE_MENU, isProjectReadOnly } from '../actions/registry';
+import { FOLDER_NODE_MENU, MODULE_NODE_MENU, PROJECT_NODE_MENU, isProjectReadOnly, moduleLockOf } from '../actions/registry';
 import { contextMenuTargetProps } from '../actions/shortcuts';
 import type { ActionTargetOverrides, MenuEntry } from '../actions/types';
 import { ApiError } from '../api/client';
@@ -20,6 +20,7 @@ import { useModules, useModuleTree, useProjects } from '../api/queries';
 import { isProjectStub, type Project } from '../api/types';
 import { buildProjectForest } from './projectTree';
 import { ModuleTypeIcon } from './ModuleTypeIcon';
+import { ModuleLockBadge } from './ModuleLockBadge';
 import { ProjectLockBadge } from './ProjectLockBadge';
 import { buildModuleTreeNodes, folderSubtreeIds, type ModuleTreeNode } from './moduleTree';
 
@@ -194,6 +195,9 @@ export function ProjectTab({ projectId, activeModuleId, onPickProject, onOpenMod
           label={module.name}
           description={module.prefix}
           leftSection={<ModuleTypeIcon module={module} size={14} />}
+          rightSection={
+            <ModuleLockBadge lock={moduleLockOf(state, projectId, module.id)} userId={state.userId} compact />
+          }
           active={state.projectId === projectId && activeModuleId === module.id}
           onClick={() => onOpenModule(projectId, module.id)}
           {...dragProps('module', module.id)}

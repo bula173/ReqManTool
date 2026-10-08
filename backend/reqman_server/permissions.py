@@ -141,10 +141,13 @@ class MembershipGuard:
 
 
 class MembershipEvents:
-    """``ProjectEvents`` of the server edition: creator → project admin; removal → memberships forgotten."""
+    """``ProjectEvents`` of the server edition: creator → project admin; removal → memberships
+    (and module edit locks) forgotten."""
 
-    def __init__(self, memberships: MembershipRegistry) -> None:
+    def __init__(self, memberships: MembershipRegistry, locks: Any = None) -> None:
         self.memberships = memberships
+        # ``module_locks.ModuleLockRegistry`` (optional): a removed project's locks are dropped too.
+        self.locks = locks
 
     def project_created(self, identity: RequestIdentity | None, project_id: str) -> None:
         if identity is not None:
@@ -153,5 +156,7 @@ class MembershipEvents:
 
     def project_removed(self, identity: RequestIdentity | None, project_id: str) -> None:
         self.memberships.forget_project(project_id)
+        if self.locks is not None:
+            self.locks.forget_project(project_id)
         logger.info("Project %s removed by %s; its memberships are forgotten", project_id,
                     identity.user_id if identity else "?")

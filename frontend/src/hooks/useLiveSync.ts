@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { invalidatePermissions } from '../api/auth';
+import { invalidateModuleLocks } from '../api/moduleLocks';
 import { WS_URL, notifyUnauthorized } from '../api/client';
 import { clearDatasetCache, handleProjectRemoved, invalidateCrossProject, queryKeys } from '../api/queries';
 
@@ -34,8 +35,15 @@ interface PermissionsChangedEvent {
   event: 'permissions_changed';
 }
 
+/** Server edition: a module of the project was checked out, released, or its lock broken. */
+interface ModuleLocksChangedEvent {
+  event: 'module_locks_changed';
+  project_id: string;
+}
+
 type LiveSyncEvent =
   | PermissionsChangedEvent
+  | ModuleLocksChangedEvent
   | ChangedEvent
   | RootChangedEvent
   | TemplatesChangedEvent
@@ -58,7 +66,8 @@ type LiveSyncEvent =
  * the GitLab/GitHub connections (and which connection each project's remote uses).
  * {"event":"permissions_changed"} (server edition) refetches the user's roles,
  * the admin pages and every project query (projects may appear or disappear,
- * or become read-only).
+ * or become read-only). {"event":"module_locks_changed","project_id":...}
+ * (server edition) refetches the project's module edit locks.
  *
  * On a reconnect (usually a backend restart, possibly as a different
  * version) the footer's version query is refetched; on the first connect it
@@ -117,6 +126,8 @@ export function useLiveSync(): void {
             qc.invalidateQueries({ queryKey: queryKeys.prompts });
           } else if (data.event === 'permissions_changed') {
             invalidatePermissions(qc);
+          } else if (data.event === 'module_locks_changed' && data.project_id) {
+            invalidateModuleLocks(qc, data.project_id);
           } else if (data.event === 'connections_changed') {
             qc.invalidateQueries({ queryKey: queryKeys.providerConnections });
             qc.invalidateQueries({

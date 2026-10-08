@@ -20,6 +20,10 @@ permission guard (``permissions.py``, installed as
 ``HOOKS.permission_guard`` and ``HOOKS.project_events``), and the admin
 pages' REST routes and WebSocket methods (``admin.py``, the latter through
 ``HOOKS.rpc_methods``).
+
+Slice 3: module edit locks (``module_locks.py``): check out a module for
+exclusive editing, installed as ``HOOKS.lock_service``; lock state in
+``module_locks.json``; REST routes and WebSocket methods (``module.*``).
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ from reqman.extensions import EditionContext
 
 from .admin import AdminService, build_admin_router, build_rpc_methods
 from .memberships import MembershipRegistry
+from .module_locks import ModuleLockRegistry, ModuleLocks, build_lock_router, build_lock_rpc_methods
 from .middleware import AuthMiddleware
 from .oidc import OidcClient
 from .permissions import MembershipEvents, MembershipGuard, Permissions
@@ -46,6 +51,7 @@ logger = logging.getLogger("reqman_server")
 USERS_FILE = "users.json"
 SESSIONS_FILE = "sessions.json"
 MEMBERSHIPS_FILE = "memberships.json"
+MODULE_LOCKS_FILE = "module_locks.json"
 
 
 class ServerEditionImpl:
@@ -56,6 +62,7 @@ class ServerEditionImpl:
         self.sessions: SessionStore | None = None
         self.users: UserRegistry | None = None
         self.memberships: MembershipRegistry | None = None
+        self.locks: ModuleLocks | None = None
 
     def install(self, app, context: EditionContext) -> None:
         settings = load_server_settings(
@@ -71,18 +78,38 @@ class ServerEditionImpl:
             max_age=settings.session_max_age_seconds,
             idle=settings.session_idle_seconds,
         )
+        lock_registry = ModuleLockRegistry(settings.state_dir / MODULE_LOCKS_FILE, settings.module_lock_idle_seconds)
+        locks = ModuleLocks(
+            lock_registry,
+            guard,
+            users,
+            require_checkout=settings.require_module_checkout,
+            project_exists=context.project_exists,
+            module_exists=context.module_exists,
+        )
         clients = {p.id: OidcClient(p) for p in settings.providers}
-        app.include_router(build_router(settings, clients, sessions, PendingLogins(), users, permissions))
-        admin = AdminService(permissions, guard, users, memberships, sessions, context.project_exists)
+        app.include_router(
+            build_router(
+                settings, clients, sessions, PendingLogins(), users, permissions,
+                locks=lock_registry, broadcast=context.broadcast,
+            )
+        )
+        admin = AdminService(
+            permissions, guard, users, memberships, sessions, context.project_exists, locks=lock_registry
+        )
         app.include_router(build_admin_router(admin, context.broadcast))
+        app.include_router(build_lock_router(locks, context.broadcast))
         # The core asks these at its choke points (ProjectService) and in its WebSocket dispatcher.
         context.hooks.permission_guard = guard
-        context.hooks.project_events = MembershipEvents(memberships)
+        context.hooks.lock_service = locks
+        context.hooks.project_events = MembershipEvents(memberships, locks=lock_registry)
         context.hooks.rpc_methods.update(build_rpc_methods(admin, context.broadcast))
+        context.hooks.rpc_methods.update(build_lock_rpc_methods(locks, context.broadcast))
         app.add_middleware(
             AuthMiddleware, settings=settings, sessions=sessions, users=users, frontend_dir=context.frontend_dir
         )
         self.settings, self.sessions, self.users, self.memberships = settings, sessions, users, memberships
+        self.locks = locks
         if not settings.cookie_secure:
             logger.warning("Server edition: the session cookie is not marked Secure (cookie_secure: false)")
         logger.info(

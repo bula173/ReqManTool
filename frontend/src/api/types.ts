@@ -1163,3 +1163,36 @@ export interface ProjectMembers {
   roles: ProjectRole[];
   members: ProjectMember[];
 }
+
+/** A module checked out for editing (server edition; GET /projects/{id}/module-locks). */
+export interface ModuleLock {
+  project_id: string;
+  module_id: string;
+  user_id: string;
+  user_name: string;
+  user_email: string;
+  /** ISO 8601 (UTC): when it was checked out, the owner's last change, when it expires without activity. */
+  since: string;
+  last_activity: string;
+  expires_at: string;
+  reason: string;
+}
+
+/** GET /projects/{id}/module-locks (WS `module.locks`): the project's live module locks. */
+export interface ModuleLocks {
+  project_id: string;
+  /** The server requires a checkout before a module can be changed (`server.require_module_checkout`). */
+  require_checkout: boolean;
+  /** A lock without activity for this long expires. */
+  idle_minutes: number;
+  locks: ModuleLock[];
+}
+
+/** PUT/DELETE /projects/{id}/modules/{module}/lock, POST .../lock/break. */
+export interface ModuleLockResult {
+  project_id: string;
+  module_id: string;
+  lock: ModuleLock | null;
+  released?: boolean;
+  previous_owner?: string | null;
+}

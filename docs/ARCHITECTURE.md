@@ -1675,8 +1675,9 @@ the behavior described in the rest of this document. **server** is the
 multi-user edition: one shared instance, every user logs in. It is
 delivered in slices: slice 1 is the mode switch and authentication; slice
 2 adds users, roles, project membership, permission enforcement and the
-admin pages ("Roles, membership and permissions" below). Module edit
-locks, the audit log and the licence-file gate come later.
+admin pages ("Roles, membership and permissions" below); slice 3 adds
+module edit locks ("Module edit locks" below). The audit log and the
+licence-file gate come later.
 
 ### Separation
 
@@ -1728,9 +1729,13 @@ the import path).
   dispatcher maps their errors like its own.
 - `EditionContext.broadcast(event)` (send a live-sync event to every
   socket) and `EditionContext.project_exists(id)`.
-- `ModuleLockService` (`check_write(identity, project_id, module_id)`,
-  raises `ModuleLockedError`; local: `NoLocks`): defined, not yet called
-  (module edit locks slice).
+- `ModuleLockService` (`HOOKS.lock_service`;
+  `check_write(identity, project_id, module_id)`, raises
+  `ModuleLockedError`: REST 423, WebSocket -32005; local: `NoLocks`):
+  asked by `ProjectService` before a write to a module's content
+  (`check_module_write`, skipped without a call while `NoLocks` is
+  installed: `module_locks_active()`). See "Module edit locks".
+- `EditionContext.module_exists(project_id, module_id)`.
 
 ### Configuration
 
@@ -1748,7 +1753,8 @@ directory), `admins` (user names / e-mail addresses), `admin_groups`
 (identity provider groups whose members become server admins at login),
 `group_roles` (`[{group, role: viewer | editor | project-admin, projects:
 ["*" | project id, ...]}]`), `project_creation` (`everyone`, the default,
-or `admins`). Environment:
+or `admins`), `module_lock_idle_minutes` (60), `require_module_checkout`
+(false). Environment:
 `REQMAN_AUTH_<ID>_CLIENT_ID` / `_CLIENT_SECRET`, `REQMAN_SERVER_BASE_URL`,
 `REQMAN_SERVER_FRONTEND_URL`, `REQMAN_SERVER_COOKIE_SECURE`,
 `REQMAN_SERVER_STATE_DIR`, `REQMAN_SERVER_ADMINS`. The client secret is
@@ -1890,6 +1896,89 @@ admin cannot leave the project without a project admin. WebSocket (via
 `admin.members.remove`. Every change broadcasts `{"event":
 "permissions_changed"}`; clients refetch their roles, the admin pages and
 every project query.
+
+### Module edit locks (slice 3)
+
+An editor checks a module out for exclusive editing ("Check out for
+editing"): a lock with owner, `since`, the owner's `last_activity` and an
+optional reason (at most 500 characters). While it is held, every write to
+the module's content by anyone else — server admins included; they break
+the lock instead — is refused with `ModuleLockedError` (REST 423 with the
+owner, time and reason in `detail`; WebSocket error code **-32005**, kept
+apart from the project lock's -32004 so clients can tell them apart). The
+owner's writes refresh the lock; one unused for
+`server.module_lock_idle_minutes` (default 60) expires (checked lazily on
+every read; clients refetch the lock list every minute). By default an
+unlocked module stays freely editable — a checkout is opt-in, like an
+exclusive edit in DOORS; with `server.require_module_checkout: true` a
+write to an existing module that nobody checked out is refused too (423,
+"must be checked out"), while module creation and project-level changes
+are not affected.
+
+**Storage.** `module_locks.json` in the state directory
+(`reqman_server/module_locks.py`): `{project_id, module_id, user_id,
+since, last_activity, reason}` (Unix seconds), sorted by project and
+module; activity is written at most once a minute; hand edits are picked
+up. Not in the project data or its git repository.
+
+**What a lock covers (the core's choke points, `ProjectService`).**
+`_records_history` asks the lock service for every mutation whose second
+parameter is `module_id` (requirement add, update, move, reorder, copy,
+remove; module purge; CSV and test result imports) after the project lock
+and sync-conflict guards, before anything is written. Moving or reordering
+a module in the tree only changes project.json and is exempt
+(`_module_structure_only`); folders, views, attributes, row styles and
+creating modules or link configurations are project-level and not
+covered. Explicit checks: creating or removing a link checks the
+configuration's **source** module only (the link and its pair file belong
+to the source side, as in a DOORS link module; the mirror attribute
+refreshed on the target requirement is derived data); removing a link
+configuration checks its source module; narrowing an attribute's scope
+checks the modules whose values it removes; purging the project checks
+every module. The cleanup cascades of removing a requirement (mirrors in
+other modules, links of referencing projects) are derived and not checked.
+Removing a project is not blocked by module locks; its locks are dropped
+(`project_removed`).
+
+**Lock, release, break.** Check out: `project.write` (editors); again by
+the owner refreshes it and replaces the reason; held by someone else: 423.
+Release: the owner only (read access is enough, so a user demoted to
+viewer can still give a lock back; someone else: 403); idempotent
+(`released: false` when there was none). Break: `project.admin` (project
+admins of the project, server admins). A lock is also released when its
+owner logs out and has no other live session, and when the owner is
+deactivated; a session that merely expires leaves the lock to expire on
+its own.
+
+**API.** `GET /projects/{id}/module-locks` (`{project_id,
+require_checkout, idle_minutes, locks: [{project_id, module_id, user_id,
+user_name, user_email, since, last_activity, expires_at, reason}]}`; ISO
+times), `PUT /projects/{id}/modules/{module_id}/lock` (`{reason?}`),
+`DELETE /projects/{id}/modules/{module_id}/lock`, `POST
+/projects/{id}/modules/{module_id}/lock/break` (`{project_id, module_id,
+lock, released, previous_owner}`). WebSocket (`HOOKS.rpc_methods`):
+`module.locks`, `module.lock`, `module.unlock`, `module.break_lock`.
+Every change broadcasts `{"event": "module_locks_changed", "project_id":
+...}`, delivered only to users who may read the project. None of these
+routes exist in the local edition.
+
+**Frontend.** `api/moduleLocks.ts` (`useModuleLocks`, key `['projects',
+id, 'module-locks']`, so `changed` and `permissions_changed` refetch it
+too; `useCheckOutModule`, `useReleaseModule`, `useBreakModuleLock`).
+`AppState.moduleLocks` (the open project's locks, server edition only) and
+`AppState.userId`; `isModuleReadOnly` (project read-only, or the module
+checked out by someone else, or a required checkout nobody holds) is what
+`isActionAvailable` checks for `edits` actions that change module content
+(`Action.editsModule`; default for requirement and link actions; set on
+CSV import, module purge, test result import and pasting an AI result).
+The module actions `module.checkOut` (dialog with a reason),
+`module.release` and `module.breakLock` (confirmation) are hidden in the
+local edition (`isSupported`); they are in the module node menu, the Edit
+menu and as buttons on the module page. `ModuleLockBadge` ("Locked by X"
+/ "Checked out by you", tooltip with time and reason) is shown on the
+module page, its sidebar node and its tab; the module page also shows a
+read-only notice, and inline editing, drag-and-drop and the outline's
+drag moves follow `isModuleReadOnly`.
 
 ### API and frontend
 

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/context';
 import { api } from '../api/client';
+import { useBreakModuleLock, useModuleLocks, useReleaseModule } from '../api/moduleLocks';
 import {
   subscribeDatasetCleared,
   subscribeProjectRemoved,
@@ -147,6 +148,11 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const purgeModule = usePurgeModule();
   const purgeProject = usePurgeProject();
   const unlockProject = useUnlockProject();
+  // Server edition: the open project's module edit locks (no such route in the local edition).
+  const auth = useAuth();
+  const moduleLocksQuery = useModuleLocks(projectId, auth.access.serverMode);
+  const releaseModule = useReleaseModule();
+  const breakModuleLock = useBreakModuleLock();
 
   const { setColorScheme } = useMantineColorScheme();
   const colorScheme = useComputedColorScheme('light');
@@ -298,6 +304,10 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
         purgeModule.mutateAsync({ projectId: purgeProjectId, moduleId: purgeModuleId }),
       purgeProject: (purgeProjectId) => purgeProject.mutateAsync(purgeProjectId),
       unlockProject: (unlockProjectId) => unlockProject.mutateAsync(unlockProjectId),
+      releaseModule: (lockProjectId, lockModuleId) =>
+        releaseModule.mutateAsync({ projectId: lockProjectId, moduleId: lockModuleId }),
+      breakModuleLock: (lockProjectId, lockModuleId) =>
+        breakModuleLock.mutateAsync({ projectId: lockProjectId, moduleId: lockModuleId }),
       startLink: (source) => pendingLink.start(source),
       cancelLink: (only) => pendingLink.cancel(only),
       makeLink: async (targetRequirementId) => {
@@ -435,6 +445,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       purgeModule.mutateAsync,
       purgeProject.mutateAsync,
       unlockProject.mutateAsync,
+      releaseModule.mutateAsync,
+      breakModuleLock.mutateAsync,
       enableHistory.mutateAsync,
       gitPush.mutateAsync,
       gitPull.mutateAsync,
@@ -480,6 +492,11 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     gitStatus: projectId ? (gitStatusQuery.data ?? null) : null,
     lockedProjectIds,
     access,
+    moduleLocks:
+      auth.access.serverMode && projectId && moduleLocksQuery.data?.project_id === projectId
+        ? moduleLocksQuery.data
+        : null,
+    userId: auth.user?.id ?? null,
     dataDir,
     activeViewId,
     leftPanelOpen,

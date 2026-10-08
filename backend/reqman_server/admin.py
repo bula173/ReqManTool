@@ -54,6 +54,7 @@ class AdminService:
         memberships: MembershipRegistry,
         sessions: SessionStore,
         project_exists: Callable[[str], bool] | None,
+        locks: Any = None,
     ) -> None:
         self.permissions = permissions
         self.guard = guard
@@ -61,6 +62,8 @@ class AdminService:
         self.memberships = memberships
         self.sessions = sessions
         self.project_exists = project_exists
+        # ``module_locks.ModuleLockRegistry`` (optional): a deactivated user's module locks are released.
+        self.locks = locks
 
     # --- who is asking ----------------------------------------------------------------
 
@@ -112,6 +115,9 @@ class AdminService:
             raise FileNotFoundError(f"User '{user_id}' not found") from None
         if active is False:
             self.sessions.delete_user(user_id)
+            if self.locks is not None:
+                # The permissions_changed broadcast makes every client refetch its project queries (locks too).
+                self.locks.release_user(user_id)
         logger.info(
             "Server admin %s changed user %s: active=%s server_admin=%s", actor.id, user_id, active, server_admin
         )

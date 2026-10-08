@@ -17,7 +17,7 @@ import {
 import { useEffect, useRef, useState, type ComponentType, type DragEvent, type KeyboardEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAppActions } from '../actions/context';
-import { REQUIREMENT_CONTEXT_MENU, isProjectReadOnly } from '../actions/registry';
+import { REQUIREMENT_CONTEXT_MENU, isModuleReadOnly } from '../actions/registry';
 import { contextMenuTargetProps } from '../actions/shortcuts';
 import { ApiError } from '../api/client';
 import { useModule, useMoveRequirement, useProject, useRequirements } from '../api/queries';
@@ -148,8 +148,9 @@ export function ModuleOutline({ projectId, moduleId }: { projectId: string; modu
   const filtering = filter.trim() !== '';
   const rows = buildOutlineRows(requirements, collapsed, filter);
   const expandable = parentIds(requirements);
-  // No drag-and-drop moves in a locked or read-only project (the server refuses them anyway).
-  const canDrag = !filtering && !busy && !isProjectReadOnly(state, projectId);
+  // No drag-and-drop moves in a locked or read-only project, or a module another user checked out
+  // (the server refuses them anyway).
+  const canDrag = !filtering && !busy && !isModuleReadOnly(state, projectId, moduleId);
   const focusableId = rows.some((r) => r.requirement.id === selectedId) ? selectedId : (rows[0]?.requirement.id ?? null);
 
   const toggle = (id: string) =>

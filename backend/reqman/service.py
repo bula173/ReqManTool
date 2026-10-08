@@ -28,6 +28,19 @@ project creation, listing (filtered to the readable projects), cross-
 project reads and cleanup cascades, libraries and connections check
 explicitly. In the local edition the guard is ``AllowAllGuard`` and none of
 this costs more than a type check.
+
+Module edit locks (server edition): the active ``ModuleLockService`` is
+asked before a write to a module's content (``_check_module_writes``):
+``_records_history`` does it for every mutation whose second parameter is
+``module_id`` (unless marked ``_module_structure_only``: moving or
+reordering a module in the tree changes project.json only), and the
+methods that write other modules do it explicitly — link creation and
+removal (the configuration's source module, which holds the link, like an
+exclusive edit of a DOORS link module), removing a link configuration,
+narrowing an attribute's scope (the modules whose values are dropped) and
+purging the project (every module). The mirror attribute a link refreshes
+in the target requirement is derived data and is not checked. Local
+edition: ``NoLocks``, a type test.
 """
 
 from __future__ import annotations
@@ -57,10 +70,12 @@ from .extensions import (
     ACTION_PROJECT_WRITE,
     HOOKS,
     AccessDeniedError,
+    check_module_write,
     check_permission,
     current_identity,
     guard_active,
     is_permitted,
+    module_locks_active,
 )
 from .formats import PROJECT_FORMAT, NewerFormatError, upgrade
 from .git_repo import (
@@ -297,6 +312,18 @@ def _allowed_while_locked(method: Callable) -> Callable:
     return method
 
 
+# Marks a ``_records_history`` method taking a ``module_id`` that changes only
+# the module's place in the tree (project.json), not its content: module edit
+# locks do not apply to it.
+_MODULE_STRUCTURE_ONLY = "_reqman_module_structure_only"
+
+
+def _module_structure_only(method: Callable) -> Callable:
+    """Exempt a ``module_id`` mutation from the module edit lock check (apply below ``_records_history``)."""
+    setattr(method, _MODULE_STRUCTURE_ONLY, True)
+    return method
+
+
 # The permission a public ``project_id`` method needs, when not the default
 # (``project.write`` for ``_records_history`` mutations, else ``project.read``).
 _REQUIRED_ACTION = "_reqman_required_action"
@@ -325,6 +352,10 @@ def _records_history(method: Callable) -> Callable:
     ``current`` branch and the configured remote's have diverged (see
     ``GitHistory.sync_conflict_message``); the user resolves it in git.
 
+    A method whose second parameter is ``module_id`` is also checked
+    against the module edit locks (server edition, ``_check_module_writes``)
+    unless marked ``_module_structure_only``.
+
     Such a method is also the project lock guard: while the project is
     locked (``Project.locked``) it is refused with ``ProjectLockedError``
     before anything is written, unless marked ``_allowed_while_locked``
@@ -335,6 +366,12 @@ def _records_history(method: Callable) -> Callable:
     parameters = list(inspect.signature(method).parameters)
     guards_project = len(parameters) > 1 and parameters[1] == "project_id"
     guards_lock = guards_project and not getattr(method, _ALLOWED_WHILE_LOCKED, False)
+    guards_module = (
+        guards_project
+        and len(parameters) > 2
+        and parameters[2] == "module_id"
+        and not getattr(method, _MODULE_STRUCTURE_ONLY, False)
+    )
 
     @functools.wraps(method)
     def wrapper(self: "ProjectService", *args: Any, **kwargs: Any) -> Any:
@@ -347,6 +384,9 @@ def _records_history(method: Callable) -> Callable:
                 if guards_lock:
                     self._require_unlocked(project_id)
                 self._require_no_sync_conflict(project_id)
+                if guards_module and module_locks_active():
+                    module_id = args[1] if len(args) > 1 else kwargs.get("module_id")
+                    self._check_module_writes(project_id, [module_id])
         with self.store.recording_writes() as touched:
             result = method(self, *args, **kwargs)
         for project_id in sorted(touched):
@@ -764,6 +804,20 @@ class ProjectService:
         return self._snapshot_requirements(files, module_id, f"commit {commit[:12]}")
 
     # --- remotes (git) -----------------------------------------------------------
+
+    @staticmethod
+    def _check_module_writes(project_id: str, module_ids: Any) -> None:
+        """Refuse (``ModuleLockedError``) a write to modules another user has checked out (server edition).
+
+        Called before anything is written. Free in the local edition (no
+        lock service). Non-string ids (a request naming no module) are
+        left to the operation's own validation.
+        """
+        if not module_locks_active():
+            return
+        for module_id in dict.fromkeys(module_ids):
+            if isinstance(module_id, str):
+                check_module_write(project_id, module_id)
 
     def _require_no_sync_conflict(self, project_id: str) -> None:
         """Refuse a mutation (409) while the project's git sync conflict is unresolved."""
@@ -2180,6 +2234,8 @@ class ProjectService:
                     if attr_id in r.attributes
                 )
         valued = [(m, r) for m, r in outside if not self._is_blank(r.attributes[attr_id])]
+        # Values are removed from these modules' requirements: module edit locks apply.
+        self._check_module_writes(project_id, [m for m, _ in outside])
         if valued and not drop_values:
             ids = [r.id for _, r in valued]
             shown = ", ".join(ids[:10]) + (f" and {len(ids) - 10} more" if len(ids) > 10 else "")
@@ -2656,6 +2712,7 @@ class ProjectService:
         return {"id": folder.id, "deleted": True}
 
     @_records_history
+    @_module_structure_only
     def move_module(self, project_id: str, module_id: str, folder_id: Any = None, index: Any = None) -> Module:
         """Move a module into folder ``folder_id`` (``None``: the top level).
 
@@ -2721,6 +2778,7 @@ class ProjectService:
         return True
 
     @_records_history
+    @_module_structure_only
     def reorder_module(self, project_id: str, module_id: str, direction: str) -> Module:
         """Move a module one place up or down among the entries of its folder (or the top level).
 
@@ -3299,6 +3357,7 @@ class ProjectService:
         # refused, even when there is nothing to delete.
         self.store.load_project(project_id)
         module_ids = self.store.list_module_ids(project_id)
+        self._check_module_writes(project_id, module_ids)
         # Every referencing project to clean up is checked before anything is deleted.
         all_ids = {rid for mid in module_ids for rid in self.store.list_requirement_ids(project_id, mid)}
         self._check_incoming_cleanup(self._incoming_link_cleanup(project_id, all_ids))
@@ -3418,6 +3477,8 @@ class ProjectService:
         project = self.store.load_project(project_id)
         if not any(c.id == config_id for c in project.link_configurations):
             raise FileNotFoundError(f"Link configuration '{config_id}' not found in project '{project_id}'")
+        # Removing a configuration deletes all its links: its source module's lock applies.
+        self._check_module_writes(project_id, [self._get_link_configuration(project, config_id).source_module_id])
         project.link_configurations = [c for c in project.link_configurations if c.id != config_id]
         project.attributes = [a for a in project.attributes if a.id != config_id]
         self.store.save_project(project)
@@ -3615,6 +3676,8 @@ class ProjectService:
         """
         project = self.store.load_project(project_id)
         config = self._get_link_configuration(project, config_id)
+        # The link belongs to the configuration's source module: its edit lock applies.
+        self._check_module_writes(project_id, [config.source_module_id])
         target_id = self._plain_target_id(config, target_id)
         target_project = self._load_link_target_project(project, config)
 
@@ -3749,6 +3812,7 @@ class ProjectService:
         """
         project = self.store.load_project(project_id)
         config = self._get_link_configuration(project, config_id)
+        self._check_module_writes(project_id, [config.source_module_id])
         target_id = self._plain_target_id(config, target_id)
 
         source_module = self.store.find_requirement_module(project_id, source_id)

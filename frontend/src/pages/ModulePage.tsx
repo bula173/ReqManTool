@@ -34,7 +34,10 @@ import {
   LINK_NAVIGATION_MENU,
   REQUIREMENT_CONTEXT_MENU,
   REQUIREMENT_NAVIGATION_MENU,
-  isProjectReadOnly,
+  isModuleLockedByOther,
+  isModuleReadOnly,
+  moduleLockOf,
+  moduleNeedsCheckout,
 } from '../actions/registry';
 import { contextMenuTargetProps } from '../actions/shortcuts';
 import { applicableAttributes } from '../api/applicability';
@@ -49,6 +52,7 @@ import {
   useViews,
 } from '../api/queries';
 import { EditableAttributeCell } from '../components/EditableAttributeCell';
+import { ModuleLockBadge } from '../components/ModuleLockBadge';
 import { ProjectLockBadge } from '../components/ProjectLockBadge';
 import { ProjectRoleBadge } from '../components/ProjectRoleBadge';
 import { RequirementDetailPanel } from '../components/RequirementDetailPanel';
@@ -281,9 +285,14 @@ export function ModulePage() {
     });
   const selectedId = appState.selectedRequirement?.id ?? null;
   const selectedRequirement = requirements.find((r) => r.id === selectedId) ?? null;
-  // A locked project, or one the user may not change (viewer), refuses every change (server-side):
-  // no inline editing, no drop-to-link, no row actions.
-  const locked = isProjectReadOnly(appState, projectId);
+  // A locked project, one the user may not change (viewer), or (server edition) a module another user
+  // checked out refuses every change (server-side): no inline editing, no drop-to-link, no row actions.
+  const locked = isModuleReadOnly(appState, projectId, moduleId);
+  // Server edition: the module's edit lock (null in the local edition).
+  const moduleLock = moduleLockOf(appState, projectId, moduleId);
+  const lockedByOther = isModuleLockedByOther(appState, projectId, moduleId);
+  const needsCheckout = moduleNeedsCheckout(appState, projectId, moduleId);
+  const moduleTarget = { module: { projectId, module, moduleIds: [], position: null } };
 
   const toggleExpanded = (id: string) => {
     setCollapsed((prev) => {
@@ -327,10 +336,24 @@ export function ModulePage() {
           <Title order={2}>{module.name}</Title>
           <Badge variant="outline">{module.prefix}</Badge>
           <ProjectLockBadge lock={projectQuery.data.locked} />
+          <ModuleLockBadge lock={moduleLock} userId={appState.userId} />
           <ProjectRoleBadge projectId={projectId} />
         </Group>
         <Text c="dimmed">{module.description || 'No description'}</Text>
       </div>
+      {lockedByOther && moduleLock && (
+        <Alert color="orange" p="xs">
+          <Text size="sm">
+            {moduleLock.user_name} has this module checked out for editing
+            {moduleLock.reason ? ` (${moduleLock.reason})` : ''}: it is read-only for you until they release it.
+          </Text>
+        </Alert>
+      )}
+      {needsCheckout && (
+        <Alert color="blue" p="xs">
+          <Text size="sm">This server requires checking a module out before changing it.</Text>
+        </Alert>
+      )}
 
       <Group>
         <Button
@@ -348,6 +371,25 @@ export function ModulePage() {
         >
           Paste at root
         </Button>
+        {appState.access.serverMode && (
+          <Group gap="xs">
+            {isAvailable('module.checkOut', moduleTarget) && (
+              <Button variant="default" onClick={() => run('module.checkOut', moduleTarget)}>
+                Check out for editing
+              </Button>
+            )}
+            {isAvailable('module.release', moduleTarget) && (
+              <Button variant="default" onClick={() => run('module.release', moduleTarget)}>
+                Release
+              </Button>
+            )}
+            {isAvailable('module.breakLock', moduleTarget) && (
+              <Button variant="default" color="red" onClick={() => run('module.breakLock', moduleTarget)}>
+                Break lock
+              </Button>
+            )}
+          </Group>
+        )}
         <Select
           placeholder="All attributes"
           data={views.map((v) => ({ value: v.id, label: v.name }))}

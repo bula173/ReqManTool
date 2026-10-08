@@ -2,9 +2,10 @@ import { ActionIcon, Loader } from '@mantine/core';
 import { IconAlertTriangle, IconX } from '@tabler/icons-react';
 import { useEffect, useRef, useState, type DragEvent } from 'react';
 import { useAppActions } from '../actions/context';
-import { MODULE_TAB_MENU } from '../actions/registry';
+import { MODULE_TAB_MENU, moduleLockOf } from '../actions/registry';
 import { contextMenuTargetProps } from '../actions/shortcuts';
 import { useModule, useProject } from '../api/queries';
+import { ModuleLockBadge } from '../components/ModuleLockBadge';
 import { ModuleTypeIcon } from '../components/ModuleTypeIcon';
 import { hasRequirementDragData, TAB_DRAG_MIME } from '../components/requirementDrag';
 import { tabKey, type ModuleTabRef } from './moduleTabs';
@@ -120,6 +121,8 @@ function ModuleTabItem({ tab, index, active, dropBefore, onDropIndicator }: Modu
       {failed && <IconAlertTriangle size={14} color="var(--mantine-color-red-filled)" aria-hidden />}
       {!loading && !failed && <ModuleTypeIcon module={moduleQuery.data} size={14} style={{ flexShrink: 0 }} />}
       <span className="reqman-tab-label">{label}</span>
+      {/* Server edition: the module's edit lock (known for the open project's modules). */}
+      <ModuleLockBadge lock={moduleLockOf(state, tab.projectId, tab.moduleId)} userId={state.userId} compact />
       <ActionIcon
         variant="subtle"
         color="gray"
