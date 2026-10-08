@@ -800,9 +800,23 @@ backend/reqman/
                    project/module/requirement/link data. Kept import-
                    isolated on purpose: it's easy to unit-test standalone
                    and can't create a circular import with service.py.
+                   Every "text" attribute is ATTRIBUTE-DEFINITION-XHTML
+                   (DATATYPE-DEFINITION-XHTML declared only when the
+                   project has one): rich values are written from their
+                   canonical tree as one xhtml:div (u/s become styled
+                   spans), plain values as escaped text with xhtml:br.
   csv_export.py    Same pattern as reqif_export.py, much smaller.
   xlsx_export.py   Same columns and row order as csv_export.py; string
                    values are stored as string cells, never formulas.
+                   CSV and XLSX write rich text as its plain projection
+                   (richtext.to_plain).
+  docx_export.py   Same pattern; Word document of the requirement tree.
+                   Rich text values keep their formatting (bold, italic,
+                   underline, strike, colour, size, line breaks, nested
+                   bullet/numbered lists via Word's built-in List styles).
+  richtext.py      Rich text of "text" attributes: sanitiser, plain
+                   projection (to_plain) and the canonical block tree
+                   (blocks) the formatted exports walk.
   ordering.py      tree_order(): the shared row order of the CSV and XLSX
                    exports (depth-first, siblings by order then id).
   csv_import.py    The inverse of csv_export.py, same duck-typed pattern:

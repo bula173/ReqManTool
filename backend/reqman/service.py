@@ -2223,13 +2223,21 @@ class ProjectService:
 
     # --- export ----------------------------------------------------------------
 
-    def _export_modules(self, project: Project) -> list[tuple[Module, list[Requirement]]]:
+    def _export_modules(
+        self, project: Project, keep_rich: bool = False
+    ) -> list[tuple[Module, list[Requirement]]]:
         """Each module (display order) with its requirements, as the exports see them.
 
         A requirement shows only the values of attributes that apply to its
         module (a value left over from hand-edited data is not exported).
-        Rich text values are exported as their plain-text projection
-        (``richtext.to_plain``), so no export writes markup.
+
+        Rich text values of ``text`` attributes are exported as their
+        plain-text projection (``richtext.to_plain``) by the table exports
+        (CSV, XLSX). The formatted exports (DOCX, ReqIF) pass ``keep_rich``
+        and get rich values as stored, except one with no visible text,
+        which is projected like before (so it reads as empty, not as markup).
+        A rich-looking value of any other attribute type is plain text and
+        is never touched.
         """
         text_ids = {a.id for a in project.attributes if a.type == "text"}
         result: list[tuple[Module, list[Requirement]]] = []
@@ -2237,7 +2245,10 @@ class ProjectService:
             requirements = []
             for requirement in self.store.load_all_requirements(project.id, module.id):
                 kept, dropped = self._applicable_values(project, module.id, requirement.attributes)
-                rich = [k for k in text_ids if richtext.is_rich(kept.get(k))]
+                rich = [
+                    k for k in text_ids
+                    if richtext.is_rich(kept.get(k)) and not (keep_rich and richtext.blocks(kept[k]))
+                ]
                 if rich:
                     kept = {k: richtext.to_plain(v) if k in rich else v for k, v in kept.items()}
                 requirements.append(replace(requirement, attributes=kept) if dropped or rich else requirement)
@@ -2248,7 +2259,7 @@ class ProjectService:
         from .reqif_export import export_project_to_reqif
 
         project = self.store.load_project(project_id)
-        modules = self._export_modules(project)
+        modules = self._export_modules(project, keep_rich=True)
         link_pairs = {
             config.id: self.store.load_link_pairs(project_id, config.id)
             for config in project.link_configurations
@@ -2273,7 +2284,7 @@ class ProjectService:
         from .docx_export import export_project_to_docx
 
         project = self.store.load_project(project_id)
-        modules = self._export_modules(project)
+        modules = self._export_modules(project, keep_rich=True)
         return export_project_to_docx(project, modules, self._effective_row_styles(project))
 
     # --- import ----------------------------------------------------------------

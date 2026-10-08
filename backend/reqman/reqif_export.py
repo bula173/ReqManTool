@@ -14,14 +14,34 @@ Mapping decisions (see also the docstring of ``export_project_to_reqif``):
 - Every ReqMan attribute type is mapped to a *simple* ReqIF datatype/attribute
   kind that this package can unparse (and re-parse) without any special
   handling:
-    - "string", "text", "enum"  -> ATTRIBUTE-DEFINITION-STRING / DATATYPE-DEFINITION-STRING
-    - "integer"                 -> ATTRIBUTE-DEFINITION-INTEGER / DATATYPE-DEFINITION-INTEGER
-    - "boolean"                 -> ATTRIBUTE-DEFINITION-BOOLEAN / DATATYPE-DEFINITION-BOOLEAN
-  In particular, "text" is NOT exported as XHTML, and "enum" is NOT exported
-  as ENUMERATION with a proper enum-values datatype definition: both are
-  exported as plain strings. This keeps the export simple and guarantees a
-  clean round trip, at the cost of losing the "this is markup" / "this is one
-  of a fixed set of choices" information in the ReqIF file itself.
+    - "string", "enum"  -> ATTRIBUTE-DEFINITION-STRING / DATATYPE-DEFINITION-STRING
+    - "text"            -> ATTRIBUTE-DEFINITION-XHTML / DATATYPE-DEFINITION-XHTML
+    - "integer"         -> ATTRIBUTE-DEFINITION-INTEGER / DATATYPE-DEFINITION-INTEGER
+    - "boolean"         -> ATTRIBUTE-DEFINITION-BOOLEAN / DATATYPE-DEFINITION-BOOLEAN
+  "enum" is NOT exported as ENUMERATION with a proper enum-values datatype
+  definition but as a plain string, losing the "one of a fixed set of
+  choices" information in the ReqIF file itself.
+- Every "text" attribute (``ObjectText`` included) is XHTML, whatever its
+  values: ReqIF gives each attribute one datatype, and a text attribute may
+  hold plain and rich values side by side. Each value's THE-VALUE is one
+  ``xhtml:div`` (the ``xhtml`` prefix is declared on the REQ-IF root):
+    - a rich value (``richtext.py``) is written from its canonical tree:
+      ``p``, ``br``, ``strong``, ``em``, ``ul``, ``ol``, ``li`` and ``span``
+      (with its ``color``/``font-size`` style) keep their names; ``u`` and
+      ``s`` become ``span`` with ``text-decoration: underline`` /
+      ``line-through``: the ReqIF XHTML subset (XHTML 1.1 modules) has no
+      ``xhtml:u`` or ``xhtml:s``, and its ``xhtml:del`` means a deletion,
+      not a strike-through;
+    - a plain value is its text, escaped, with ``xhtml:br`` for line breaks;
+      its spacing stays visible although XHTML collapses white space: on
+      each line, leading and trailing spaces become ``&#160;``, every second
+      space of a run inside the line becomes ``&#160;``, and a tab becomes
+      four ``&#160;``. (Rich values keep their text nodes as stored: the
+      editor already writes visible runs of spaces as non-breaking spaces.)
+    - a value with no text (``""``, a rich value of blanks) is an empty div.
+  Text is escaped and characters XML 1.0 cannot hold are dropped, so the
+  document is always well-formed; "string" and "enum" values are filtered
+  the same way.
 - One SPEC-OBJECT-TYPE is created for the whole project, with one
   ATTRIBUTE-DEFINITION-* per ``AttributeDefinition``.
 - One SPEC-OBJECT is created per requirement (across all modules).
@@ -37,6 +57,7 @@ Mapping decisions (see also the docstring of ``export_project_to_reqif``):
 
 from __future__ import annotations
 
+import re
 from typing import Any, Iterable, List, Optional, Sequence, Tuple
 
 from reqif.models.reqif_core_content import ReqIFCoreContent
@@ -44,6 +65,7 @@ from reqif.models.reqif_data_type import (
     ReqIFDataTypeDefinitionBoolean,
     ReqIFDataTypeDefinitionInteger,
     ReqIFDataTypeDefinitionString,
+    ReqIFDataTypeDefinitionXHTML,
 )
 from reqif.models.reqif_namespace_info import ReqIFNamespaceInfo
 from reqif.models.reqif_req_if_content import ReqIFReqIFContent
@@ -62,18 +84,21 @@ from reqif.object_lookup import ReqIFObjectLookup
 from reqif.reqif_bundle import ReqIFBundle
 from reqif.unparser import ReqIFUnparser
 
+from . import richtext
+
 # --- Fixed identifiers for the (always present) simple datatypes. --------
 
 DATATYPE_STRING_ID = "DATATYPE-STRING"
 DATATYPE_INTEGER_ID = "DATATYPE-INTEGER"
 DATATYPE_BOOLEAN_ID = "DATATYPE-BOOLEAN"
+DATATYPE_XHTML_ID = "DATATYPE-XHTML"
 
 SPEC_OBJECT_TYPE_ID = "SPEC-OBJECT-TYPE-REQUIREMENT"
 
 # Our AttributeDefinition.type -> reqif SpecObjectAttributeType / datatype id.
 _ATTRIBUTE_TYPE_MAP = {
     "string": (SpecObjectAttributeType.STRING, DATATYPE_STRING_ID),
-    "text": (SpecObjectAttributeType.STRING, DATATYPE_STRING_ID),
+    "text": (SpecObjectAttributeType.XHTML, DATATYPE_XHTML_ID),
     "enum": (SpecObjectAttributeType.STRING, DATATYPE_STRING_ID),
     "integer": (SpecObjectAttributeType.INTEGER, DATATYPE_INTEGER_ID),
     "boolean": (SpecObjectAttributeType.BOOLEAN, DATATYPE_BOOLEAN_ID),
@@ -88,14 +113,78 @@ def _spec_hierarchy_id(module_id: str, requirement_id: str) -> str:
     return f"SPEC-HIERARCHY-{module_id}-{requirement_id}"
 
 
+# Inline marks the ReqIF XHTML subset lacks, written as a styled span.
+_MARK_SPANS = {"u": "text-decoration: underline", "s": "text-decoration: line-through"}
+
+
+def _xhtml_escape(text: str) -> str:
+    return richtext.xml_text(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _xhtml_inline(nodes: Iterable[Any]) -> str:
+    out = []
+    for node in nodes:
+        if isinstance(node, str):
+            out.append(_xhtml_escape(node))
+        elif isinstance(node, richtext.LineBreak):
+            out.append("<xhtml:br/>")
+        elif node.tag in ("strong", "em"):
+            out.append(f"<xhtml:{node.tag}>{_xhtml_inline(node.children)}</xhtml:{node.tag}>")
+        else:
+            style = _MARK_SPANS.get(node.tag, node.style)
+            out.append(f'<xhtml:span style="{style}">{_xhtml_inline(node.children)}</xhtml:span>')
+    return "".join(out)
+
+
+def _xhtml_blocks(blocks: Iterable[Any]) -> str:
+    out = []
+    for block in blocks:
+        if isinstance(block, richtext.Paragraph):
+            out.append(f"<xhtml:p>{_xhtml_inline(block.children)}</xhtml:p>")
+        else:
+            items = "".join(f"<xhtml:li>{_xhtml_blocks(item)}</xhtml:li>" for item in block.items)
+            out.append(f"<xhtml:{block.tag}>{items}</xhtml:{block.tag}>")
+    return "".join(out)
+
+
+_NBSP = "&#160;"
+_SPACE_RUNS = re.compile(r"^ +| +$| {2,}")
+
+
+def _spaced(match: "re.Match[str]") -> str:
+    """A run of spaces of a plain line, kept visible (see the module docstring)."""
+    count = len(match.group())
+    if match.start() == 0 or match.end() == len(match.string):
+        return _NBSP * count
+    return "".join(" " if i % 2 == 0 else _NBSP for i in range(count))
+
+
+def _xhtml_plain_line(line: str) -> str:
+    """One line of a plain value: escaped, with its spaces and tabs kept visible."""
+    return _SPACE_RUNS.sub(_spaced, _xhtml_escape(line)).replace("\t", _NBSP * 4)
+
+
+def _xhtml_value(value: Any) -> str:
+    """A text attribute value as the content of an ATTRIBUTE-VALUE-XHTML's THE-VALUE."""
+    if richtext.is_rich(value):
+        body = _xhtml_blocks(richtext.blocks(value))
+    else:
+        lines = re.split(r"\r\n|\r|\n", str(value))
+        body = "<xhtml:br/>".join(_xhtml_plain_line(line) for line in lines) if str(value) else ""
+    return f"<xhtml:div>{body}</xhtml:div>"
+
+
 def _format_attribute_value(attr_type: str, value: Any) -> str:
     """Serialize a requirement's raw attribute value to the ReqIF THE-VALUE string."""
     if attr_type == "boolean":
         return "true" if value else "false"
     if attr_type == "integer":
         return str(int(value))
-    # "string", "text", "enum", and anything else: plain text.
-    return str(value)
+    if attr_type == "text":
+        return _xhtml_value(value)
+    # "string", "enum", and anything else: plain text, without the
+    # characters XML 1.0 cannot hold.
+    return richtext.xml_text(str(value))
 
 
 def export_project_to_reqif(
@@ -130,7 +219,8 @@ def export_project_to_reqif(
         A ReqIF XML document as a string.
 
     Limitations (see module docstring for more detail):
-        - "text" attributes are exported as ATTRIBUTE-VALUE-STRING, not XHTML.
+        - "text" attributes are exported as ATTRIBUTE-VALUE-XHTML (rich
+          values with their formatting, plain values as escaped text).
         - "enum" attributes are exported as ATTRIBUTE-VALUE-STRING (the raw
           value, as ``str()``), not as a proper ATTRIBUTE-VALUE-ENUMERATION
           backed by a DATATYPE-DEFINITION-ENUMERATION with SPECIFIED-VALUES.
@@ -152,11 +242,13 @@ def export_project_to_reqif(
     link_pairs = link_pairs or {}
 
     # --- DATATYPES -----------------------------------------------------
-    data_types = [
+    data_types: List[Any] = [
         ReqIFDataTypeDefinitionString.create(DATATYPE_STRING_ID),
         ReqIFDataTypeDefinitionInteger(identifier=DATATYPE_INTEGER_ID),
         ReqIFDataTypeDefinitionBoolean.create(DATATYPE_BOOLEAN_ID),
     ]
+    if any(attr.type == "text" for attr in project.attributes):
+        data_types.append(ReqIFDataTypeDefinitionXHTML(identifier=DATATYPE_XHTML_ID, is_self_closed=True))
 
     # --- SPEC-TYPES: one SPEC-OBJECT-TYPE for the whole project ---------
     attribute_definitions = []

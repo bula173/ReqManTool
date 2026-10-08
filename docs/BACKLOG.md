@@ -839,6 +839,37 @@
       limits). Not covered: no frontend tests (the client sanitiser
       mirror is untested); smoke-tested headless only; review follow-ups
       (see backlog).
+- [x] **Rich text, slice 2: exports** (2026-10-08; requested 2026-10-07).
+      DOCX (Word export): rich `text` values keep formatting —
+      bold/italic/underline/strike runs, span colour and size (px × 0.75
+      pt), `br` line breaks. The first rich paragraph shares the bold
+      label paragraph. Lists use the Word `List Bullet`/`List Number`
+      styles (levels 2/3 use the `2`/`3` styles; deeper levels reuse
+      level 3 with 0.25" extra indent per level); further paragraphs in a
+      list item use `List Continue N`; every `ol` restarts at 1 (own
+      numbering instance). A row-style font colour does not override a
+      span colour. Plain values are filtered through `richtext.xml_text`,
+      fixing a pre-existing bug where a control character in any value
+      made the DOCX export fail ("All strings must be XML compatible").
+      ReqIF: every `text` attribute (ObjectText included) is exported as
+      ATTRIBUTE-DEFINITION-XHTML / DATATYPE-DEFINITION-XHTML (the
+      datatype is declared only if the project has a text attribute);
+      typing is per attribute because plain and rich values coexist. Rich
+      values are written from the canonical tree as `<xhtml:div>`; plain
+      values are escaped, with `xhtml:br` for newlines and `&#160;` for
+      spacing; `u`/`s` become `xhtml:span` with text-decoration (ReqIF's
+      XHTML subset lacks u/s); string/enum values are filtered for
+      XML-invalid characters. Output re-parses with the `reqif` library.
+      CSV/XLSX unchanged (plain projection). Endpoints unchanged (existing
+      DOCX/ReqIF export routes). `richtext.py`: new `blocks()` (returns []
+      for non-rich/non-string/blank input, never raises), `span_style()`,
+      `xml_text()`, public tree aliases; surrogates added to the invalid
+      characters. `service.py`: `_export_modules(project,
+      keep_rich=False)`; DOCX/ReqIF pass `keep_rich=True`. UI: existing
+      Word/ReqIF export actions. Files: `backend/reqman/{docx_export.py,
+      reqif_export.py, richtext.py, service.py}`, `docs/ARCHITECTURE.md`.
+      Not covered: tests pending (see backlog follow-ups); no ReqIF
+      importer for XHTML; tables/images in a later slice.
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -967,12 +998,12 @@ to the categories above.
       auto-push disabling session squashing — accepted as is.
       (6) `_is_non_fast_forward` matches "[rejected]" but not "[remote
       rejected]", so some remote rejections map to 400 instead of 409.
-- [ ] Rich text, slice 2: exports. Requested 2026-10-07 (slice 1 —
-      storage, sanitiser, editor — is done, see Done). DOCX keeps the
-      formatting (bold/italic/underline/strike, lists, colour, size).
-      ReqIF exports the XHTML datatype for rich values (the stored
-      wrapper already matches ReqIF XHTML). CSV/XLSX stay plain text
-      (already done). Later: tables/images.
+- [ ] Rich text slice 2: follow-ups (2026-10-08). (1) Tests for the
+      slice 2 exports (DOCX formatting, ReqIF XHTML typing) are pending;
+      `tests/test_rich_text.py::test_exports_write_the_plain_projection`
+      still expects plain ReqIF and must be updated. (2) No ReqIF
+      importer reads the XHTML back yet. (3) Later slice: rich-text
+      tables and images.
 - [ ] Commit browser for project, module and requirement. Requested
       2026-10-07. Builds on git history (done: requirement History tab,
       `GET /projects/{id}/git/log`, recent commits in the Git panel).

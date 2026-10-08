@@ -46,8 +46,9 @@ apply to both the input and the canonical result (escaping and the added
 ``sanitize`` accepts is always accepted again, unchanged, and is always
 projected in full by ``to_plain``.
 
-``to_plain`` is the plain-text projection (search, tooltips, CSV and the
-other exports): paragraphs and line breaks become newlines, list items get
+``to_plain`` is the plain-text projection (search, tooltips, the CSV and
+XLSX exports; the DOCX and ReqIF exports read the formatted tree through
+``blocks``): paragraphs and line breaks become newlines, list items get
 ``- `` / ``1. `` markers, indented two spaces per nesting level.
 
 The frontend mirrors these rules in ``frontend/src/components/richText.ts``.
@@ -112,7 +113,7 @@ class RichTextTooLarge(ValueError):
             f"Rich text is too large (at most {MAX_LENGTH} characters and {MAX_NODES} elements)"
         )
 
-_INVALID_CHARS = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\ufffe\\uffff]")
+_INVALID_CHARS = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\ud800-\\udfff\\ufffe\\uffff]")
 _LINE_BREAKS = re.compile(r"\r\n|[\r\n]")
 _HEX6 = re.compile(r"#([0-9a-f]{6})")
 _HEX3 = re.compile(r"#([0-9a-f]{3})")
@@ -670,3 +671,48 @@ def to_plain(value: Any) -> Any:
     if not is_rich(value):
         return value
     return "\n".join(_block_lines(_normalised(value, strict=False), 0))
+
+
+# --- structured read (formatted exports) ---------------------------------------
+# The DOCX and ReqIF exports walk the canonical tree of a rich value instead of
+# re-parsing its markup. Blocks are ``Paragraph`` (``.children``: inline nodes)
+# and ``ListBlock`` (``.tag``: ``ul``/``ol``; ``.items``: each item's blocks,
+# starting with a ``Paragraph``). Inline nodes are ``str``, ``LineBreak`` and
+# ``Mark`` (``.tag``: strong, em, u, s or span; ``.style``: the canonical span
+# style, see ``span_style``; ``.children``: inline nodes).
+
+Paragraph = _Para
+ListBlock = _List
+Mark = _Mark
+LineBreak = _Br
+
+
+def blocks(value: Any) -> list:
+    """The canonical blocks of a rich value; ``[]`` if it has no visible text.
+
+    Any other value (plain text, which is never markup, or a non-string)
+    has no blocks: ``[]``. Never raises: like ``to_plain``, a stored value
+    over the size limits is read only within the limits.
+    """
+    if not is_rich(value):
+        return []
+    tree = _normalised(value, strict=False)
+    return tree if _has_text(tree) else []
+
+
+def span_style(style: str) -> tuple[str | None, str | None]:
+    """``(color, font_size)`` of a span style: ``#rrggbb`` and e.g. ``"14px"``, each or None."""
+    color: str | None = None
+    size: str | None = None
+    for declaration in _style(style).split(";"):
+        name, _, value = declaration.partition(":")
+        if name.strip() == "color":
+            color = value.strip()
+        elif name.strip() == "font-size":
+            size = value.strip()
+    return color, size
+
+
+def xml_text(text: str) -> str:
+    """``text`` without the characters XML 1.0 cannot hold (control characters...)."""
+    return _INVALID_CHARS.sub("", text)
