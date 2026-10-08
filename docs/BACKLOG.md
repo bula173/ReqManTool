@@ -1553,6 +1553,21 @@ to the categories above.
       prompt on the first listing. (7) Tests pending (phase B); one
       existing assertion in `tests/test_git_remotes.py` was updated for
       the new `review` key.
+- [ ] Two-step linking from the requirement menu: "Start link" → "Make
+      link". Requested 2026-10-08. Right-click (editing menu) a requirement
+      → "Start link" remembers it as the pending link source and shows a
+      bar "Linking from SYRS-0012 — pick a target requirement (Esc to
+      cancel)"; the user navigates to any module (other tab, detached
+      window, referenced project) and right-clicks the target requirement
+      → "Make link". The link set is resolved exactly like drag-and-drop
+      linking (link configurations between the two modules, either
+      direction, created in the configured direction; several → user
+      picks; none → warning, no link; duplicates reported). "Make link" is
+      hidden while nothing is pending and disabled on the source itself;
+      pending state is shared across tabs/windows of the same browser
+      (BroadcastChannel/localStorage) and cleared after success, Esc or
+      "Cancel link". Shared action-registry actions (right-click menu and
+      Edit menu). Frontend only (uses the existing link API).
 - [ ] Server edition: login (GitLab / OIDC / LDAP), users, project
       membership, module edit locks. Requested 2026-10-06 (replaces the
       2026-10-04 "User handling" item; scope change confirmed by the user).
