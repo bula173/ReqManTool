@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
-import { WS_URL } from '../api/client';
+import { WS_URL, notifyUnauthorized } from '../api/client';
 import { clearDatasetCache, handleProjectRemoved, invalidateCrossProject, queryKeys } from '../api/queries';
 
 interface ChangedEvent {
@@ -55,6 +55,9 @@ type LiveSyncEvent =
  * is refetched only if it settled in error (the page loaded while the
  * backend was down).
  */
+/** Close code of the server edition when the session of the socket ended (logout, expiry). */
+const WS_CLOSE_UNAUTHENTICATED = 4401;
+
 export function useLiveSync(): void {
   const queryClient = useQueryClient();
   const queryClientRef = useRef(queryClient);
@@ -113,7 +116,9 @@ export function useLiveSync(): void {
         }
       };
 
-      socket.onclose = () => {
+      socket.onclose = (event) => {
+        // Server edition: the backend closed the socket because the session ended.
+        if (event.code === WS_CLOSE_UNAUTHENTICATED) notifyUnauthorized();
         if (!cancelled) {
           reconnectTimer = setTimeout(connect, 2000);
         }

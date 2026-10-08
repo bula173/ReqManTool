@@ -3,7 +3,9 @@ import { IconMoon, IconSun } from '@tabler/icons-react';
 import { Outlet } from 'react-router-dom';
 import { AppActionsProvider } from '../actions/AppActionsProvider';
 import { useAppActions } from '../actions/context';
+import { useAuth } from '../auth/context';
 import { DataDirSettings } from '../components/DataDirSettings';
+import { UserMenu } from '../components/UserMenu';
 import { VersionFooter } from '../components/VersionFooter';
 import { useLiveSync } from '../hooks/useLiveSync';
 import { MenuBar } from './MenuBar';
@@ -32,6 +34,7 @@ function ColorSchemeToggle() {
  */
 function AppFrame() {
   const { state } = useAppActions();
+  const { canManageServer } = useAuth();
   const leftWidth = usePanelWidth('left');
   const navbarWidth = state.leftPanelOpen && !state.narrowLayout ? leftWidth.width : SIDE_PANEL_RAIL_WIDTH;
 
@@ -53,8 +56,10 @@ function AppFrame() {
             <MenuBar />
           </Group>
           <Group gap="xs" wrap="nowrap">
-            <DataDirSettings />
+            {/* Server edition: switching the server's data folder is for server admins only. */}
+            {canManageServer && <DataDirSettings />}
             <ColorSchemeToggle />
+            <UserMenu />
           </Group>
         </Group>
       </AppShell.Header>

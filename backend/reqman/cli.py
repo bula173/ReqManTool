@@ -100,6 +100,15 @@ def _serve(args: argparse.Namespace) -> int:
     if args.cors_origins is not None:
         os.environ[cfg.ENV_CORS_ORIGINS] = args.cors_origins
     settings = cfg.load_settings()
+    if settings.mode == "server":
+        # Fail with a clear message before uvicorn starts when the server edition is missing.
+        from .extensions import EditionUnavailableError, load_server_edition
+
+        try:
+            load_server_edition()
+        except EditionUnavailableError as exc:
+            print(f"reqman: error: {exc}", file=sys.stderr)
+            return 1
 
     import uvicorn
 

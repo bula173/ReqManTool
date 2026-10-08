@@ -27,7 +27,15 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .config import check_config_writable, connections_file, frontend_dir, load_settings, save_data_dir
+from .config import (
+    check_config_writable,
+    connections_file,
+    frontend_dir,
+    load_settings,
+    read_config_values,
+    save_data_dir,
+)
+from .extensions import HOOKS, MODE_SERVER, EditionContext, load_server_edition
 from .csv_import import MAX_CSV_IMPORT_BYTES
 from .test_results_import import MAX_TEST_RESULTS_IMPORT_BYTES
 from .formats import NewerFormatError
@@ -48,6 +56,9 @@ SETTINGS = load_settings()
 CORS_ORIGINS = SETTINGS.cors_origins
 # The built frontend served from this origin (release package), or None (API only).
 FRONTEND_DIR = frontend_dir()
+# The server edition (``reqman_server``), imported only with mode "server";
+# ``None`` in the local edition, where no server code runs (see extensions.py).
+SERVER_EDITION = load_server_edition() if SETTINGS.mode == MODE_SERVER else None
 
 DATA_DIR = SETTINGS.data_dir
 store = ProjectStore(DATA_DIR)
@@ -77,12 +88,29 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="ReqManTool", lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if SERVER_EDITION is None:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ORIGINS,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    # The server edition adds its routes and its authentication middleware.
+    # The middleware sits inside the SPA fallback (a page load of a client
+    # route gets index.html, which carries no data), and CORS is added last so
+    # it wraps everything, including a 401; credentials (the session cookie)
+    # are allowed for the configured origins only.
+    SERVER_EDITION.install(
+        app,
+        EditionContext(
+            settings=SETTINGS,
+            config_values=read_config_values(SETTINGS.config_file),
+            hooks=HOOKS,
+            frontend_dir=FRONTEND_DIR,
+        ),
+    )
+    logger.info("Server edition: %s", SERVER_EDITION.name)
 
 
 # --- bundled frontend (single origin) ----------------------------------------
@@ -137,6 +165,15 @@ if FRONTEND_DIR is not None:
     app.add_middleware(SpaNavigationMiddleware)
     if (FRONTEND_DIR / "assets").is_dir():
         app.mount("/assets", StaticFiles(directory=FRONTEND_DIR / "assets"), name="frontend-assets")
+
+if SERVER_EDITION is not None:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 class ConnectionManager:
@@ -204,6 +241,18 @@ def root():
 @app.get("/version")
 def get_version():
     return version_info()
+
+
+# --- edition ----------------------------------------------------------
+
+
+@app.get("/edition")
+def get_edition():
+    """The edition this server runs: ``{"mode": "local"}``, or ``"server"`` plus the edition's
+    public login information (providers). Public: the frontend asks it before anything else."""
+    if SERVER_EDITION is None:
+        return {"mode": SETTINGS.mode}
+    return {"mode": SETTINGS.mode, **SERVER_EDITION.public_info()}
 
 
 # --- about: licence, corresponding source, third-party licences ------------
@@ -1502,6 +1551,7 @@ def _rpc_result_options(params: dict) -> dict[str, Any]:
 
 RPC_METHODS = {
     "version.get": lambda p: version_info(),
+    "edition.get": lambda p: get_edition(),
     "about.get": lambda p: about_info(SETTINGS.source_url),
     "about.third_party": lambda p: {"packages": list(python_third_party())},
     "project.create": lambda p: service.create_project(

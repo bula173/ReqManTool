@@ -1663,6 +1663,146 @@ console script (`reqman/cli.py`). The version comes from
   `backend/requirements.txt` (kept in sync, used by `etc/start-backend.sh`);
   test-only (`pytest`, `httpx`) in the `test` extra and
   `backend/requirements-dev.txt`.
+- **Edition** (`mode`): `REQMAN_MODE` > config key `mode` > `local`
+  (`local` or `server`, anything else fails start-up). Added without a
+  `CONFIG_FORMAT` bump, like `source_url`. See "Server edition" below.
+
+## Server edition
+
+Two editions run from one codebase. **local** (the default) is the
+community edition: one user, no login, identity from git config — exactly
+the behavior described in the rest of this document. **server** is the
+multi-user edition: one shared instance, every user logs in. It is
+delivered in slices; slice 1 (this section) is the mode switch and
+authentication. Users/roles/membership UI, permission enforcement, module
+edit locks, the audit log and the licence-file gate come later.
+
+### Separation
+
+The server code lives in its own package, `backend/reqman_server/`,
+meant to move to the separately licensed `reqman-server` package
+(LICENSING.md). It imports `reqman`; `reqman` never imports it at module
+level. `app.py` calls `extensions.load_server_edition()` only when
+`SETTINGS.mode == "server"`; a missing package fails start-up with a clear
+message (`EditionUnavailableError`; `reqman serve` checks it before
+starting uvicorn). With `mode: local` no server code is imported or run.
+The package is **not** in the `reqmantool` wheel (`packages.find` includes
+`reqman*` only); until it moves it is used from a checkout (`backend/` on
+the import path).
+
+### Extension points (`reqman/extensions.py`)
+
+- `ServerEdition` (`install(app, EditionContext)`, `public_info()`): the
+  edition adds its routes and its middleware. `EditionContext` carries the
+  `Settings`, the config file's raw values (the edition reads its own
+  `server` section), the `HOOKS` registry and the frontend directory.
+- **Request identity**: `RequestIdentity(user_id, name, email,
+  server_admin)` in a `ContextVar` (`current_identity()`,
+  `identity_scope()`). The edition's middleware sets it for each
+  authenticated request and for the lifetime of a WebSocket connection
+  (FastAPI copies the context into the thread pool of sync handlers).
+  `GitHistory._identity` (commit author and committer, so also the
+  per-user squash window) and `GitHistory.user_identity` (who locked a
+  project) use it first; without one (always, in local mode) they fall back
+  to `REQMAN_GIT_AUTHOR_*` / git config / login name as before.
+- `IdentityProvider` (`authenticate(scope)`): the shape of a request
+  authenticator.
+- `PermissionGuard` (`check(identity, action, project_id)`, raises
+  `PermissionError`; local: `AllowAllGuard`) and `ModuleLockService`
+  (`check_write(identity, project_id, module_id)`, raises
+  `ModuleLockedError`; local: `NoLocks`) in `HOOKS`. Defined now, not yet
+  called: the slices that add membership and module locks will call them
+  from `ProjectService` (one guard, REST + WebSocket parity).
+
+### Configuration
+
+The `server` section of the config file (`reqman_server/settings.py` has
+a full example): `auth_providers` (required: a list of `{id, type:
+"gitlab" | "oidc", name, url (gitlab, default https://gitlab.com) | issuer
+(oidc), client_id, client_secret | client_secret_env, scopes,
+allow_http}`), `base_url` (public URL of the backend, used for the OAuth
+`redirect_uri`; default: the request's base URL), `frontend_url` (where
+the browser goes after login; default: same origin), `cookie_secure`
+(default true; false for `http://localhost` development),
+`session_max_age_hours` (12), `session_idle_minutes` (120),
+`persist_sessions` (true), `state_dir` (default: the config file's
+directory), `admins` (user names / e-mail addresses). Environment:
+`REQMAN_AUTH_<ID>_CLIENT_ID` / `_CLIENT_SECRET`, `REQMAN_SERVER_BASE_URL`,
+`REQMAN_SERVER_FRONTEND_URL`, `REQMAN_SERVER_COOKIE_SECURE`,
+`REQMAN_SERVER_STATE_DIR`, `REQMAN_SERVER_ADMINS`. The client secret is
+never logged, returned or sent to the browser. A server without a provider
+refuses to start.
+
+### Login (OpenID Connect, `reqman_server/oidc.py`)
+
+GitLab is an OpenID Connect provider, so the `gitlab` type is the generic
+OIDC client with the GitLab URL as issuer. Authorization code flow:
+issuer discovery (`/.well-known/openid-configuration`, whose `issuer` must
+match), redirect with `state`, `nonce` and a PKCE `S256` challenge; the
+pending login (state, nonce, verifier; single use, ten minutes) is bound
+to the browser by a random value in a short-lived `reqman_login` cookie,
+which blocks login CSRF. The callback exchanges the code at the token
+endpoint (client secret by HTTP Basic, or `client_secret_post` if that is
+the only listed method, plus the PKCE verifier) and validates the ID token:
+`iss` = the discovered issuer, `aud` contains the client id (`azp` = client
+id when there are several audiences), `exp` (60 s leeway), `iat` not in
+the future, `nonce`, `sub`. Name, user name (`preferred_username` /
+`nickname`) and e-mail come from the ID token, completed from the
+userinfo endpoint when missing (its `sub` must match). The ID token's
+signature is not verified: OIDC Core §3.1.3.7 lets a client rely on TLS
+for an ID token received directly from the token endpoint, which is the
+only way this client gets one — so every endpoint must be https (http only
+for a local host, or `allow_http` for tests), and `alg: none` is refused.
+HTTP uses `urllib` (timeout, 1 MiB limit): no new dependency.
+
+### Sessions, CSRF and the middleware
+
+Sessions are server-side (`sessions.py`): a random token in the
+`reqman_session` cookie (HttpOnly, SameSite=Lax, Secure unless
+`cookie_secure: false`, Path=/), stored as its SHA-256 in memory and in
+`sessions.json` (owner-only permissions; `last_seen` written at most once
+a minute). A session ends at logout, after the maximum age, or when idle.
+Each session has a CSRF token (synchronizer token) returned by
+`GET /auth/me`; every state-changing request (not GET/HEAD/OPTIONS) must
+send it as `X-CSRF-Token` (403 otherwise). `AuthMiddleware` (pure ASGI)
+sits inside `SpaNavigationMiddleware` (page loads of client routes get
+`index.html` without data) and inside CORS (added last in server mode,
+with `allow_credentials`, so a 401 carries CORS headers). Public:
+`/auth/login/*`, `/auth/callback/*`, `/auth/logout`, `/edition`,
+`/version`, `/about*`, `/health`, `/`, `/assets/*` and top-level files of
+the bundle. Anything else without a session: REST 401
+`{"detail": "Not logged in"}`; the WebSocket handshake is refused (close
+4401 before accept = HTTP 403). WebSocket handshakes must come from the
+server's own origin or `cors_origins` / `frontend_url` / `base_url`
+(4403 otherwise); the session is re-checked on each received message and
+the socket closed with 4401 once it ended. Until project permissions
+exist, `POST /config` and `/fs/*` (server data folder and file system)
+are limited to server admins.
+
+### Users (`users.py`)
+
+`users.json` in the state directory: `id`, `name`, `email`, `username`,
+`provider`, `subject`, `server_admin`, `active`, `created_at`,
+`last_login_at`, keyed by `(provider, subject)`; created at the first
+login, name/e-mail refreshed at each login, re-read when the file is
+edited by hand. Admins: users matching `server.admins` (user name, or an
+e-mail not reported unverified); without that setting the first user ever
+becomes the admin. `active: false` refuses logins and ends sessions.
+
+### API and frontend
+
+`GET /edition` (WS `edition.get`, both editions, public): `{"mode":
+"local"}` or `{"mode": "server", "providers": [{id, type, name,
+login_url}]}`. Server edition only: `GET /auth/login/{provider}?next=`,
+`GET /auth/callback/{provider}` (redirects to `frontend_url + next`, or to
+`/?login_error=...`), `GET /auth/me` (`{user, csrf_token, expires_at}`),
+`POST /auth/logout`, `GET /health`. The frontend's `AuthGate` asks
+`/edition` first; local (or no answer) shows the app as before. In the
+server edition the API client sends `credentials: 'include'` and the CSRF
+header, a 401 (or WebSocket close 4401) shows `LoginPage`, and the header
+has a `UserMenu` (name, e-mail, Log out); the data folder switcher is shown
+to server admins only. Login is a full-page round trip, so the live-sync
+socket connects again with the new cookie.
 
 ## Backend layering
 

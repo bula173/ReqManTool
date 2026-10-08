@@ -30,6 +30,10 @@ const apiProxy: Record<string, ProxyOptions> = {
   '/fs': { target: apiTarget },
   '/version': { target: apiTarget },
   '/about': { target: apiTarget },
+  // Edition check and, in the server edition, login/logout and the health probe.
+  '/edition': { target: apiTarget },
+  '/auth': { target: apiTarget },
+  '/health': { target: apiTarget },
   '/templates': { target: apiTarget },
   '/module-templates': { target: apiTarget },
   '/prompts': { target: apiTarget },

@@ -82,6 +82,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from .extensions import current_identity
 from .history import FileChange, Revision, commit_message, requirement_history, session_of
 
 logger = logging.getLogger("reqman.git")
@@ -192,6 +193,19 @@ REMOTE_TRANSPORT_MESSAGE = (
 )
 # How long a resolved commit identity (``git var GIT_AUTHOR_IDENT``) is reused.
 _IDENTITY_TTL_SECONDS = 30.0
+
+
+def _request_identity() -> tuple[str, str] | None:
+    """``(name, email)`` of the logged-in user of the current request (server edition), else ``None``.
+
+    Never set in local mode, where the git identity (``REQMAN_GIT_AUTHOR_*``,
+    git config, login name) is used as before.
+    """
+    identity = current_identity()
+    if identity is None or not identity.name or not identity.email:
+        return None
+    return identity.name, identity.email
+
 
 # States of a project folder (``RepoInfo.state`` / ``status()["state"]``).
 STATE_OFF = "off"  # git integration turned off for this server
@@ -1014,7 +1028,14 @@ class GitHistory:
         return paths
 
     def _identity(self, info: RepoInfo) -> tuple[str, str]:
-        """The commit author: configured, else git's own (config / GIT_AUTHOR_*), else the login name."""
+        """The commit author: configured, else git's own (config / GIT_AUTHOR_*), else the login name.
+
+        In the server edition the logged-in user of the request wins (see
+        ``_request_identity``); in local mode there is none.
+        """
+        request_identity = _request_identity()
+        if request_identity is not None:
+            return request_identity
         name, email = self.settings.author_name, self.settings.author_email
         if name and email:
             return name, email
@@ -1048,8 +1069,12 @@ class GitHistory:
         own (the project repository's config, the user's config,
         ``GIT_AUTHOR_*``), else the login name. Works without a repository
         (git's global config); with history turned off or git missing, git
-        is not run and the login name is used. Never raises.
+        is not run and the login name is used. Never raises. In the server
+        edition the logged-in user of the request wins.
         """
+        request_identity = _request_identity()
+        if request_identity is not None:
+            return request_identity
         name, email = self.settings.author_name, self.settings.author_email
         if name and email:
             return name, email

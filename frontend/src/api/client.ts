@@ -27,14 +27,61 @@ export class ApiError extends Error {
   }
 }
 
+// --- server edition session ----------------------------------------------
+// In the local edition none of this is set and requests are sent exactly as
+// before. In the server edition (see components/AuthGate.tsx) requests carry
+// the session cookie (`credentials: 'include'`, also for the cross-origin dev
+// setup), state-changing ones the session's CSRF token, and a 401 sends the
+// app back to the login page.
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+const authState: {
+  serverMode: boolean;
+  csrfToken: string | null;
+  onUnauthorized: (() => void) | null;
+} = { serverMode: false, csrfToken: null, onUnauthorized: null };
+
+/** Switch the client to the server edition's session handling (send the session cookie). */
+export function enableServerSession(): void {
+  authState.serverMode = true;
+}
+
+/** The current session's CSRF token (from GET /auth/me), or null when logged out. */
+export function setCsrfToken(token: string | null): void {
+  authState.csrfToken = token;
+}
+
+/** Called when the API answers 401 in the server edition (the session ended); null to remove. */
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  authState.onUnauthorized = handler;
+}
+
+/** The session ended (401 from the API, or the live-sync socket was closed for it). */
+export function notifyUnauthorized(): void {
+  if (authState.serverMode) authState.onUnauthorized?.();
+}
+
+/** `fetch` options that carry the server edition's session; empty in the local edition. */
+export function sessionInit(method = 'GET'): RequestInit {
+  if (!authState.serverMode) return {};
+  const headers: Record<string, string> =
+    authState.csrfToken && !SAFE_METHODS.has(method.toUpperCase()) ? { 'X-CSRF-Token': authState.csrfToken } : {};
+  return { credentials: 'include', headers };
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const session = sessionInit(init?.method ?? 'GET');
   const res = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
+    ...(session.credentials ? { credentials: session.credentials } : {}),
     headers: {
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(session.headers as Record<string, string> | undefined),
       ...init?.headers,
     },
   });
+  if (res.status === 401) notifyUnauthorized();
   if (!res.ok) {
     let message = res.statusText;
     try {

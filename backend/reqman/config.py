@@ -6,7 +6,7 @@ Settings and their precedence
 -----------------------------
 
 Keys: ``data_dir`` (storage root), ``host``, ``port``, ``cors_origins``,
-``source_url``.
+``source_url``, ``mode``.
 Each is resolved as CLI flag > environment variable > config file > default:
 
 ====================  =======================  ===========================
@@ -17,6 +17,7 @@ key                   environment variable     default
 ``port``              ``REQMAN_PORT``          ``8899``
 ``cors_origins``      ``REQMAN_CORS_ORIGINS``  ``http://localhost:5173``
 ``source_url``        ``REQMAN_SOURCE_URL``    ``DEFAULT_SOURCE_URL``
+``mode``              ``REQMAN_MODE``          ``local``
 ====================  =======================  ===========================
 
 CLI flags (``reqman serve --dir/--host/--port/--cors-origins``, see
@@ -29,6 +30,12 @@ list of strings.
 the running code, offered in Help ▸ About and the footer (AGPL-3.0 §13; see
 ``version.about_info``). A deployment of a *modified* ReqManTool must set it
 to where that modified source is published.
+
+``mode`` is the edition: ``local`` (the single-user community edition: no
+login, identity from git config) or ``server`` (the multi-user server
+edition, loaded from the separate ``reqman_server`` package; see
+``extensions.py``). The server edition reads its own ``server`` section of
+the config file; the core keeps that section untouched.
 
 Which config file (``config_file()``)
 -------------------------------------
@@ -89,9 +96,12 @@ DEFAULT_PORT = 8899
 DEFAULT_CORS_ORIGINS: tuple[str, ...] = ("http://localhost:5173",)
 # Upstream repository; override with REQMAN_SOURCE_URL / "source_url" in a modified deployment.
 DEFAULT_SOURCE_URL = "https://github.com/bula173/ReqManTool"
+# The edition: "local" (community, single user) or "server" (multi-user, reqman_server).
+DEFAULT_MODE = "local"
+MODES = ("local", "server")
 
 # Known keys, in the order they are written.
-CONFIG_KEYS = ("data_dir", "host", "port", "cors_origins", "source_url")
+CONFIG_KEYS = ("data_dir", "host", "port", "cors_origins", "source_url", "mode")
 
 ENV_CONFIG_FILE = "REQMAN_CONFIG_FILE"
 ENV_DATA_DIR = "REQMAN_DATA_DIR"
@@ -99,6 +109,7 @@ ENV_HOST = "REQMAN_HOST"
 ENV_PORT = "REQMAN_PORT"
 ENV_CORS_ORIGINS = "REQMAN_CORS_ORIGINS"
 ENV_SOURCE_URL = "REQMAN_SOURCE_URL"
+ENV_MODE = "REQMAN_MODE"
 ENV_FRONTEND_DIR = "REQMAN_FRONTEND_DIR"
 
 # Built frontend bundled into the package (copied from frontend/dist at release build time).
@@ -295,6 +306,7 @@ class Settings:
     cors_origins: list[str]
     sources: dict[str, str] = field(default_factory=dict)
     source_url: str = DEFAULT_SOURCE_URL
+    mode: str = DEFAULT_MODE
 
     def to_dict(self) -> dict:
         return {
@@ -304,6 +316,7 @@ class Settings:
             "port": self.port,
             "cors_origins": list(self.cors_origins),
             "source_url": self.source_url,
+            "mode": self.mode,
             "sources": dict(self.sources),
         }
 
@@ -341,6 +354,13 @@ def _parse_source_url(value: object, what: str) -> str:
     if not isinstance(value, str) or not value.strip().lower().startswith(("http://", "https://")):
         raise ValueError(f"{what}: source_url must be an http(s) URL, got {value!r}")
     return value.strip()
+
+
+def _parse_mode(value: object, what: str) -> str:
+    mode = value.strip().lower() if isinstance(value, str) else value
+    if mode not in MODES:
+        raise ValueError(f"{what}: mode must be one of {', '.join(MODES)}, got {value!r}")
+    return mode  # type: ignore[return-value]
 
 
 def load_settings() -> Settings:
@@ -398,6 +418,14 @@ def load_settings() -> Settings:
     else:
         source_url, sources["source_url"] = DEFAULT_SOURCE_URL, "default"
 
+    env_mode = os.environ.get(ENV_MODE)
+    if env_mode is not None and env_mode.strip():
+        mode, sources["mode"] = _parse_mode(env_mode, ENV_MODE), "env"
+    elif "mode" in values:
+        mode, sources["mode"] = _parse_mode(values["mode"], what_file), "config"
+    else:
+        mode, sources["mode"] = DEFAULT_MODE, "default"
+
     return Settings(
         config_file=path,
         data_dir=data_dir,
@@ -406,4 +434,5 @@ def load_settings() -> Settings:
         cors_origins=origins,
         sources=sources,
         source_url=source_url,
+        mode=mode,
     )

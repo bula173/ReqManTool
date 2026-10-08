@@ -1069,3 +1069,40 @@ export interface StartReviewResult {
   pushed: { url: string; branch: string; head: string; base: string | null; commits: number };
   status: GitStatus;
 }
+
+/** A login provider of the server edition (GET /edition). */
+export interface AuthProviderInfo {
+  id: string;
+  /** `gitlab` or `oidc` (generic OpenID Connect). */
+  type: string;
+  name: string;
+  /** Backend path that starts the login (append `?next=<path>`). */
+  login_url: string;
+}
+
+/**
+ * GET /edition (WS `edition.get`), public: `local` (no login) or `server`
+ * (every request needs a session; `providers` are the login buttons).
+ */
+export interface EditionInfo {
+  mode: 'local' | 'server';
+  providers?: AuthProviderInfo[];
+}
+
+/** The logged-in user of the server edition. */
+export interface SessionUser {
+  id: string;
+  name: string;
+  email: string;
+  username: string;
+  server_admin: boolean;
+}
+
+/** GET /auth/me (server edition; 401 without a session). */
+export interface AuthSession {
+  user: SessionUser;
+  /** Sent as `X-CSRF-Token` with every state-changing request. */
+  csrf_token: string;
+  /** Unix time (seconds) when the session ends at the latest. */
+  expires_at: number;
+}

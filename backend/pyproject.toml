@@ -40,7 +40,11 @@ reqman = "reqman.cli:main"
 
 [tool.setuptools.packages.find]
 # reqman plus its data directories (templates, prompts, static), which
-# setuptools treats as namespace packages.
+# setuptools treats as namespace packages. The server edition package
+# (backend/reqman_server, loaded only with mode "server") is deliberately not
+# part of this distribution: it is to move to the separately licensed
+# reqman-server package (LICENSING.md). Until then it is used from a checkout
+# (backend/ on the import path, as etc/start-backend.sh runs it).
 include = ["reqman", "reqman.*"]
 
 [tool.setuptools.dynamic]
