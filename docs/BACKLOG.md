@@ -1450,6 +1450,37 @@
       `plutil`; no service actually installed. Not covered: tests, CI
       never run on GitHub; follow-ups in the backlog ("Distribution
       package: follow-ups").
+- [x] **Two-step linking from the requirement menu: "Start link" → "Make
+      link"** (2026-10-08; requested 2026-10-08). Frontend only (existing
+      link API, no backend change). `requirement.startLink` remembers the
+      requirement as the pending link source in localStorage
+      `reqman.pendingLink` (`{dataDir, source{projectId, moduleId,
+      requirementId, names}}`), synced across main tabs and detached
+      windows via the `storage` event (a source from another data folder
+      is ignored); "Start link" on another requirement replaces it.
+      `requirement.makeLink` (hidden while nothing is pending, disabled on
+      the source, `edits: true` so disabled when the target project is
+      locked, like drag-and-drop) resolves through `resolveAndLink`,
+      extracted from `useDropLink` and shared with drag-and-drop
+      (`link_options` with `from_project_id` across projects; one → created
+      in the configured direction; several → `DropLinkModal` picker; none
+      → warning; existing → reported); the pending source is cleared only
+      after a successful link (it stays after none/exists/error/cancel so
+      another target can be picked). `edit.cancelLink` (Esc, not while
+      typing or while a menu/dialog is open). It is also cleared on project
+      removal and data-folder change. All three in the requirement
+      right-click menu and the Edit menu after "Link to". UI:
+      `PendingLinkBar` ("Linking from SYRS-0012 (Project · Module when
+      different) — pick a target requirement: right-click it → Make link
+      (Esc to cancel)" + "Cancel link") between the module tab bar and the
+      page, and below the detached-window header. Files:
+      `frontend/src/actions/{pendingLink.ts (new), AppActionsProvider.tsx,
+      registry.ts, requirementActions.tsx, shortcuts.ts, types.ts}`,
+      `components/DropLinkModal.tsx` (`onLinked`), `hooks/useDropLink.ts`,
+      `layout/{PendingLinkBar.tsx (new), AppLayout.tsx, DetachedLayout.tsx,
+      AppDialogs.tsx}`, `index.css`. Not covered: tests, browser
+      verification; follow-ups in the backlog ("Two-step linking:
+      follow-ups").
 
 ## Feature reference: what a mature RM tool (DOORS-class) has
 
@@ -1532,21 +1563,6 @@ item first (phase A), then test, review and fix by area (phase B).
 
 ### Next — requested, in delivery order
 
-- [ ] Two-step linking from the requirement menu: "Start link" → "Make
-      link". Requested 2026-10-08. Right-click (editing menu) a requirement
-      → "Start link" remembers it as the pending link source and shows a
-      bar "Linking from SYRS-0012 — pick a target requirement (Esc to
-      cancel)"; the user navigates to any module (other tab, detached
-      window, referenced project) and right-clicks the target requirement
-      → "Make link". The link set is resolved exactly like drag-and-drop
-      linking (link configurations between the two modules, either
-      direction, created in the configured direction; several → user
-      picks; none → warning, no link; duplicates reported). "Make link" is
-      hidden while nothing is pending and disabled on the source itself;
-      pending state is shared across tabs/windows of the same browser
-      (BroadcastChannel/localStorage) and cleared after success, Esc or
-      "Cancel link". Shared action-registry actions (right-click menu and
-      Edit menu). Frontend only (uses the existing link API).
 - [ ] AGPL compliance in the app. Follow-up of the 2026-10-06 licence
       change. AGPL §13: users interacting with the app over a network must
       be offered the corresponding source — add a "Source code" link (repo
@@ -1932,6 +1948,13 @@ area by area once phase A is complete.
       systemd user unit without a secret service is not handled. (8) An
       older version's data-folder switcher would drop `host`, `port` and
       `cors_origins` when saving the config file.
+- [ ] Two-step linking: follow-ups (2026-10-08). (1) If the source
+      requirement is deleted while pending, the bar stays and "Make link"
+      gets the server error (the user must cancel by hand). (2) Not
+      verified in a browser: cross-window sync, the detached-window bar,
+      the menus. (3) On narrow screens one Esc closes a side-panel overlay
+      and cancels the pending link at once. (4) No frontend tests (phase
+      B).
 
 ### Open decisions
 

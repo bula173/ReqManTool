@@ -12,14 +12,16 @@ interface DropLinkModalProps {
   toId: string;
   options: LinkOption[];
   onClose: () => void;
+  /** Called once the link was created (before closing). */
+  onLinked?: () => void;
 }
 
 /**
- * Drag-and-drop linking with several link configurations between the two
+ * Drag-and-drop (or two-step "Make link") linking with several link configurations between the two
  * modules: the user picks the one to create. Links that already exist are
  * listed but cannot be picked (no duplicates).
  */
-export function DropLinkModal({ projectId, fromId, toId, options, onClose }: DropLinkModalProps) {
+export function DropLinkModal({ projectId, fromId, toId, options, onClose, onLinked }: DropLinkModalProps) {
   const modulesQuery = useModules(projectId);
   const linkRequirements = useLinkInProject();
   // Keyed by project and configuration: across projects, both may have a configuration of the same id.
@@ -43,6 +45,7 @@ export function DropLinkModal({ projectId, fromId, toId, options, onClose }: Dro
       {
         onSuccess: () => {
           notifications.show({ message: `Linked ${linkOptionLabel(option)}`, color: 'green' });
+          onLinked?.();
           onClose();
         },
         onError: (err) =>

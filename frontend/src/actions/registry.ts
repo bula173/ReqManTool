@@ -9,7 +9,7 @@ import { tabKey } from '../layout/moduleTabs';
 import { moduleActions, projectActions } from './projectActions';
 import { providerActions } from './providerActions';
 import { purgeActions } from './purgeActions';
-import { requirementActions } from './requirementActions';
+import { pendingLinkActions, requirementActions } from './requirementActions';
 import { matchesShortcut } from './shortcuts';
 import { moduleWindowActions, requirementWindowActions, tabActions, windowActions } from './tabActions';
 import type {
@@ -40,6 +40,7 @@ export const ACTIONS: Action[] = [
   ...modulePromptActions,
   ...purgeActions,
   ...requirementActions,
+  ...pendingLinkActions,
   ...projectActions,
   ...moduleActions,
   ...projectFolderActions,
@@ -245,6 +246,9 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
       action('requirement.moveTo'),
       divider,
       action('requirement.link'),
+      action('requirement.startLink'),
+      action('requirement.makeLink'),
+      action('edit.cancelLink'),
       divider,
       action('requirement.delete'),
       // Destructive bulk deletes, kept apart from the requirement entries.
@@ -354,6 +358,9 @@ export const REQUIREMENT_CONTEXT_MENU: MenuEntry[] = [
   action('requirement.moveTo'),
   divider,
   action('requirement.link'),
+  action('requirement.startLink'),
+  action('requirement.makeLink'),
+  action('edit.cancelLink'),
   divider,
   action('requirement.aiPrompts'),
   action('requirement.commits'),

@@ -21,6 +21,7 @@ const KEY_LABELS: Record<string, string> = {
   ArrowLeft: '←',
   ArrowRight: '→',
   Delete: 'Del',
+  Escape: 'Esc',
   Backspace: IS_MAC ? '⌫' : 'Backspace',
 };
 

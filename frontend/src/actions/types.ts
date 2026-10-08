@@ -16,6 +16,7 @@ import type {
 } from '../api/types';
 import type { ResizableColumns } from '../hooks/columnLayout';
 import type { ModuleTabRef } from '../layout/moduleTabs';
+import type { PendingLinkSource } from './pendingLink';
 
 /**
  * The shared action registry's types.
@@ -179,8 +180,19 @@ export type DialogRequest =
   | { kind: 'linkRequirement'; projectId: string; moduleId: string; source: Requirement }
   | { kind: 'moveRequirement'; projectId: string; moduleId: string; source: Requirement }
   | { kind: 'attributeModules'; projectId: string; attribute: AttributeDefinition }
-  /** Drag-and-drop linking with several possible link configurations: the user picks one. */
-  | { kind: 'dropLink'; projectId: string; fromId: string; toId: string; options: LinkOption[] }
+  /**
+   * Drag-and-drop or two-step linking with several possible link
+   * configurations: the user picks one. `pendingSource`: the two-step link it
+   * completes ("Make link"), cleared once the link is created.
+   */
+  | {
+      kind: 'dropLink';
+      projectId: string;
+      fromId: string;
+      toId: string;
+      options: LinkOption[];
+      pendingSource?: PendingLinkSource;
+    }
   /** The projects a project references (its link configurations may target their modules). */
   | { kind: 'projectReferences'; project: Project }
   /** Lock a project (reason); unlocking needs no dialog. */
@@ -223,6 +235,16 @@ export interface AppCommands {
   purgeProject: (projectId: string) => Promise<{ purged: number }>;
   /** Unlock a project (`DELETE /projects/{id}/lock`); locking and removing go through their dialogs. */
   unlockProject: (projectId: string) => Promise<Project>;
+  /**
+   * Two-step linking: remember a requirement as the pending link source
+   * (shared by every window of this browser and data folder), drop it (with
+   * `only`: only while that is still the pending one), and link the pending
+   * source to a requirement of the open module (resolved like drag-and-drop
+   * linking; the pending source is cleared once linked).
+   */
+  startLink: (source: PendingLinkSource) => void;
+  cancelLink: (only?: PendingLinkSource) => void;
+  makeLink: (targetRequirementId: string) => Promise<void>;
   /** Requirement mutations of the open module (TanStack mutations; invalidate their queries). */
   requirements: {
     copy: (requirementId: string, targetParentId: string | null) => Promise<Requirement>;
@@ -289,6 +311,8 @@ export interface AppState {
   requirements: Requirement[];
   selectedRequirement: Requirement | null;
   clipboard: RequirementClipboard | null;
+  /** The pending two-step link source ("Start link"), of this data folder; null when none. */
+  pendingLink: PendingLinkSource | null;
   views: View[];
   /** The open project's history (git) status, once loaded. */
   gitStatus: GitStatus | null;

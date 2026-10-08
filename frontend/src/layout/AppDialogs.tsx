@@ -97,7 +97,7 @@ function MoveRequirementDialog({
  * requested so it starts fresh every time.
  */
 export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; onClose: () => void }) {
-  const { run } = useAppActions();
+  const { run, state } = useAppActions();
   if (!dialog) return null;
   const manageConnections = () => run('tools.providerConnections');
   switch (dialog.kind) {
@@ -213,7 +213,9 @@ export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; 
       );
     case 'attributeModules':
       return <AttributeModulesModal projectId={dialog.projectId} attribute={dialog.attribute} onClose={onClose} />;
-    case 'dropLink':
+    case 'dropLink': {
+      // Completing a two-step link: drop its pending source once linked.
+      const { pendingSource } = dialog;
       return (
         <DropLinkModal
           projectId={dialog.projectId}
@@ -221,8 +223,10 @@ export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; 
           toId={dialog.toId}
           options={dialog.options}
           onClose={onClose}
+          onLinked={pendingSource ? () => state.commands.cancelLink(pendingSource) : undefined}
         />
       );
+    }
     case 'projectReferences':
       return <ProjectReferencesModal project={dialog.project} onClose={onClose} />;
     case 'lockProject':

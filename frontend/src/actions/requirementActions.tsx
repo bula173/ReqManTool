@@ -13,6 +13,9 @@ import {
   IconGitCommit,
   IconLayoutSidebarRight,
   IconLink,
+  IconLinkFilled,
+  IconLinkOff,
+  IconLinkPlus,
   IconListTree,
   IconPlus,
   IconRowInsertBottom,
@@ -140,6 +143,12 @@ function reorder(ctx: RequirementContext, direction: 'up' | 'down') {
 
 function goTo(ctx: RequirementContext, requirementId: string) {
   ctx.commands.goToRequirement(requirementId).catch((err) => notifyError(err, 'Failed to locate linked requirement'));
+}
+
+/** Whether `requirement` (of the open project) is the pending two-step link source. */
+function isPendingLinkSource(ctx: RequirementContext, requirement: Requirement): boolean {
+  const pending = ctx.pendingLink;
+  return pending !== null && pending.projectId === ctx.projectId && pending.requirementId === requirement.id;
 }
 
 function targetLinks(ctx: RequirementContext) {
@@ -355,6 +364,52 @@ export const requirementActions: Action<'requirement'>[] = [
     },
   },
   {
+    // Two-step linking, step 1: remember the requirement as the pending link
+    // source (every window of this browser sees it). Like dragging a row, it
+    // changes nothing yet, so it is offered in a locked project too.
+    id: 'requirement.startLink',
+    element: 'requirement',
+    label: 'Start link',
+    icon: IconLinkPlus,
+    isAvailable: (ctx) => {
+      const requirement = targetOf(ctx);
+      if (!requirement || !ctx.projectId) return false;
+      return !isPendingLinkSource(ctx, requirement);
+    },
+    run: (ctx) => {
+      const requirement = targetOf(ctx);
+      if (!requirement || !ctx.projectId || !ctx.module) return;
+      ctx.commands.startLink({
+        projectId: ctx.projectId,
+        moduleId: ctx.module.id,
+        requirementId: requirement.id,
+        projectName: ctx.project?.name,
+        moduleName: ctx.module.name,
+      });
+    },
+  },
+  {
+    // Step 2: link the pending source to this requirement, resolved like a
+    // drop (configured direction; several → pick; none → warning). Like a
+    // drop, refused in a locked (target) project.
+    id: 'requirement.makeLink',
+    element: 'requirement',
+    edits: true,
+    label: 'Make link',
+    icon: IconLinkFilled,
+    isSupported: (ctx) => ctx.pendingLink !== null,
+    isAvailable: (ctx) => {
+      const requirement = targetOf(ctx);
+      if (!requirement || !ctx.projectId || !ctx.pendingLink) return false;
+      return !isPendingLinkSource(ctx, requirement);
+    },
+    run: (ctx) => {
+      const requirement = targetOf(ctx);
+      if (!requirement) return;
+      ctx.commands.makeLink(requirement.id).catch((err) => notifyError(err, 'Failed to link requirements'));
+    },
+  },
+  {
     id: 'requirement.delete',
     element: 'requirement',
     edits: true,
@@ -444,5 +499,19 @@ export const requirementActions: Action<'requirement'>[] = [
         label: `${link.direction === 'out' ? '>' : '<'} ${link.otherId} (${link.configName})`,
         run: () => goTo(ctx, link.otherId),
       })),
+  },
+];
+
+/** Application-wide: drop the pending two-step link source (also Esc, outside text fields, menus and dialogs). */
+export const pendingLinkActions: Action<'app'>[] = [
+  {
+    id: 'edit.cancelLink',
+    element: 'app',
+    label: 'Cancel link',
+    icon: IconLinkOff,
+    shortcuts: [{ key: 'Escape' }],
+    isSupported: (ctx) => ctx.pendingLink !== null,
+    isAvailable: (ctx) => ctx.pendingLink !== null,
+    run: (ctx) => ctx.commands.cancelLink(),
   },
 ];

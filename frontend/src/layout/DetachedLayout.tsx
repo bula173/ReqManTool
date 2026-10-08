@@ -5,6 +5,7 @@ import { Outlet } from 'react-router-dom';
 import { AppActionsProvider } from '../actions/AppActionsProvider';
 import { useAppActions } from '../actions/context';
 import { useLiveSync } from '../hooks/useLiveSync';
+import { PendingLinkBar } from './PendingLinkBar';
 
 /** The slim header of a detached window: what is shown, Re-attach, colour scheme. */
 function DetachedHeader() {
@@ -64,6 +65,7 @@ export function DetachedLayout() {
     <AppActionsProvider>
       <div className="reqman-detached">
         <DetachedHeader />
+        <PendingLinkBar />
         <div className="reqman-page">
           <Outlet />
         </div>

@@ -13,6 +13,7 @@ import {
   useGitPull,
   useGitPush,
   useGitStatus,
+  useLinkInProject,
   useModule,
   useModules,
   useModuleTree,
@@ -36,6 +37,7 @@ import {
   type FindRequirementResult,
 } from '../api/queries';
 import { VERIFICATION_COLUMN_STORAGE_KEY } from '../hooks/columnLayout';
+import { resolveAndLink } from '../hooks/useDropLink';
 import { AppDialogs } from '../layout/AppDialogs';
 import { LEFT_PANEL_TAB_STORAGE_KEY, type LeftPanelTab } from '../layout/leftPanel';
 import {
@@ -58,6 +60,7 @@ import {
 import { AppActionsContext, type AppActionsValue } from './context';
 import { ContextMenuHost } from './ContextMenuHost';
 import { splitLinkEnd } from './links';
+import { usePendingLink } from './pendingLink';
 import { contextFor, getAction, isActionAvailable, isSupported, shortcutAction } from './registry';
 import { CONTEXT_MENU_TARGET_ATTRIBUTE, hasTextSelection, isShortcutBlockedTarget } from './shortcuts';
 import type {
@@ -126,6 +129,9 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
   const dataDir = useConfig().data?.data_dir ?? null;
   // Module tabs: remembered per browser and data folder.
   const moduleTabs = useModuleTabs(dataDir);
+  // Two-step linking: the pending link source, shared by every window (per data folder).
+  const pendingLink = usePendingLink(dataDir);
+  const linkInProject = useLinkInProject();
 
   const copyRequirement = useCopyRequirement(projectId ?? '', moduleId ?? '');
   const moveRequirement = useMoveRequirement(projectId ?? '', moduleId ?? '');
@@ -291,6 +297,31 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
         purgeModule.mutateAsync({ projectId: purgeProjectId, moduleId: purgeModuleId }),
       purgeProject: (purgeProjectId) => purgeProject.mutateAsync(purgeProjectId),
       unlockProject: (unlockProjectId) => unlockProject.mutateAsync(unlockProjectId),
+      startLink: (source) => pendingLink.start(source),
+      cancelLink: (only) => pendingLink.cancel(only),
+      makeLink: async (targetRequirementId) => {
+        const source = pendingLink.source;
+        if (!source || !projectId || !moduleId) return;
+        const outcome = await resolveAndLink(
+          {
+            fromProjectId: source.projectId,
+            fromModuleId: source.moduleId,
+            fromId: source.requirementId,
+            toProjectId: projectId,
+            toModuleId: moduleId,
+            toId: targetRequirementId,
+          },
+          {
+            modules: modulesQuery.data ?? [],
+            openDialog: setDialog,
+            createLink: linkInProject.mutateAsync,
+            pendingSource: source,
+          },
+        );
+        // Linked: done. Otherwise (no configuration, already linked, error,
+        // dialog cancelled) the source stays pending for another target.
+        if (outcome === 'linked') pendingLink.cancel(source);
+      },
       requirements: {
         copy: (id, targetParentId) => copyRequirement.mutateAsync({ id, targetParentId }),
         move: (id, parentId, index) => moveRequirement.mutateAsync({ id, parentId, index }),
@@ -384,6 +415,11 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       moduleTabs.add,
       moduleTabs.remove,
       moduleTabs.move,
+      pendingLink.source,
+      pendingLink.start,
+      pendingLink.cancel,
+      modulesQuery.data,
+      linkInProject.mutateAsync,
       moduleKey,
       projectId,
       moduleId,
@@ -435,6 +471,7 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     requirements,
     selectedRequirement,
     clipboard,
+    pendingLink: pendingLink.source,
     views,
     gitStatus: projectId ? (gitStatusQuery.data ?? null) : null,
     lockedProjectIds,
@@ -455,18 +492,22 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
     commands,
   };
 
+  // A data folder switch also drops a pending two-step link (every window).
+  const cancelPendingLink = pendingLink.cancel;
   useEffect(
     () =>
       subscribeDatasetCleared(() => {
         setClipboardEntry(null);
         setSelection({ moduleKey: null, id: null });
+        cancelPendingLink();
       }),
-    [],
+    [cancelPendingLink],
   );
 
   // A removed project (here or by another client): close its module tabs,
-  // drop a clipboard taken from it and leave its pages.
+  // drop a clipboard or pending link source taken from it and leave its pages.
   const removeProjectTabs = moduleTabs.removeProject;
+  const cancelProjectPendingLink = pendingLink.cancelProject;
   const routeProjectRef = useRef(projectId);
   useEffect(() => {
     routeProjectRef.current = projectId;
@@ -476,9 +517,10 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       subscribeProjectRemoved((removedId) => {
         removeProjectTabs(removedId);
         setClipboardEntry((entry) => (entry?.clipboard.projectId === removedId ? null : entry));
+        cancelProjectPendingLink(removedId);
         if (routeProjectRef.current === removedId) navigate('/', { replace: true });
       }),
-    [removeProjectTabs, navigate],
+    [removeProjectTabs, cancelProjectPendingLink, navigate],
   );
 
   // When Shift+F10 / the menu key last opened a menu (see the keydown handler).
@@ -521,6 +563,8 @@ export function AppActionsProvider({ children }: { children: ReactNode }) {
       // With page text selected, Ctrl/Cmd+C/X copy that text as usual.
       const key = event.key.toLowerCase();
       if ((key === 'c' || key === 'x') && hasTextSelection()) return;
+      // Escape belongs to an open menu or dialog (it closes it), wherever focus is.
+      if (key === 'escape' && document.querySelector('[role="menu"], [role="dialog"]')) return;
       const action = shortcutAction(event, stateRef.current);
       if (!action) return;
       event.preventDefault();

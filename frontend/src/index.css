@@ -462,3 +462,11 @@ tr[data-drop-target] > td {
   padding: 6px var(--mantine-spacing-md);
   border-bottom: 1px solid var(--mantine-color-default-border);
 }
+
+/* Pending two-step link ("Start link"): its own row above the page area (see PendingLinkBar). */
+.reqman-pending-link-bar {
+  flex: none;
+  padding: 4px var(--mantine-spacing-md);
+  background: var(--mantine-color-blue-light);
+  border-bottom: 1px solid var(--mantine-color-default-border);
+}
