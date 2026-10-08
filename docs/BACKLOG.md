@@ -127,6 +127,28 @@ item first (phase A), then test, review and fix by area (phase B).
       config/env, never in project data. Server-only code in
       `backend/reqman_server/`.
 
+- [ ] Desktop app for the local edition (no installation hassle).
+      Requested 2026-10-08. One-click installers built by GitHub Actions
+      on each release: macOS `.dmg` (signed + notarised when a certificate
+      is available), Windows `.msi`, Linux AppImage. Bundles the backend
+      (frozen Python, no system Python/npm needed) and the built frontend
+      in a native window (Tauri preferred for size; Electron acceptable),
+      starts the local server on a free localhost port, stops it on exit;
+      first run asks for the data folder (default `~/ReqManData`);
+      auto-update from GitHub Releases; git integration uses the system
+      `git` if present, otherwise history is off with the usual warning.
+      Builds on the distribution package (done) — the pipx install stays.
+- [ ] Docker image for the server edition (self-hosted in a company).
+      Requested 2026-10-08. Official image (multi-arch amd64/arm64,
+      non-root, healthcheck) published by GitHub Actions; `docker compose`
+      example with a persistent volume for the data directory, config via
+      env/secret files (OIDC/LDAP/GitLab settings, licence file), optional
+      reverse proxy with TLS; Helm chart for Kubernetes; one-click deploy
+      templates where practical (Railway, Render, Azure Container Apps);
+      upgrade notes incl. data-format migrations; backup/restore of the
+      data volume documented (project repos can also be mirrored to
+      GitLab via remotes). Depends on the server-edition items.
+
 ### Phase B — tests, review and follow-ups of delivered items
 
 Collected review findings and leftovers of the items in Done; handled
@@ -502,6 +524,13 @@ area by area once phase A is complete.
 
 Feature-scout suggestions and older ideas, ordered roughly by value.
 
+- [ ] Hosted cloud edition (SaaS) — distant option, noted 2026-10-08.
+      Multi-tenant ReqManTool run by the vendor: sign-up and login via
+      GitLab/GitHub/corporate SSO, no installation; projects preferably
+      stay in the customer's own GitLab/GitHub repositories (the service
+      works on clones), tenant isolation, backups, monitoring, billing,
+      GDPR/data-processing agreement and possibly ISO 27001. Only once
+      customers ask for it — rail customers often require self-hosting.
 - [ ] Consistency/quality checks ("req lint"). Declarative rules in
       `project.json`: conditional-required (Safety Related ⇒ SIL, Hazard
       Ref, Verification Method), link counts per link configuration (every
