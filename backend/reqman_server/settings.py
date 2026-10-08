@@ -24,6 +24,7 @@ Example (``config.json``)::
         "module_lock_idle_minutes": 60,
         "require_module_checkout": false,
         "repo_roles": {"enabled": true, "cache_minutes": 5, "grace_minutes": 60},
+        "discovery": {"enabled": true, "cache_minutes": 15, "max_repos": 200},
         "auth_providers": [
           {"id": "gitlab", "type": "gitlab", "name": "GitLab", "url": "https://gitlab.example.com",
            "client_id": "...", "client_secret_env": "REQMAN_GITLAB_SECRET",
@@ -57,6 +58,13 @@ repository permission (cached ``cache_minutes``, last good role kept for
 the ``read_api`` scope. ``git_hosts``: other host names of the provider's
 git remotes (e.g. an ssh host). ``github`` is plain OAuth 2.0 (default
 scopes ``read:user user:email``; see ``github_oauth.py``).
+
+Project discovery (``discovery.py``): with ``discovery.enabled`` (default
+true, needs ``repo_roles``) users logged in through a ``gitlab`` / ``github``
+provider see the ReqManTool projects in their repositories (topic
+``reqmantool``, or a ReqManTool ``project.json`` at the root of the
+``current`` branch); the scan of at most ``max_repos`` repositories (default
+200) is cached per user for ``cache_minutes`` (default 15).
 
 Module edit locks (``module_locks.py``): a lock nobody used for
 ``module_lock_idle_minutes`` (default 60) expires; with
@@ -150,6 +158,10 @@ class ServerSettings:
     repo_roles: bool = True
     repo_roles_ttl_seconds: int = 5 * 60
     repo_roles_grace_seconds: int = 60 * 60
+    # Project discovery in the login provider's repositories (``discovery.py``).
+    discovery: bool = True
+    discovery_ttl_seconds: int = 15 * 60
+    discovery_max_repos: int = 200
 
     @property
     def wants_groups(self) -> bool:
@@ -322,6 +334,18 @@ def load_server_settings(
     repo_roles = _bool(repo_raw.get("enabled"), "server.repo_roles.enabled", True)
     repo_ttl = _positive(repo_raw.get("cache_minutes"), "server.repo_roles.cache_minutes", 5) * 60
     repo_grace = _positive(repo_raw.get("grace_minutes"), "server.repo_roles.grace_minutes", 60) * 60
+    discovery_raw = raw.get("discovery")
+    if discovery_raw is None:
+        discovery_raw = {}
+    elif isinstance(discovery_raw, bool):
+        discovery_raw = {"enabled": discovery_raw}
+    elif not isinstance(discovery_raw, dict):
+        raise ServerConfigError("server.discovery must be an object (or true/false)")
+    discovery = _bool(discovery_raw.get("enabled"), "server.discovery.enabled", True)
+    discovery_ttl = _positive(discovery_raw.get("cache_minutes"), "server.discovery.cache_minutes", 15) * 60
+    max_repos = discovery_raw.get("max_repos", 200)
+    if isinstance(max_repos, bool) or not isinstance(max_repos, int) or not 1 <= max_repos <= 5000:
+        raise ServerConfigError(f"server.discovery.max_repos must be an integer from 1 to 5000, got {max_repos!r}")
     providers = tuple(_parse_provider(item, i, env, repo_roles) for i, item in enumerate(providers_raw))
     if not providers:
         raise ServerConfigError(
@@ -386,4 +410,7 @@ def load_server_settings(
         repo_roles=repo_roles,
         repo_roles_ttl_seconds=int(repo_ttl),
         repo_roles_grace_seconds=int(max(repo_grace, repo_ttl)),
+        discovery=discovery,
+        discovery_ttl_seconds=int(discovery_ttl),
+        discovery_max_repos=max_repos,
     )

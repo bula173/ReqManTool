@@ -18,6 +18,7 @@ import { contextMenuTargetProps } from '../actions/shortcuts';
 import { useProjects } from '../api/queries';
 import { isProjectStub, type Project, type ProjectListEntry, type ProjectStub } from '../api/types';
 import { LEFT_PANEL_TAB_STORAGE_KEY, LEFT_PANEL_TABS, type LeftPanelTab } from '../layout/leftPanel';
+import { DiscoveredProjects } from './DiscoveredProjects';
 import { ModuleOutline } from './ModuleOutline';
 import { ProjectTab } from './ProjectTab';
 import { ancestorIds, buildProjectForest, type ProjectForest } from './projectTree';
@@ -215,7 +216,10 @@ function ProjectNode({
   );
 }
 
-/** The Workspace tab: every project of the data folder, as the subproject tree. */
+/**
+ * The Workspace tab: every project of the data folder, as the subproject tree; in the server
+ * edition also the projects of the user's GitHub/GitLab repositories not opened yet.
+ */
 function WorkspaceTab({
   activeProjectId,
   onPickProject,
@@ -269,6 +273,7 @@ function WorkspaceTab({
             onPickProject={onPickProject}
           />
         ))}
+        <DiscoveredProjects onPickProject={onPickProject} />
       </ScrollArea>
     </Stack>
   );

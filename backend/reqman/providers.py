@@ -69,6 +69,9 @@ MAX_SEARCH_LENGTH = 100
 REPOSITORY_PAGE_SIZE = 50
 # GitHub has no server-side name filter for /user/repos: at most this many pages are scanned.
 GITHUB_SEARCH_PAGES = 5
+# The repository topic that marks a ReqManTool project ("Publish project" sets it; the
+# server edition's discovery lists the repositories carrying it).
+PROJECT_TOPIC = "reqmantool"
 
 _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _CONNECTION_ID_RE = re.compile(r"[^a-z0-9]+")
@@ -397,6 +400,23 @@ class Provider:
     def _json(self, method: str, path: str, body: Any = None, query: dict[str, Any] | None = None) -> Any:
         return self._call(method, path, body, query).data
 
+    def get(self, path: str, query: dict[str, Any] | None = None, accept: str | None = None) -> HttpResponse:
+        """A GET of the provider API (``path`` under the API root), e.g. for the server edition's discovery.
+
+        ``accept`` replaces the ``Accept`` header (GitHub's raw file media type).
+        """
+        url = self.connection.api_url + path
+        if query:
+            url += "?" + urllib.parse.urlencode({k: v for k, v in query.items() if v is not None})
+        headers = self._headers()
+        if accept:
+            headers = {**headers, "Accept": accept}
+        return self.http.request(self.label, "GET", url, headers)
+
+    def add_topic(self, full_path: str, topic: str) -> None:
+        """Tag a repository with ``topic``, keeping its other topics. ``ProviderError`` on failure."""
+        raise NotImplementedError
+
     # The operations every provider offers.
     def current_user(self) -> dict[str, str]:
         raise NotImplementedError
@@ -542,6 +562,7 @@ class GitLabProvider(Provider):
             "visibility": "private" if private else "public",
             "description": description,
             "initialize_with_readme": False,
+            "topics": [PROJECT_TOPIC],
         }
         if namespace_id:
             if not namespace_id.isdigit():
@@ -572,6 +593,12 @@ class GitLabProvider(Provider):
 
     def repository(self, full_path: str) -> dict[str, Any]:
         return self._repository(self._json("GET", f"/projects/{self._project_ref(full_path)}"))
+
+    def add_topic(self, full_path: str, topic: str) -> None:
+        data = self._json("GET", f"/projects/{self._project_ref(full_path)}")
+        topics = [t for t in (data.get("topics") or []) if isinstance(t, str)] if isinstance(data, dict) else []
+        if topic not in topics:
+            self._json("PUT", f"/projects/{self._project_ref(full_path)}", {"topics": [*topics, topic]})
 
     def _merge_request(self, full_path: str, data: dict[str, Any], with_approvals: bool) -> dict[str, Any]:
         state = data.get("state")
@@ -749,6 +776,12 @@ class GitHubProvider(Provider):
         data = self._json("GET", f"/repos/{self._repo_ref(full_path)}")
         return self._repository(data if isinstance(data, dict) else {})
 
+    def add_topic(self, full_path: str, topic: str) -> None:
+        data = self._json("GET", f"/repos/{self._repo_ref(full_path)}/topics")
+        names = [t for t in (data.get("names") or []) if isinstance(t, str)] if isinstance(data, dict) else []
+        if topic not in names:
+            self._json("PUT", f"/repos/{self._repo_ref(full_path)}/topics", {"names": [*names, topic]})
+
     def repository_permission(self, full_path: str, user_id: str | None = None) -> str | None:
         try:
             data = self._json("GET", f"/repos/{self._repo_ref(full_path)}")
@@ -892,6 +925,26 @@ def normalize_connection_url(provider: str, url: str | None) -> str:
     if ":" in host:
         netloc = f"[{host}]" if parsed.port is None else f"[{host}]:{parsed.port}"
     return f"{parsed.scheme}://{netloc}{path}"
+
+
+def git_auth_config(provider: str, web_url: str, token: str) -> dict[str, str]:
+    """The environment that makes one git process authenticate to ``web_url`` with ``token``.
+
+    ``GIT_CONFIG_COUNT``/``GIT_CONFIG_KEY_<n>``/``GIT_CONFIG_VALUE_<n>``:
+    ``http.<web_url>/.extraHeader`` (a Basic authorization header, scoped
+    by git to URLs under ``web_url``) and ``followRedirects=false``. Never on
+    a command line, in ``.git/config`` or in a remote URL.
+    """
+    user = "oauth2" if provider == GITLAB else "x-access-token"
+    credentials = base64.b64encode(f"{user}:{token}".encode("utf-8")).decode("ascii")
+    scope = web_url.rstrip("/") + "/"
+    return {
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": f"http.{scope}.extraHeader",
+        "GIT_CONFIG_VALUE_0": f"Authorization: Basic {credentials}",
+        "GIT_CONFIG_KEY_1": f"http.{scope}.followRedirects",
+        "GIT_CONFIG_VALUE_1": "false",
+    }
 
 
 # --- the service ---------------------------------------------------------------------------
@@ -1120,16 +1173,7 @@ class ProviderService:
             token = self.token(connection.id)
             if not token:
                 return None
-            user = "oauth2" if connection.provider == GITLAB else "x-access-token"
-            credentials = base64.b64encode(f"{user}:{token}".encode("utf-8")).decode("ascii")
-            scope = connection.url + "/"
-            return {
-                "GIT_CONFIG_COUNT": "2",
-                "GIT_CONFIG_KEY_0": f"http.{scope}.extraHeader",
-                "GIT_CONFIG_VALUE_0": f"Authorization: Basic {credentials}",
-                "GIT_CONFIG_KEY_1": f"http.{scope}.followRedirects",
-                "GIT_CONFIG_VALUE_1": "false",
-            }
+            return git_auth_config(connection.provider, connection.url, token)
         except Exception as exc:  # noqa: BLE001 - git falls back to the user's own credentials
             logger.warning("No provider credentials for a git remote: %s", type(exc).__name__)
             return None

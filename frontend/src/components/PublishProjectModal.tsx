@@ -55,6 +55,7 @@ export function PublishProjectModal({
             message: `Published to ${result.repository.web_url ?? result.repository.full_path}`,
             color: 'green',
           });
+          if (result.topic_error) notifications.show({ message: result.topic_error, color: 'yellow' });
           onClose();
         },
       },

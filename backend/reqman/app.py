@@ -133,6 +133,9 @@ else:
             project_remote_url=lambda project_id: service.history.remote_url(service.store.project_path(project_id))
             if service.store.project_exists(project_id)
             else None,
+            open_repository=lambda clone_url, is_same, auth: service.open_repository_project(
+                clone_url, is_same, auth
+            ),
         ),
     )
     logger.info("Server edition: %s", SERVER_EDITION.name)

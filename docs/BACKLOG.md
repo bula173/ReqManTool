@@ -84,25 +84,22 @@ item first (phase A), then test, review and fix by area (phase B).
 
 ### Next — requested, in delivery order
 
-- [ ] Server edition: discover projects in the logged-in user's GitHub /
-      GitLab repositories, no separate "connection" needed. Requested
-      2026-10-08. When a user is logged in through a `github` or `gitlab`
-      provider, the server uses that login's OAuth token (never a stored
-      personal access token) to list the repositories the user can access
-      that contain a ReqManTool project: repositories tagged with the
-      topic `reqmantool` (set automatically by "Publish project"), plus a
-      background scan of `project.json` with a ReqManTool `format_version`
-      at the repository root (results cached per user, refresh button).
-      Workspace tab shows them as "Available on GitHub/GitLab" with
-      "Open": the server clones the repository into its data directory
-      (once, shared by all users; later opens just fetch) and lists it as
-      a project; access follows the repository-permission roles. Scopes:
-      GitHub OAuth Apps can only read private repositories with the broad
-      `repo` scope — prefer a GitHub App (fine-grained, per-repository
-      install) for the server edition, document both; GitLab needs
-      `read_api` (already requested for repository roles). The local
-      edition keeps provider connections (keychain tokens). REST + WS
-      parity; provider errors shown verbatim.
+- [ ] Server edition: project discovery through a GitHub App (slice 2).
+      Requested 2026-10-08; slice 1 (GitHub OAuth App + GitLab: topic
+      `reqmantool` + `project.json` scan, "Available on GitHub/GitLab" in
+      the Workspace tab, shared clone on "Open") is done, see DONE.md. A
+      GitHub OAuth App reads private repositories only with the broad
+      `repo` scope; add a `github-app` provider type (or a `github_app`
+      flag on `github`) for a GitHub App: fine-grained repository
+      permissions (Metadata + Contents read), installed per organisation /
+      repository, expiring user-to-server tokens with refresh (already
+      handled by `repo_access`). Discovery then lists the repositories of
+      the app's installations the user can access (`GET
+      /user/installations`, `GET /user/installations/{id}/repositories`)
+      instead of `/user/repos`, and the clone authenticates with the user
+      token as today. Document the GitHub App setup (permissions, install,
+      callback, "Request user authorization during installation") next to
+      the OAuth App in SERVER_SETUP.md. REST + WS parity unchanged.
 - [ ] Server edition: more identity providers and group-based roles.
       Requested 2026-10-08 (after the repository-permission item). Login
       providers, all pluggable through the existing server auth extension

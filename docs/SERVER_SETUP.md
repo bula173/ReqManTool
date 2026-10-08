@@ -48,6 +48,21 @@ The **callback URL** you register with each provider is always:
 The scopes are `read:user user:email`, the default. ReqManTool requests
 them; you set nothing on GitHub.
 
+**Private repositories.** A GitHub OAuth App can read a user's *private*
+repositories (their permission on them, project discovery, cloning) only
+with the broad `repo` scope, which also grants write access to them. Add it
+to the provider's `scopes` if your projects live in private repositories:
+
+```json
+{"id": "github", "type": "github", "url": "https://github.com", "client_id": "...",
+ "scopes": ["read:user", "user:email", "repo"]}
+```
+
+Users are asked to consent again at their next login. ReqManTool only reads
+and clones with a user's login token; it never pushes with it. A GitHub App
+(fine-grained, installed per repository) is planned as the narrower
+alternative; see `docs/BACKLOG.md`.
+
 ## 3. GitLab (gitlab.com or self-hosted)
 
 1. Create the application:
@@ -59,7 +74,8 @@ them; you set nothing on GitHub.
    - **Confidential:** yes
    - **Scopes:** `openid`, `profile`, `email` and **`read_api`**.
      `read_api` lets ReqManTool read each user's permission on a project's
-     repository and turn it into their role.
+     repository and turn it into their role, find the ReqManTool projects in
+     their repositories (project discovery) and clone them.
 3. Save, then copy the **Application ID** (this is the client ID) and the
    **Secret**. Store the secret as `REQMAN_AUTH_GITLAB_CLIENT_SECRET`.
 
@@ -152,11 +168,47 @@ project-admin.
 - **Other projects:** roles come from memberships assigned on the admin
   pages, or from `group_roles` rules (IdP group → role).
 
-## 8. Checklist
+## 8. Projects in your users' GitHub / GitLab repositories (discovery)
+
+Users who log in with GitHub or GitLab see, in the **Workspace** tab, a
+section "Available on GitHub" (or GitLab) listing the ReqManTool projects
+in the repositories they can access, and open one with **Open**. No
+provider connection or personal access token is needed: the server uses
+the user's login token, server-side only. The token never reaches the
+browser, a log, the repository's configuration or a remote URL.
+
+- **What is found.** Repositories tagged with the topic `reqmantool`
+  ("Publish project" adds it), and repositories whose `project.json` at the
+  root of the `current` branch is a ReqManTool project (a background scan).
+  GitHub: the user's own, collaborator and organisation repositories.
+  GitLab: the projects the user is a member of.
+- **Opening** clones the repository once into the server's data folder,
+  shared by every user. Opening it again later fetches and fast-forwards
+  it. Opening needs at least GitHub Read / GitLab Guest on the repository.
+  What a user may do in the opened project follows their repository
+  permission (section 7), so discovery needs `repo_roles` enabled (the
+  default).
+- **Scopes.** GitLab: `read_api` (section 3). GitHub OAuth App: private
+  repositories need the `repo` scope (section 2); without it only public
+  repositories are found and cloned.
+- **Settings** (`server.discovery`, all optional):
+
+  ```json
+  "discovery": {"enabled": true, "cache_minutes": 15, "max_repos": 200}
+  ```
+
+  The scan is cached per user for `cache_minutes`; the refresh button scans
+  again. At most `max_repos` repositories are looked at per scan, to stay
+  within the providers' API rate limits; the list says when some were left
+  out. Provider errors (for example a rate limit) are shown as the
+  provider words them.
+
+## 9. Checklist
 
 - [ ] OAuth application created; callback URL is exactly `<base_url>/auth/callback/<id>`.
 - [ ] Client ID in `config.json`; client secret only in the environment.
 - [ ] `base_url` is the address users actually open; `cookie_secure: true` behind https.
 - [ ] At least one email in `admins`.
 - [ ] `/edition` shows the provider, and `/projects` returns 401 before login.
-- [ ] For GitLab repository roles: the `read_api` scope is granted.
+- [ ] For GitLab repository roles and discovery: the `read_api` scope is granted.
+- [ ] For private GitHub repositories (OAuth App): `repo` added to the provider's `scopes`.

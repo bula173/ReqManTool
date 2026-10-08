@@ -329,6 +329,9 @@ class EditionContext:
     project_ids: Callable[[], list[str]] | None = None
     # The URL of a project's git remote (``None``: no remote, no repository, or no such project).
     project_remote_url: Callable[[str], str | None] | None = None
+    # Open a repository as a project (``ProjectService.open_repository_project``: clone once,
+    # later fetch): ``(clone URL, is-same-repository(remote URL), git auth(url))`` -> result.
+    open_repository: Callable[..., dict[str, Any]] | None = None
 
 
 class ServerEdition(Protocol):

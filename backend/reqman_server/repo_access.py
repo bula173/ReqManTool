@@ -392,6 +392,10 @@ class RepoAccess:
             )
         return GitHubProvider(connection, token, self.http, oauth=True).repository_permission(binding.path)
 
+    def refresh_token(self, key: str, used_token: str) -> str:
+        """A fresh access token for the session ``key`` (also used by ``discovery.py``)."""
+        return self._refresh(key, used_token)
+
     def _refresh(self, key: str, used_token: str) -> str:
         """A fresh access token for the session ``key`` (``OidcError`` when the provider refuses)."""
         with self._refresh_lock:

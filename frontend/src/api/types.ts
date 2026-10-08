@@ -1052,6 +1052,8 @@ export interface PublishProjectResult {
   repository: ProviderRepository;
   pushed: string[];
   status: GitStatus;
+  /** GitHub: the `reqmantool` topic could not be added (publishing itself succeeded). */
+  topic_error?: string;
 }
 
 /** GET /projects/{id}/git/provider: the connection the project's remote belongs to. */
@@ -1301,4 +1303,61 @@ export interface ModuleLockResult {
   lock: ModuleLock | null;
   released?: boolean;
   previous_owner?: string | null;
+}
+
+// --- project discovery (server edition) --------------------------------------------
+
+/** A repository of the logged-in user's GitHub/GitLab login that holds a ReqManTool project. */
+export interface DiscoveredRepository {
+  provider_id: string;
+  provider_type: 'github' | 'gitlab';
+  provider_name: string;
+  /** `owner/name` (GitLab: `group/subgroup/name`). */
+  full_name: string;
+  web_url: string | null;
+  clone_url: string | null;
+  default_branch: string | null;
+  private: boolean;
+  /** Tagged with the `reqmantool` topic. */
+  topic: boolean;
+  /** From the repository's project.json (branch `current`), when it could be read. */
+  project_id: string | null;
+  project_name: string | null;
+  /** Why a tagged repository cannot be opened (no or no valid project.json), else null. */
+  project_error: string | null;
+  /** Already cloned into the server's data folder (as `opened_project_id`). */
+  already_opened: boolean;
+  opened_project_id: string | null;
+}
+
+/** GET /discovery/projects, POST /discovery/refresh. */
+export type DiscoveryList =
+  | { enabled: false; reason: string }
+  | {
+      enabled: true;
+      provider: { id: string; type: 'github' | 'gitlab'; name: string };
+      /** `scanning` while a background scan runs (the previous list is shown meanwhile). */
+      status: 'idle' | 'scanning';
+      /** Unix time (seconds) of the last finished scan, or null. */
+      scanned_at: number | null;
+      /** The provider's error of the last scan, verbatim. */
+      error: string | null;
+      warnings: string[];
+      /** More repositories than `max_repos` exist (or the scan stopped early): not all were looked at. */
+      truncated: boolean;
+      max_repos: number;
+      repositories: DiscoveredRepository[];
+    };
+
+/** POST /discovery/open. */
+export interface DiscoveryOpenResult {
+  project_id: string;
+  /** Cloned now (false: it was already there and was fetched). */
+  cloned: boolean;
+  updated: boolean;
+  notes: string[];
+  provider_id: string;
+  repository: string;
+  permission: string;
+  role: ProjectRole;
 }

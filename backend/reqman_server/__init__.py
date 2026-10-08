@@ -40,6 +40,11 @@ repository permission maps to; the user's OAuth token stays in the session.
 New role ``reviewer`` (status sign-off); the requirement status guards
 themselves are core rules (``reqman.service``) asked through the
 permission guard (``project.review``, ``project.approve``).
+
+Project discovery (``discovery.py``): users logged in through GitLab /
+GitHub see the ReqManTool projects in their repositories and open them
+(the server clones them once into its data directory); REST routes and
+WebSocket methods (``discovery.*``).
 """
 
 from __future__ import annotations
@@ -50,6 +55,7 @@ from typing import Any
 from reqman.extensions import EditionContext
 
 from .admin import AdminService, build_admin_router, build_rpc_methods
+from .discovery import DiscoveryService, build_discovery_router, build_discovery_rpc_methods
 from .github_oauth import GitHubOAuthClient
 from .audit import AuditLog, AuditService, build_audit_router, build_audit_rpc_methods
 from .memberships import MembershipRegistry
@@ -85,6 +91,7 @@ class ServerEditionImpl:
         self.locks: ModuleLocks | None = None
         self.audit: AuditLog | None = None
         self.repo: RepoAccess | None = None
+        self.discovery: DiscoveryService | None = None
 
     def install(self, app, context: EditionContext) -> None:
         settings = load_server_settings(
@@ -130,6 +137,11 @@ class ServerEditionImpl:
         app.include_router(build_admin_router(admin, context.broadcast))
         app.include_router(build_audit_router(audit_service))
         app.include_router(build_lock_router(locks, context.broadcast))
+        discovery = DiscoveryService(
+            settings, sessions, permissions, repo, context.project_ids, context.project_remote_url,
+            context.open_repository,
+        )
+        app.include_router(build_discovery_router(discovery, context.broadcast))
         # The core asks these at its choke points (ProjectService) and in its WebSocket dispatcher.
         context.hooks.permission_guard = guard
         context.hooks.lock_service = locks
@@ -138,6 +150,7 @@ class ServerEditionImpl:
         context.hooks.rpc_methods.update(build_rpc_methods(admin, context.broadcast))
         context.hooks.rpc_methods.update(build_lock_rpc_methods(locks, context.broadcast))
         context.hooks.rpc_methods.update(build_audit_rpc_methods(audit_service))
+        context.hooks.rpc_methods.update(build_discovery_rpc_methods(discovery, context.broadcast))
         app.add_middleware(
             AuthMiddleware, settings=settings, sessions=sessions, users=users, frontend_dir=context.frontend_dir
         )
@@ -145,6 +158,7 @@ class ServerEditionImpl:
         self.locks = locks
         self.audit = audit
         self.repo = repo_roles
+        self.discovery = discovery
         if not settings.cookie_secure:
             logger.warning("Server edition: the session cookie is not marked Secure (cookie_secure: false)")
         logger.info(

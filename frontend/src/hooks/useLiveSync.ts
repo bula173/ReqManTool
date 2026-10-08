@@ -1,6 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import { invalidatePermissions } from '../api/auth';
+import { invalidateDiscovery } from '../api/discovery';
 import { invalidateModuleLocks } from '../api/moduleLocks';
 import { WS_URL, notifyUnauthorized } from '../api/client';
 import { clearDatasetCache, handleProjectRemoved, invalidateCrossProject, queryKeys } from '../api/queries';
@@ -69,7 +70,8 @@ type LiveSyncEvent =
  * {"event":"permissions_changed"} (server edition) refetches the user's roles,
  * the admin pages and every project query (projects may appear or disappear,
  * or become read-only). {"event":"module_locks_changed","project_id":...}
- * (server edition) refetches the project's module edit locks.
+ * (server edition) refetches the project's module edit locks, and a `changed` event also refetches
+ * the discovered GitHub/GitLab repositories (their "already opened" flag).
  *
  * On a reconnect (usually a backend restart, possibly as a different
  * version) the footer's version query is refetched; on the first connect it
@@ -119,6 +121,8 @@ export function useLiveSync(): void {
             });
             // References and incoming cross-project links of every project may depend on it.
             invalidateCrossProject(qc);
+            // Server edition: a discovered repository may have been opened as this project.
+            invalidateDiscovery(qc);
           } else if (data.event === 'root_changed') {
             clearDatasetCache(qc);
           } else if (data.event === 'templates_changed') {

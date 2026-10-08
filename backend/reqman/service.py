@@ -54,6 +54,7 @@ edition: ``NoLocks``, a type test.
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import hashlib
 import inspect
@@ -65,7 +66,7 @@ import threading
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from .csv_import import ID_COLUMN, LINK_COLUMN_PREFIX, PARENT_COLUMN, RESERVED_COLUMNS
 from .extensions import (
@@ -102,10 +103,11 @@ from .git_repo import (
     GitHistory,
     RepoConflict,
     local_remote_path,
+    remote_auth_scope,
     validate_baseline_name,
 )
 from .history import FileChange, build_snapshot, compare_snapshots, describe_changes
-from .providers import PROVIDER_LABELS, ProviderService
+from .providers import GITHUB, PROJECT_TOPIC, PROVIDER_LABELS, ProviderError, ProviderService
 from . import module_tree, richtext
 from .models import (
     DEFAULT_MODULE_TYPE,
@@ -969,8 +971,53 @@ class ProjectService:
         check_permission(ACTION_GIT_REMOTE_URL)
         return self._clone_project(url)
 
-    def _clone_project(self, url: str) -> Project:
-        """``add_project_from_remote`` after its permission checks; tells ``project_events``."""
+    def open_repository_project(
+        self,
+        clone_url: str,
+        is_same_repository: Callable[[str], bool],
+        auth: Callable[[str], Mapping[str, str] | None] | None = None,
+    ) -> dict[str, Any]:
+        """Server edition (discovery): open a repository as a project, cloning it once.
+
+        The edition authorizes the caller against the repository itself (their
+        repository permission) before calling this; no ``project.create``
+        permission is asked and the opener is not made a member: the access
+        to the opened project follows the repository permission. A project
+        whose remote ``is_same_repository`` is fetched and fast-forwarded
+        instead (a diverged or paused repository is left as it is, with a
+        note). ``auth(url)``: the git environment that authenticates the
+        clone/fetch (the user's token, one git process at a time).
+        Returns ``{"project_id", "cloned", "updated", "notes"}``.
+        """
+        def scope() -> contextlib.AbstractContextManager[None]:
+            return remote_auth_scope(auth) if auth is not None else contextlib.nullcontext()
+
+        for project_id in self.store.list_project_ids():
+            try:
+                remote = self.history.remote_url(self.store.project_path(project_id))
+            except Exception:  # noqa: BLE001 - an unreadable repository is not the one asked for
+                remote = None
+            if not remote or not is_same_repository(remote):
+                continue
+            notes: list[str] = []
+            updated = False
+            try:
+                with scope():
+                    pulled = self._git_remote_call(
+                        lambda: self.history.pull(self.store.project_path(project_id), self._describer(project_id))
+                    )
+                updated = bool(pulled.get("updated"))
+                notes += pulled.get("notes") or []
+            except ValueError as exc:
+                notes.append(f"The project was opened as it is; fetching the repository failed: {exc}")
+            return {"project_id": project_id, "cloned": False, "updated": updated, "notes": notes}
+        with scope():
+            project = self._clone_project(clone_url, notify=False)
+        audit(AUDIT_PROJECT_CREATE, project.id, source="repository")
+        return {"project_id": project.id, "cloned": True, "updated": False, "notes": []}
+
+    def _clone_project(self, url: str, notify: bool = True) -> Project:
+        """``add_project_from_remote`` after its permission checks; tells ``project_events`` (``notify``)."""
         cleaned = (url or "").strip()
         self._refuse_remote_in_data_dir(cleaned)
         with self.store.staging_store() as staging:
@@ -991,7 +1038,8 @@ class ProjectService:
                     f"A project '{project_id}' already exists in this data directory: {exc}"
                 ) from exc
         project = self.store.load_project(project_id)
-        self._project_created(project_id)
+        if notify:
+            self._project_created(project_id)
         return project
 
     # --- permissions (server edition; see the module docstring) --------------------
@@ -1114,6 +1162,16 @@ class ProjectService:
         repo_description = (project.description if description is None else description).strip()[:250]
         provider = self.providers.provider(connection_id)
         repository = provider.create_repository(namespace_id or "", repo_name.strip(), private, repo_description)
+        # The ``reqmantool`` topic marks the repository as a ReqManTool project (the server
+        # edition's discovery lists it). GitLab takes it with the creation; GitHub needs a
+        # second call, whose failure does not stop publishing.
+        topic_error = None
+        if provider.kind == GITHUB and repository.get("full_path"):
+            try:
+                provider.add_topic(repository["full_path"], PROJECT_TOPIC)
+            except (ProviderError, NotImplementedError) as exc:
+                topic_error = f"The topic '{PROJECT_TOPIC}' could not be added: {exc}"
+                logger.warning("Publish project %s: %s", project_id, topic_error)
         clone_url = repository.get("clone_url")
         try:
             if not clone_url:
@@ -1128,7 +1186,10 @@ class ProjectService:
             )
             failure.project_changed = True  # type: ignore[attr-defined]
             raise failure from exc
-        return {"repository": repository, "pushed": pushed["pushed"], "status": self.history.status(project_dir)}
+        result = {"repository": repository, "pushed": pushed["pushed"], "status": self.history.status(project_dir)}
+        if topic_error:
+            result["topic_error"] = topic_error
+        return result
 
     def add_project_from_provider(self, connection_id: str, full_path: Any) -> Project:
         """"Add project from GitLab/GitHub": clone a repository picked from the provider's list.

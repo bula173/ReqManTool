@@ -79,10 +79,12 @@ import threading
 import time
 import uuid
 import urllib.parse
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 from .extensions import current_identity
 from .history import FileChange, Revision, commit_message, requirement_history, session_of, user_of
@@ -530,6 +532,30 @@ class _Head:
     body: str
 
 
+# Remote authentication for the git processes started inside ``remote_auth_scope``
+# (replaces ``GitHistory.remote_auth`` there); ``None`` outside one.
+_scoped_remote_auth: ContextVar[Callable[[str], Mapping[str, str] | None] | None] = ContextVar(
+    "reqman_scoped_remote_auth", default=None
+)
+
+
+@contextmanager
+def remote_auth_scope(auth: Callable[[str], Mapping[str, str] | None]) -> Iterator[None]:
+    """Authenticate the remote operations run inside the ``with`` block with ``auth``.
+
+    The server edition clones a repository with the logged-in user's OAuth
+    token this way: ``auth(url)`` returns the environment of each git
+    process (``GIT_CONFIG_*``, like ``providers.ProviderService.git_auth_env``),
+    so the token never reaches a command line, ``.git/config`` or the remote
+    URL, and only the git processes of this block see it.
+    """
+    token = _scoped_remote_auth.set(auth)
+    try:
+        yield
+    finally:
+        _scoped_remote_auth.reset(token)
+
+
 def _clean_env(extra: Mapping[str, str] | None = None, read_only: bool = False) -> dict[str, str]:
     env = {
         k: v
@@ -795,9 +821,11 @@ class GitHistory:
         never on its command line, in ``.git/config`` or in the remote URL.
         """
         env = dict(_REMOTE_ENV)
-        if url and self.remote_auth is not None:
+        scoped = _scoped_remote_auth.get()
+        auth = scoped if scoped is not None else self.remote_auth
+        if url and auth is not None:
             try:
-                extra = self.remote_auth(url)
+                extra = auth(url)
             except Exception:  # noqa: BLE001 - git then uses the user's own credentials
                 extra = None
             if extra:

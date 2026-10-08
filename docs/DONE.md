@@ -1686,3 +1686,37 @@ Newest entries are appended at the end.
       `ProjectPage`. Not covered: tests;
       follow-ups in the backlog ("Repository-permission roles:
       follow-ups").
+- [x] **Server edition: discover projects in the logged-in user's GitHub /
+      GitLab repositories, slice 1 (GitHub OAuth App + GitLab)**
+      (2026-10-08). Users logged in through a `github` / `gitlab` provider
+      see "Available on GitHub/GitLab" in the Workspace tab: repositories
+      they can access tagged with the topic `reqmantool`, plus repositories
+      whose root `project.json` on the `current` branch parses as a
+      ReqManTool project (background scan per user, cached
+      `server.discovery.cache_minutes` (15), at most `max_repos` (200)
+      repositories, refresh button, provider errors verbatim). "Open" has
+      the server clone the repository once into its data directory
+      (shared; a later open fetches and fast-forwards), authenticated with
+      the user's OAuth token for those git processes only
+      (`git_repo.remote_auth_scope`, `GIT_CONFIG_*` environment; never in
+      the repository configuration, the remote URL, a log or a response).
+      Opening needs at least GitHub Read / GitLab Guest; the opener is not
+      made a member, access follows the repository-permission roles (so
+      discovery needs `server.repo_roles`). "Publish project" tags the new
+      repository `reqmantool` (GitLab on creation, GitHub with a second
+      call; a failure is reported as `topic_error`, publishing still
+      succeeds). API: `GET /discovery/projects`, `POST
+      /discovery/refresh`, `POST /discovery/open {provider, repo}`, WS
+      `discovery.list` / `discovery.refresh` / `discovery.open`, broadcast
+      `changed` on open. Core: `ProjectService.open_repository_project`,
+      `EditionContext.open_repository`, `providers.git_auth_config`,
+      `Provider.get` / `add_topic`, `PROJECT_TOPIC`. Backend:
+      `backend/reqman_server/discovery.py` (new), `settings.py`,
+      `repo_access.py`, `__init__.py`; `backend/reqman/{service.py,
+      git_repo.py, providers.py, extensions.py, app.py}`. UI:
+      `DiscoveredProjects.tsx` in the Workspace tab, `api/discovery.ts`,
+      live-sync refetch on `changed`. Docs: SERVER_SETUP.md section 8
+      (GitHub `repo` scope for private repositories, GitLab `read_api`).
+      Tests: `backend/tests/test_server_discovery.py` (smoke; provider HTTP
+      mocked, local bare repository as the remote). Left over: GitHub App
+      provider type (backlog).
