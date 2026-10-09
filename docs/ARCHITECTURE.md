@@ -343,15 +343,18 @@ in the Project tab of the sidebar, the module tab bar and the project page.
 
 ### Reports
 
-Three read-only reports are computed by `ProjectService` (`service.py`,
+Four read-only reports are computed by `ProjectService` (`service.py`,
 "reports" section) from the stored modules, requirements and link pairs.
 They write nothing and broadcast nothing; REST and WebSocket return the same
 JSON (errors: unknown project/module/configuration 404 / -32001, anything
 else invalid 400 / -32602). The UI shows them as pages (`pages/
-TraceabilityPage.tsx`, `VerificationReportPage.tsx`, `ExecutionReportPage.tsx`)
-reached from the Reports menu of the menu bar and the sidebar's project /
-module context menus (actions `report.traceability`,
-`module.verificationReport`, `module.executionReport`). Their routes use
+TraceabilityPage.tsx`, `VerificationReportPage.tsx`, `ExecutionReportPage.tsx`,
+`ImpactAnalysisPage.tsx`) reached from the Reports menu of the menu bar and
+the sidebar's project / module context menus (actions `report.traceability`,
+`module.verificationReport`, `module.executionReport`, `report.impact`; the
+impact analysis is also in the requirement navigation and context menus as
+`requirement.impactAnalysis`, which seeds it with that requirement). Their
+routes use
 `:reportModuleId`, not `:moduleId`, so opening a report does not open the
 module or add a tab. The queries live under `['projects', id, 'reports',
 …]`, so a live-sync `changed` event refetches an open report.
@@ -361,6 +364,7 @@ module or add a tab. The queries live under `['projects', id, 'reports',
 | Traceability matrix | `GET /projects/{id}/reports/traceability?config=a&config=b` | `report.traceability {project_id, config_ids}` | `…/traceability/export/{csv,xlsx}?config=…` |
 | Verification report | `GET /projects/{id}/modules/{m}/reports/verification` | `report.verification {project_id, module_id}` | `…/verification/export/{docx,xlsx}` |
 | Test execution report | `GET /projects/{id}/modules/{m}/reports/execution` | `report.execution {project_id, module_id}` | `…/execution/export/{docx,xlsx}` |
+| Impact analysis | `GET /projects/{id}/reports/impact?requirement=r&requirement=s&depth=3&direction=both` | `report.impact {project_id, requirement_ids, depth, direction}` | `…/impact/export/{csv,xlsx,docx}?requirement=…&depth=…&direction=…` |
 
 Exports are REST downloads only, like the project exports; they are written
 by `reqman/report_export.py` (duck-typed over the report dictionaries, like
@@ -385,8 +389,12 @@ requirements CSV).
   Run By), version (Build/SW Version Under Test, Version Under Test, …, Build,
   Version; else the first name containing the word "version" or "build"),
   evidence (Evidence/Log Ref, Evidence, Evidence Ref, Log Ref, Log; else a name
-  containing "evidence"). The verification and execution reports return which
-  attribute they used per role (`attributes`), and the pages show it.
+  containing "evidence"), SIL (sil, Safety Integrity Level, Integrity Level;
+  `silk`) and Safety Related (Safety Related, Safety Relevance;
+  `safety_related`). The verification and execution reports return which
+  attribute they used per role (`attributes`), and the pages show it; the
+  impact analysis returns it for SIL and Safety Related per module
+  (`modules`).
 - **Result values** are compared the same way (`REPORT_RESULT_WORDS`):
   Passed/Pass/OK/Success → passed, Failed/Fail/Failure/NOK/Error → failed,
   Blocked → blocked, Not Applicable/N/A → not_applicable; anything else,
@@ -444,6 +452,37 @@ of `requirements` modules linked to the test case); records linked to no test
 case; the distinct builds/versions and executors over all records and the
 first/last execution date of the executed ones. DOCX and XLSX (Summary, Test
 cases, Failed and blocked, Records).
+
+**Impact analysis** (`impact_analysis`, project scope): the starting
+requirements (`requirement_ids`, at least one and at most
+`MAX_IMPACT_SEEDS` = 100, duplicates collapsed, unknown → 404, an object
+the reports leave out → 400) are walked outwards over the link pairs for
+`depth` (1..`MAX_IMPACT_DEPTH` = 10, default 3) steps in `direction`
+(`upstream | downstream | both`, default `both`). A link pair's target is
+upstream of its source (a SwRS derives from a SyRS, a test case verifies a
+requirement), so upstream follows the edge to the target and downstream to
+the source; like the traceability matrix only the project's own link
+configurations count (cross-project ones are left out) and only links
+between reportable objects — headings, information and definitions are
+neither walked nor listed. One breadth-first walk per direction, so every
+reached requirement has its shortest distance and the chain reached by
+(`via` = the previous step, `path` = the ids from the seed on); the seeds
+are pre-visited, so nothing is ever walked back to (`distance >= 1`).
+Each result lists the requirement (`id`, `module_id`, `text`, `level`),
+its `direction`, `distance`, `via`, `path`, its `sil` and `safety_related`
+values (found by role per module, `null` when the module has no such
+attribute) and the `tests` linked to it (reportable objects of
+`test_cases` modules linked to it, any configuration either way, as
+`{id, module_id, text}`); `seeds` describes the starting requirements the
+same way, `summary` counts them (`seeds`, `reached`, `upstream`,
+`downstream`, `max_distance`), `modules` lists the modules touched with
+the attributes used, and `data_source` marks a baseline. Results are
+ordered by direction (upstream first), then distance, then module/tree
+order. Computed from the current data, never stored. Exports: CSV (one
+sheet of rows), XLSX (Summary + Requirements) and DOCX (summary, starting
+requirements, affected-requirement table) — each row ends with an empty
+**Change reference** column for the EN 50128 §6.6 change record, and the
+DOCX repeats the note to fill it in per requirement.
 
 ### Test result import
 

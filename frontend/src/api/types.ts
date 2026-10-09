@@ -866,6 +866,54 @@ export interface TraceabilityReport {
   unverified: { module_id: string; test_module_id: string; total: number; ids: string[] }[];
 }
 
+export type ImpactDirection = 'upstream' | 'downstream' | 'both';
+
+/** The starting requirements and each reached one: their SIL / Safety Related value and test cases. */
+export interface ImpactEntry {
+  id: string;
+  module_id: string;
+  /** Plain text of ObjectText, whitespace collapsed. */
+  text: string;
+  /** Nesting depth in its module (0: top level). */
+  level: number;
+  /** The stored value of the module's SIL attribute, or null when there is none. */
+  sil: unknown;
+  /** The stored value of the module's Safety Related attribute, or null when there is none. */
+  safety_related: unknown;
+  /** The reportable test cases linked to this requirement. */
+  tests: { id: string; module_id: string; text: string }[];
+}
+
+/** A reached requirement: how far from a starting one, along which chain. */
+export interface ImpactRow extends ImpactEntry {
+  direction: 'upstream' | 'downstream';
+  /** Number of links from the starting requirement (always ≥ 1: a walk never reaches a start). */
+  distance: number;
+  /** The previous step of `path`. */
+  via: string;
+  /** The chain from a starting requirement to this one, inclusive. */
+  path: string[];
+}
+
+/** A module the analysis touches, with the attributes playing the two roles in it. */
+export interface ImpactModule extends ReportModule {
+  sil_attribute: { id: string; name: string } | null;
+  safety_related_attribute: { id: string; name: string } | null;
+}
+
+/** GET /projects/{id}/reports/impact?requirement=… (WS `report.impact`). Computed, never stored. */
+export interface ImpactReport {
+  project_id: string;
+  direction: ImpactDirection;
+  depth: number;
+  seeds: ImpactEntry[];
+  results: ImpactRow[];
+  summary: { seeds: number; reached: number; upstream: number; downstream: number; max_distance: number };
+  /** Only the modules with a starting or reached requirement, in display order. */
+  modules: ImpactModule[];
+  data_source: ReportDataSource;
+}
+
 export type ExecutionResult = 'passed' | 'failed' | 'blocked' | 'not_run' | 'not_applicable';
 export type VerificationStatus = 'verified' | 'failed' | 'not_run' | 'not_covered';
 export type ExecutionTestStatus = 'passed' | 'failed' | 'blocked' | 'not_run' | 'not_planned';

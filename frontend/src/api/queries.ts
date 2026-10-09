@@ -23,6 +23,7 @@ import type {
   GitPullResult,
   GitPushResult,
   GitStatus,
+  ImpactReport,
   IncomingLink,
   LinkConfiguration,
   LinkOption,
@@ -127,6 +128,8 @@ export const queryKeys = {
     ['projects', projectId, 'reports', 'verification', moduleId] as const,
   executionReport: (projectId: string, moduleId: string) =>
     ['projects', projectId, 'reports', 'execution', moduleId] as const,
+  impact: (projectId: string, requirementIds: string[], depth: string, direction: string) =>
+    ['projects', projectId, 'reports', 'impact', direction, depth, ...requirementIds] as const,
   /** The computed Verification status column / detail field of a requirements module. */
   verificationStatuses: (projectId: string, moduleId: string) =>
     ['projects', projectId, 'reports', 'verification-status', moduleId] as const,
@@ -1797,6 +1800,39 @@ export function useExecutionReport(
 /** Download URL of a traceability matrix export (`csv` | `xlsx`). */
 export function traceabilityExportUrl(projectId: string, configIds: string[], format: 'csv' | 'xlsx'): string {
   return `${API_BASE_URL}/projects/${encodeURIComponent(projectId)}/reports/traceability/export/${format}?${configQuery(configIds)}`;
+}
+
+function impactQuery(requirementIds: string[], depth: number, direction: string): string {
+  const seeds = requirementIds.map((id) => `requirement=${encodeURIComponent(id)}`).join('&');
+  return `${seeds}&depth=${depth}&direction=${encodeURIComponent(direction)}`;
+}
+
+/** The transitive upstream/downstream walk from the selected requirements (none: disabled). */
+export function useImpactAnalysis(
+  projectId: string | undefined,
+  requirementIds: string[],
+  depth: number,
+  direction: string,
+): UseQueryResult<ImpactReport> {
+  return useQuery({
+    queryKey: queryKeys.impact(projectId ?? '', requirementIds, String(depth), direction),
+    queryFn: () =>
+      api.get<ImpactReport>(
+        `/projects/${encodeURIComponent(projectId ?? '')}/reports/impact?${impactQuery(requirementIds, depth, direction)}`,
+      ),
+    enabled: !!projectId && requirementIds.length > 0,
+  });
+}
+
+/** Download URL of an impact analysis export (`csv` | `xlsx` | `docx`). */
+export function impactExportUrl(
+  projectId: string,
+  requirementIds: string[],
+  depth: number,
+  direction: string,
+  format: 'csv' | 'xlsx' | 'docx',
+): string {
+  return `${API_BASE_URL}/projects/${encodeURIComponent(projectId)}/reports/impact/export/${format}?${impactQuery(requirementIds, depth, direction)}`;
 }
 
 /** Download URL of a verification / test execution report export (`docx` | `xlsx`). */

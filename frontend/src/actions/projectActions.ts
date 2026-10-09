@@ -19,6 +19,7 @@ import {
   IconPencil,
   IconPlus,
   IconReportAnalytics,
+  IconRoute,
   IconTemplate,
   IconTrashX,
 } from '@tabler/icons-react';
@@ -173,6 +174,18 @@ export const projectActions: Action<'project'>[] = [
     run: (ctx) => {
       const project = loadedProject(ctx);
       if (project) ctx.commands.navigate(`/projects/${encodeURIComponent(project.id)}/reports/traceability`);
+    },
+  },
+  {
+    // Reports ▸ Impact analysis (read-only report page of the target project).
+    id: 'report.impact',
+    element: 'project',
+    label: 'Impact analysis',
+    icon: IconRoute,
+    isAvailable: (ctx) => loadedProject(ctx) !== null,
+    run: (ctx) => {
+      const project = loadedProject(ctx);
+      if (project) ctx.commands.navigate(`/projects/${encodeURIComponent(project.id)}/reports/impact`);
     },
   },
   {

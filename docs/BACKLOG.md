@@ -28,7 +28,7 @@ reviewers know to re-verify it) ❌, **traceability matrix** view (grid of
 source × target requirements showing which cells are linked) ✅,
 **coverage analysis** (% of a module's requirements with at least one
 outgoing/incoming link of a given type — finds orphaned requirements) ✅,
-**impact analysis** (transitive upstream/downstream walk) ❌, source/test-
+**impact analysis** (transitive upstream/downstream walk) ✅, source/test-
 code tag traceability ❌, versioned reference-document citations (e.g.
 UNISIG subsets) ❌, safety registers — hazard log with closure status, SRAC
 register propagated down the project tree ❌.
@@ -574,14 +574,6 @@ Feature-scout suggestions and older ideas, ordered roughly by value.
       CI / git pre-commit gate; `RBC_Template` ships a CENELEC rule set.
       Suggested 2026-10-04 (feature scout, seen in Sphinx-Needs, DOORS Next
       RQA, Jama Advisor, StrictDoc, Doorstop). Not yet requested.
-- [ ] Impact analysis. From the selected requirements, walk upstream/
-      downstream links transitively to a chosen depth, across modules (and
-      the project tree once cross-project links exist); the result lists
-      each reached requirement with distance, SIL, Safety Related and
-      linked tests. Computed, not stored. Export CSV/XLSX/DOCX with a
-      change-reference field, as the EN 50128 §6.6 modification/change-
-      control record. Suggested 2026-10-04 (feature scout, seen in Jama
-      impact analysis, ReqView multi-level traceability). Not yet requested.
 - [ ] SRAC register + propagation through the generic→specific project
       tree (EN 50129). An SRAC module in a GP/GA project; descendants get
       an "Inherited SRACs" view where each SRAC gets a per-child

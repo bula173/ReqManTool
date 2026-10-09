@@ -464,6 +464,7 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
     label: 'Reports',
     entries: [
       action('report.traceability'),
+      action('report.impact'),
       divider,
       action('module.verificationReport'),
       action('module.executionReport'),
@@ -533,6 +534,7 @@ export const REQUIREMENT_CONTEXT_MENU: MenuEntry[] = [
   divider,
   action('requirement.aiPrompts'),
   action('requirement.commits'),
+  action('requirement.impactAnalysis'),
   divider,
   action('requirement.delete'),
 ];
@@ -549,6 +551,7 @@ export const REQUIREMENT_NAVIGATION_MENU: MenuEntry[] = [
   action('requirement.openInWindow'),
   divider,
   action('requirement.commits'),
+  action('requirement.impactAnalysis'),
 ];
 
 /** Right click of a module tab in the tab bar (left click switches to it). */
@@ -585,6 +588,7 @@ export const PROJECT_NODE_MENU: MenuEntry[] = [
   action('project.references'),
   divider,
   action('report.traceability'),
+  action('report.impact'),
   action('project.commits'),
   divider,
   action('file.saveAsTemplate'),

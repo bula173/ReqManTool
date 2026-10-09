@@ -153,7 +153,7 @@ else:
 SPA_ROUTE = re.compile(
     r"^/(?:projects/[^/]+"
     r"(?:/modules/[^/]+|/baselines/[^/]+|/commits(?:/[^/]+(?:/browse)?)?"
-    r"|/reports/(?:traceability|verification/[^/]+|execution/[^/]+))?"
+    r"|/reports/(?:traceability|verification/[^/]+|execution/[^/]+|impact))?"
     r"|detached/projects/[^/]+/modules/[^/]+)?/?$"
 )
 
@@ -1364,6 +1364,29 @@ def export_execution_report(project_id: str, module_id: str, fmt: str):
     return _report_download(content, fmt, f"{project_id}-{module_id}-execution")
 
 
+@app.get("/projects/{project_id}/reports/impact")
+def impact_analysis(
+    project_id: str,
+    requirement: list[str] = Query(default=[]),
+    depth: str = Query(default="3"),
+    direction: str = Query(default="both"),
+):
+    """Repeat ``requirement`` for the starting requirements: ``?requirement=REQ-1&requirement=REQ-2``."""
+    return _wrap(service.impact_analysis, project_id, requirement, depth, direction)
+
+
+@app.get("/projects/{project_id}/reports/impact/export/{fmt}")
+def export_impact(
+    project_id: str,
+    fmt: str,
+    requirement: list[str] = Query(default=[]),
+    depth: str = Query(default="3"),
+    direction: str = Query(default="both"),
+):
+    content = _wrap(service.export_impact, project_id, requirement, depth, direction, fmt)
+    return _report_download(content, fmt, f"{project_id}-impact")
+
+
 # --- modules ----------------------------------------------------------
 
 
@@ -1892,6 +1915,9 @@ RPC_METHODS = {
     "report.traceability": lambda p: service.traceability_matrix(p["project_id"], p.get("config_ids")),
     "report.verification": lambda p: service.verification_report(p["project_id"], p["module_id"]),
     "report.execution": lambda p: service.execution_report(p["project_id"], p["module_id"]),
+    "report.impact": lambda p: service.impact_analysis(
+        p["project_id"], p.get("requirement_ids"), p.get("depth", 3), p.get("direction", "both")
+    ),
 }
 
 

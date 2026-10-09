@@ -18,6 +18,7 @@ import {
   IconLinkPlus,
   IconListTree,
   IconPlus,
+  IconRoute,
   IconRowInsertBottom,
   IconSubtask,
   IconTrash,
@@ -481,6 +482,21 @@ export const requirementActions: Action<'requirement'>[] = [
       const requirement = targetOf(ctx);
       if (!requirement || !ctx.projectId || !ctx.module) return;
       ctx.commands.navigate(commitBrowserPath(ctx.projectId, ctx.module.id, requirement.id));
+    },
+  },
+  {
+    // Reports ▸ Impact analysis seeded with this requirement (?req= on the report page).
+    id: 'requirement.impactAnalysis',
+    element: 'requirement',
+    label: 'Impact analysis',
+    icon: IconRoute,
+    isAvailable: (ctx) => targetOf(ctx) !== null && ctx.projectId !== null,
+    run: (ctx) => {
+      const requirement = targetOf(ctx);
+      if (!requirement || !ctx.projectId) return;
+      ctx.commands.navigate(
+        `/projects/${encodeURIComponent(ctx.projectId)}/reports/impact?req=${encodeURIComponent(requirement.id)}`,
+      );
     },
   },
   {

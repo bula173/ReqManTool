@@ -1,5 +1,5 @@
 """Export the reports (traceability matrix, verification report, test
-execution report) to CSV, XLSX and DOCX.
+execution report, impact analysis) to CSV, XLSX and DOCX.
 
 The input is the report dictionary ``ProjectService`` computes
 (``traceability_matrix``, ``verification_report``, ``execution_report``), so
@@ -410,6 +410,161 @@ def execution_to_docx(report: dict[str, Any], project_name: str) -> bytes:
                 (t.get("latest") or {}).get("version"),
             ]
             for t in report["test_cases"]
+        ),
+    )
+    return _docx_bytes(document)
+
+
+# --- impact analysis ----------------------------------------------------------------
+
+
+def _impact_value(value: Any) -> str:
+    """A stored attribute value as the impact exports print it (booleans as Yes/No)."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    return str(value)
+
+
+def _impact_module_names(report: dict[str, Any]) -> dict[str, str]:
+    return {module["id"]: module["name"] for module in report["modules"]}
+
+
+def _impact_column_names(report: dict[str, Any]) -> tuple[str, str]:
+    """The SIL and Safety Related column headers: the attributes found, else the defaults."""
+    sil = next((m["sil_attribute"]["name"] for m in report["modules"] if m.get("sil_attribute")), None)
+    related = next(
+        (m["safety_related_attribute"]["name"] for m in report["modules"] if m.get("safety_related_attribute")),
+        None,
+    )
+    return sil or "SIL", related or "Safety Related"
+
+
+def _impact_header(report: dict[str, Any]) -> list[str]:
+    sil, related = _impact_column_names(report)
+    return [
+        "Direction", "Distance", "Requirement", "Module", "Text",
+        sil, related, "Linked tests", "Path", "Change reference",
+    ]
+
+
+def _impact_tests(row: dict[str, Any]) -> str:
+    return ", ".join(test["id"] for test in row.get("tests") or [])
+
+
+def _impact_cells(report: dict[str, Any], row: dict[str, Any], direction: str) -> list[Any]:
+    """One impact row as cells; the change reference is the last one, empty for the user to fill in."""
+    names = _impact_module_names(report)
+    return [
+        direction,
+        row.get("distance") if row.get("distance") is not None else 0,
+        row["id"],
+        names.get(row["module_id"], row["module_id"]),
+        row["text"],
+        _impact_value(row.get("sil")),
+        _impact_value(row.get("safety_related")),
+        _impact_tests(row),
+        " → ".join(row.get("path") or [row["id"]]),
+        "",
+    ]
+
+
+def _impact_rows(report: dict[str, Any]) -> list[list[Any]]:
+    """Header, then the starting requirements, then the reached ones (as the service sorts them)."""
+    rows = [_impact_header(report)]
+    rows += [_impact_cells(report, seed, "Starting requirement") for seed in report["seeds"]]
+    rows += [
+        _impact_cells(report, row, f"{row['direction']} {row['distance']}")
+        for row in report["results"]
+    ]
+    return rows
+
+
+def impact_to_csv(report: dict[str, Any]) -> str:
+    """The whole analysis (starting and reached requirements) as one CSV table."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    for row in _impact_rows(report):
+        writer.writerow([_csv_cell(v) for v in row])
+    return buffer.getvalue()
+
+
+def impact_to_xlsx(report: dict[str, Any], project_name: str) -> bytes:
+    """Summary (with the starting requirements) and one row per requirement."""
+    sil, related = _impact_column_names(report)
+    names = _impact_module_names(report)
+    summary = report["summary"]
+    rows: list[list[Any]] = [
+        ["Impact analysis", project_name],
+        ["Direction", report["direction"]],
+        ["Depth", report["depth"]],
+        ["Generated", date.today().isoformat()],
+        *_data_source_row(report),
+        [],
+        ["Requirements reached", summary["reached"]],
+        ["Upstream", summary["upstream"]],
+        ["Downstream", summary["downstream"]],
+        ["Deepest distance", summary["max_distance"]],
+        [],
+        ["Starting requirement", "Module", "Text", sil, related, "Linked tests"],
+    ]
+    rows += [
+        [
+            seed["id"], names.get(seed["module_id"], seed["module_id"]), seed["text"],
+            _impact_value(seed["sil"]), _impact_value(seed["safety_related"]),
+            _impact_tests(seed),
+        ]
+        for seed in report["seeds"]
+    ]
+    workbook = Workbook()
+    _sheet(workbook, "Summary", rows, first=True)
+    _sheet(workbook, "Requirements", _impact_rows(report)).freeze_panes = "A2"
+    return _xlsx_bytes(workbook)
+
+
+def impact_to_docx(report: dict[str, Any], project_name: str) -> bytes:
+    """A change-control record: summary, starting requirements and the affected ones."""
+    sil, related = _impact_column_names(report)
+    names = _impact_module_names(report)
+    summary = report["summary"]
+    document = Document()
+    document.add_heading(_docx_text(f"Impact analysis ({report['direction']})"), level=0)
+    document.add_paragraph(_docx_text(f"Project: {project_name}"))
+    document.add_paragraph(f"Generated: {date.today().isoformat()}")
+    document.add_paragraph(_docx_text(f"Depth: {report['depth']} step(s)"))
+    _docx_data_source(document, report)
+    document.add_heading("Summary", level=1)
+    _docx_table(document, ["Item", "Value"], [
+        ["Starting requirements", summary["seeds"]],
+        ["Requirements reached", summary["reached"]],
+        ["Upstream", summary["upstream"]],
+        ["Downstream", summary["downstream"]],
+        ["Deepest distance", summary["max_distance"]],
+    ])
+    document.add_heading("Starting requirements", level=1)
+    _docx_table(
+        document,
+        ["Requirement", "Module", "Text", sil, related, "Linked tests"],
+        (
+            [
+                seed["id"], names.get(seed["module_id"], seed["module_id"]), seed["text"],
+                _impact_value(seed["sil"]), _impact_value(seed["safety_related"]),
+                _impact_tests(seed),
+            ]
+            for seed in report["seeds"]
+        ),
+    )
+    document.add_heading("Affected requirements", level=1)
+    document.add_paragraph(
+        "Fill in the change reference per requirement (EN 50128 §6.6 change record)."
+    )
+    _docx_table(
+        document,
+        _impact_header(report),
+        (
+            _impact_cells(report, row, f"{row['direction']} {row['distance']}")
+            for row in report["results"]
         ),
     )
     return _docx_bytes(document)

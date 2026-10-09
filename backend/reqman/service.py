@@ -256,6 +256,16 @@ REPORT_ATTRIBUTE_ROLES: dict[str, dict[str, Any]] = {
             "external id", "test key", "test ref",
         ),
     },
+    # Impact analysis lists every reached requirement with these two (per
+    # module, so a project without them simply gets null values).
+    "silk": {
+        "types": ("enum", "string", "integer"),
+        "names": ("sil", "safety integrity level", "integrity level"),
+    },
+    "safety_related": {
+        "types": ("boolean", "enum", "string"),
+        "names": ("safety related", "safety relevance"),
+    },
 }
 
 # Test result import: the pseudo attribute id meaning "match on the test
@@ -304,6 +314,15 @@ MAX_LOCK_REASON_LENGTH = 500
 
 # The most link configurations one traceability chain may have.
 MAX_TRACE_CHAIN = 10
+
+# Impact analysis: the walk directions, how far it may walk and how many
+# requirements one analysis may start from. "upstream" walks towards the
+# requirements a link's source derives from (the link's target), "downstream"
+# towards the objects that derive from it (the link's source) — the same
+# reading as the traceability matrix, where links point downstream -> upstream.
+IMPACT_DIRECTIONS = ("upstream", "downstream", "both")
+MAX_IMPACT_DEPTH = 10
+MAX_IMPACT_SEEDS = 100
 
 # Shared view column widths (``View.column_widths``): the key of the
 # requirements table's Id column (attribute ids name the other columns) and
@@ -6193,6 +6212,231 @@ class ProjectService:
             "date_range": [dates[0], dates[-1]] if dates else None,
         }
 
+    # --- impact analysis ---------------------------------------------------------------
+    #
+    # The transitive upstream/downstream walk of the selected requirements
+    # (docs/BACKLOG.md "Impact analysis"). Computed, never stored, never
+    # broadcast — like the other reports it only reads modules, requirements
+    # and link pairs.
+
+    @staticmethod
+    def _impact_depth(value: Any) -> int:
+        """The walk depth as an int in ``1..MAX_IMPACT_DEPTH`` (a numeric string accepted)."""
+        if isinstance(value, str):
+            try:
+                value = int(value.strip())
+            except ValueError:
+                raise ValueError(
+                    f"Invalid depth '{value}': expected a number from 1 to {MAX_IMPACT_DEPTH}"
+                ) from None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"Invalid depth '{value}': expected a number from 1 to {MAX_IMPACT_DEPTH}")
+        if not 1 <= value <= MAX_IMPACT_DEPTH:
+            raise ValueError(f"The depth must be from 1 to {MAX_IMPACT_DEPTH}, got {value}")
+        return value
+
+    @staticmethod
+    def _impact_direction(value: Any) -> tuple[str, ...]:
+        """The directions to walk; ``both`` walks both of ``IMPACT_DIRECTIONS``."""
+        if not isinstance(value, str) or value not in IMPACT_DIRECTIONS:
+            raise ValueError(f"Invalid direction '{value}': expected one of {', '.join(IMPACT_DIRECTIONS)}")
+        return ("upstream", "downstream") if value == "both" else (value,)
+
+    @staticmethod
+    def _impact_seeds(value: Any) -> list[str]:
+        """The starting requirement ids, in order and without duplicates."""
+        if not isinstance(value, (list, tuple)) or not value:
+            raise ValueError("Pick at least one starting requirement")
+        if not all(isinstance(v, str) and v.strip() for v in value):
+            raise ValueError("Every starting requirement must be a requirement id")
+        if len(value) > MAX_IMPACT_SEEDS:
+            raise ValueError(f"An impact analysis starts from at most {MAX_IMPACT_SEEDS} requirements")
+        seeds: list[str] = []
+        seen: set[str] = set()
+        for requirement_id in value:
+            requirement_id = requirement_id.strip()
+            if requirement_id not in seen:
+                seen.add(requirement_id)
+                seeds.append(requirement_id)
+        return seeds
+
+    def impact_analysis(
+        self, project_id: str, requirement_ids: Any, depth: Any = 3, direction: Any = "both"
+    ) -> dict[str, Any]:
+        """The requirements an impact on ``requirement_ids`` reaches, by links (read-only).
+
+        Walks the project's link pairs from the starting requirements
+        outwards: upstream follows a link to its *target* (what the source
+        derives from, e.g. SwRS -> SyRS, test case -> requirement),
+        downstream to its *source* (what derives from it), for at most
+        ``depth`` (1..``MAX_IMPACT_DEPTH``) steps and in ``direction``
+        (``upstream | downstream | both``). Each reached requirement is listed
+        with its distance, the chain it was reached by (``path``, ``via`` its
+        previous step), its SIL and Safety Related values and the test cases
+        linked to it. Starting requirements are never walked back to, so every
+        result has ``distance >= 1``.
+
+        Like the traceability matrix this only uses the project's own link
+        configurations (cross-project ones are left out) and only links
+        between reportable objects — headings, information and definitions
+        are neither walked nor listed. Computed from the current data, never
+        stored.
+        """
+        project = self.store.load_project(project_id)
+        seeds = self._impact_seeds(requirement_ids)
+        steps = self._impact_depth(depth)
+        directions = self._impact_direction(direction)
+
+        modules = self.list_modules(project_id)
+        module_by_id = {m.id: m for m in modules}
+        module_rank = {m.id: i for i, m in enumerate(modules)}
+
+        # Every reportable object of every module (headings and the like are
+        # left out), the module it is in and its position in that module.
+        items: dict[str, dict[str, Any]] = {}
+        owner: dict[str, str] = {}
+        position: dict[str, int] = {}
+        for module in modules:
+            module_items, _ = self._report_items(project, module)
+            for index, item in enumerate(module_items):
+                items[item["id"]] = item
+                owner[item["id"]] = module.id
+                position[item["id"]] = index
+
+        for seed in seeds:
+            if seed in items:
+                continue
+            if self.store.find_requirement_module(project_id, seed) is None:
+                raise FileNotFoundError(f"Requirement '{seed}' not found in project '{project_id}'")
+            raise ValueError(
+                f"Requirement '{seed}' is left out of reports (its Object Type is a heading, "
+                "information, definition, title, comment or note) and cannot start an impact analysis"
+            )
+
+        # A link pair's target is upstream of its source, so the two walks are
+        # the two orientations of the same edges. Links to or from an object
+        # the reports leave out are ignored, as everywhere else.
+        upstream: dict[str, set[str]] = {}
+        downstream: dict[str, set[str]] = {}
+        for config in self._local_configs(project):
+            for pair in self.store.load_link_pairs(project.id, config.id):
+                source, target = pair.source_id, pair.target_id
+                if source == target or source not in items or target not in items:
+                    continue
+                downstream.setdefault(target, set()).add(source)
+                upstream.setdefault(source, set()).add(target)
+
+        # One breadth-first walk per direction: the first time an id is seen
+        # it has its shortest distance and the chain it came by. The starting
+        # requirements are already "seen", so a walk never reaches back to one.
+        reached: list[tuple[str, int, str, list[str], str]] = []
+        seed_set = set(seeds)
+        for walk in directions:
+            neighbours = upstream if walk == "upstream" else downstream
+            visited = set(seed_set)
+            frontier: list[tuple[str, list[str]]] = [(seed, [seed]) for seed in seeds]
+            for distance in range(1, steps + 1):
+                following: list[tuple[str, list[str]]] = []
+                for current, path in frontier:
+                    for other in sorted(neighbours.get(current, ())):
+                        if other in visited:
+                            continue
+                        visited.add(other)
+                        chain = [*path, other]
+                        following.append((other, chain))
+                        reached.append((walk, distance, current, chain, other))
+                frontier = following
+                if not frontier:
+                    break
+
+        # Only the modules the analysis actually touches are read further.
+        involved = {owner[seed] for seed in seeds} | {owner[entry[4]] for entry in reached}
+        attributes: dict[str, dict[str, dict[str, str] | None]] = {}
+        module_rows: list[dict[str, Any]] = []
+        for module_id in sorted(involved, key=module_rank.get):
+            module = module_by_id[module_id]
+            sil = self._report_attribute(project, module, "silk")
+            related = self._report_attribute(project, module, "safety_related")
+            attributes[module_id] = {
+                "sil": {"id": sil.id, "name": sil.name} if sil is not None else None,
+                "safety_related": (
+                    {"id": related.id, "name": related.name} if related is not None else None
+                ),
+            }
+            module_rows.append({
+                "id": module.id,
+                "name": module.name,
+                "type": module.type,
+                **{
+                    f"{role}_attribute": attributes[module_id][role]
+                    for role in ("sil", "safety_related")
+                },
+            })
+
+        # Linked test cases: the reportable objects of the test_cases modules
+        # linked to the module (any configuration between them, either way).
+        tests: dict[str, dict[str, list[str]]] = {}
+        for module_id in involved:
+            links: dict[str, set[str]] = {}
+            for test_module in self._report_linked_modules(project, module_by_id[module_id], "test_cases"):
+                for requirement_id, test_ids in self._report_links(project, module_id, test_module.id).items():
+                    links.setdefault(requirement_id, set()).update(t for t in test_ids if t in items)
+            if links:
+                tests[module_id] = {rid: sorted(ids) for rid, ids in links.items()}
+
+        def describe(requirement_id: str) -> dict[str, Any]:
+            module_id = owner[requirement_id]
+            roles = attributes[module_id]
+            values = items[requirement_id]["requirement"].attributes
+            return {
+                "id": requirement_id,
+                "module_id": module_id,
+                "text": items[requirement_id]["text"],
+                "level": items[requirement_id]["level"],
+                "sil": values.get(roles["sil"]["id"]) if roles["sil"] else None,
+                "safety_related": (
+                    values.get(roles["safety_related"]["id"]) if roles["safety_related"] else None
+                ),
+                "tests": [
+                    {"id": test_id, "module_id": owner[test_id], "text": items[test_id]["text"]}
+                    for test_id in tests.get(module_id, {}).get(requirement_id, ())
+                ],
+            }
+
+        def in_module_order(requirement_id: str) -> tuple[int, int]:
+            return module_rank[owner[requirement_id]], position[requirement_id]
+
+        direction_rank = {"upstream": 0, "downstream": 1}
+        results = [
+            {
+                **describe(rid),
+                "direction": walk,
+                "distance": distance,
+                "via": via,
+                "path": path,
+            }
+            for walk, distance, via, path, rid in sorted(
+                reached, key=lambda entry: (direction_rank[entry[0]], entry[1], *in_module_order(entry[4]))
+            )
+        ]
+        upstream_count = sum(1 for entry in reached if entry[0] == "upstream")
+        return {
+            "project_id": project_id,
+            "direction": direction,
+            "depth": steps,
+            "seeds": [describe(seed) for seed in sorted(seeds, key=in_module_order)],
+            "results": results,
+            "summary": {
+                "seeds": len(seeds),
+                "reached": len(results),
+                "upstream": upstream_count,
+                "downstream": len(results) - upstream_count,
+                "max_distance": max((entry[1] for entry in reached), default=0),
+            },
+            "modules": module_rows,
+            "data_source": self._report_data_source(project),
+        }
+
     def export_traceability(self, project_id: str, config_ids: Any, fmt: str) -> bytes | str:
         from .report_export import traceability_to_csv, traceability_to_xlsx
 
@@ -6222,6 +6466,21 @@ class ProjectService:
         report = self.execution_report(project_id, module_id)
         project = self.store.load_project(project_id)
         writer = execution_to_docx if fmt == "docx" else execution_to_xlsx
+        return writer(report, project.name)
+
+    def export_impact(
+        self, project_id: str, requirement_ids: Any, depth: Any, direction: Any, fmt: str
+    ) -> bytes | str:
+        """The impact analysis as CSV, XLSX or DOCX (each with a change-reference field)."""
+        from .report_export import impact_to_csv, impact_to_docx, impact_to_xlsx
+
+        if fmt not in ("csv", "xlsx", "docx"):
+            raise ValueError(f"Unknown impact analysis export format '{fmt}'; expected csv, xlsx or docx")
+        report = self.impact_analysis(project_id, requirement_ids, depth, direction)
+        project = self.store.load_project(project_id)
+        if fmt == "csv":
+            return impact_to_csv(report)
+        writer = impact_to_docx if fmt == "docx" else impact_to_xlsx
         return writer(report, project.name)
 
     def verification_statuses(self, project_id: str, module_id: str) -> dict[str, Any]:

@@ -1765,3 +1765,61 @@ Newest entries are appended at the end.
       project node menu, Edit menu, project page button).
       Tests: `backend/tests/test_project_lifecycle.py` (rename section +
       REST/WS lock-parity tables).
+- [x] **Impact analysis: transitive upstream/downstream walk** (2026-10-09;
+      requested 2026-10-09, from the 2026-10-04 feature-scout idea). From the
+      selected requirements the link pairs are walked outwards: a pair's
+      target is upstream of its source (SwRS → SyRS, test case →
+      requirement), so `upstream` follows a link to its target and
+      `downstream` to its source; `direction` is `upstream | downstream |
+      both` (default `both`), `depth` 1..10 (default 3), at most 100
+      starting requirements (duplicates collapsed; unknown id → 404/-32001,
+      an object the reports leave out → 400/-32602, at least one required).
+      Like the traceability matrix only the project's own link configurations
+      count (cross-project ones are left out) and only links between
+      reportable objects — headings/information/definitions are neither
+      walked nor listed; the starting requirements are pre-visited, so every
+      result has `distance >= 1`. One breadth-first walk per direction, so
+      each reached requirement has its shortest `distance`, the `via` step it
+      came by and the full id `path` from the seed. Every row carries `id`,
+      `module_id`, `text`, `level`, `direction`, `sil` and `safety_related`
+      (two new `REPORT_ATTRIBUTE_ROLES`, `silk` = SIL/Safety Integrity
+      Level/Integrity Level, `safety_related` = Safety Related/Safety
+      Relevance; per-module attributes reported in `modules`, `null` when a
+      module has none) and its linked `tests` (reportable objects of linked
+      `test_cases` modules, any configuration either way, as
+      `{id, module_id, text}`); plus `seeds`, `summary` (seeds, reached,
+      upstream, downstream, max_distance) and `data_source`. Computed, never
+      stored; ordered upstream-first, then distance, then module/tree order.
+      Endpoints: `GET /projects/{id}/reports/impact?requirement=…[&depth=…]
+      [&direction=…]` (repeatable `requirement`, string `depth`/`direction`
+      coerced in the service so REST and WS fail identically),
+      `…/impact/export/{csv,xlsx,docx}` with the same query parameters (plain
+      `<a href>` downloads), WS `report.impact {project_id, requirement_ids,
+      depth, direction}`; read-only, no broadcast; SPA route `impact`.
+      Exports (`report_export.py`): CSV one table, XLSX Summary +
+      Requirements, DOCX summary / starting requirements / affected table —
+      every affected row ends with an empty **Change reference** column for
+      the EN 50128 §6.6 change record (the DOCX repeats the instruction).
+      UI: `ImpactAnalysisPage.tsx` at
+      `/projects/:projectId/reports/impact`, seeds kept in the URL
+      (`?req=`, repeatable; `?depth=`; `?dir=`) so the analysis is
+      shareable/reloadable — module select + searchable requirement picker +
+      "Add", depth and direction selects, an Export ▸ CSV/Excel/Word menu,
+      summary card, starting-requirement table and the affected table
+      (direction badge, distance, path, SIL, Safety Related, linked test
+      links). Actions `report.impact` (Reports menu, project node menu) and
+      `requirement.impactAnalysis` (requirement navigation and context menus,
+      seeds the page with that requirement). Files:
+      `backend/reqman/{service.py, report_export.py, app.py}`,
+      `backend/tests/test_impact_analysis.py (new)`,
+      `frontend/src/pages/ImpactAnalysisPage.tsx (new)`, `App.tsx`,
+      `api/{types.ts, queries.ts}` (`queryKeys.impact`, `useImpactAnalysis`,
+      `impactExportUrl`), `actions/{projectActions.ts,
+      requirementActions.tsx, registry.ts}`, `docs/ARCHITECTURE.md`
+      ("Reports"). Tests: `backend/tests/test_impact_analysis.py` (41 tests:
+      walk/distance/path, both directions, cycles, excluded object types,
+      SIL/Safety Related/tests, validation, REST/WS parity + no broadcast,
+      client route, exports). Not covered: cross-project links are not
+      walked (same choice as the traceability matrix; see "Project
+      references: follow-ups"), no browser verification, no frontend tests
+      (no test runner).
