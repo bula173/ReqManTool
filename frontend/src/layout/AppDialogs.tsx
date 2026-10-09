@@ -28,6 +28,7 @@ import { NewModuleModal } from '../components/NewModuleModal';
 import { NewProjectModal } from '../components/NewProjectModal';
 import { ProjectReferencesModal } from '../components/ProjectReferencesModal';
 import { RemoveProjectModal } from '../components/RemoveProjectModal';
+import { RenameProjectModal } from '../components/RenameProjectModal';
 import { RequirementFormModal } from '../components/RequirementFormModal';
 import { RowStylesModal } from '../components/RowStylesModal';
 import { ApplySkeletonModal } from '../components/ApplySkeletonModal';
@@ -243,6 +244,8 @@ export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; 
     }
     case 'projectReferences':
       return <ProjectReferencesModal project={dialog.project} onClose={onClose} />;
+    case 'renameProject':
+      return <RenameProjectModal project={dialog.project} onClose={onClose} />;
     case 'lockProject':
       return <LockProjectModal project={dialog.project} onClose={onClose} />;
     case 'checkOutModule':

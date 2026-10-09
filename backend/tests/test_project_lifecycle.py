@@ -330,6 +330,7 @@ SERVICE_MUTATIONS = {
     "set_row_styles": lambda s, f: s.set_row_styles(f.pid, []),
     "set_references": lambda s, f: s.set_project_references(f.pid, [f.other]),
     "set_parent": lambda s, f: s.set_project_parent(f.pid, f.other),
+    "rename": lambda s, f: s.rename_project(f.pid, "Renamed"),
     "create_link_configuration": lambda s, f: s.create_link_configuration(f.pid, "Other", f.sys, f.tst),
     "remove_link_configuration": lambda s, f: s.remove_link_configuration(f.pid, f.cfg),
     "link": lambda s, f: s.link_requirements(f.pid, f.cfg, f.t2, f.r2),
@@ -466,6 +467,7 @@ REST_MUTATIONS = {
     "row styles": lambda f: ("PUT", f"/projects/{f.pid}/row-styles", {"json": {"row_styles": []}}),
     "references": lambda f: ("PUT", f"/projects/{f.pid}/references", {"json": {"references": [f.other]}}),
     "parent": lambda f: ("PUT", f"/projects/{f.pid}/parent", {"json": {"parent_project_id": f.other}}),
+    "project rename": lambda f: ("PUT", f"/projects/{f.pid}/name", {"json": {"name": "Renamed"}}),
     "link configuration create": lambda f: ("POST", f"/projects/{f.pid}/link-configurations",
                                             {"json": {"name": "O", "source_module_id": f.sys,
                                                       "target_module_id": f.tst}}),
@@ -538,6 +540,7 @@ WS_MUTATIONS = {
     "project.set_row_styles": lambda f: {"id": f.pid, "row_styles": []},
     "project.set_references": lambda f: {"id": f.pid, "references": [f.other]},
     "project.set_parent": lambda f: {"id": f.pid, "parent_project_id": f.other},
+    "project.rename": lambda f: {"id": f.pid, "name": "Renamed"},
     "project.lock": lambda f: {"id": f.pid, "reason": "again"},
     "attribute.add": lambda f: {"project_id": f.pid, "id": "x", "name": "X"},
     "attribute.set_modules": lambda f: {"project_id": f.pid, "id": "status", "modules": [f.sys]},
@@ -647,6 +650,77 @@ def test_ws_cascade_into_a_locked_project_is_32004(client, root):
         assert rpc(ws, "module.purge", {"project_id": b, "id": "sys"}, 2)["error"]["code"] == -32004
         assert rpc(ws, "project.purge", {"id": b}, 3)["error"]["code"] == -32004
     assert tree_bytes(root) == before
+
+
+# --- rename: rules --------------------------------------------------------------------------
+
+
+def test_rename_changes_only_the_name_and_survives_a_reload(plain, root):
+    project = plain.create_project("Original")
+    plain.create_module(project.id, "Mod", "M")
+
+    renamed = plain.rename_project(project.id, "  New Name \n")
+    assert renamed.id == project.id and renamed.name == "New Name"
+    # The folder (the id) stays; only project.json's name line changed.
+    assert (root / project.id / "project.json").is_file()
+    assert plain.get_project(project.id).name == "New Name"
+    assert plain.get_project(project.id).id == project.id
+    assert ProjectService(ProjectStore(root)).get_project(project.id).name == "New Name"
+    assert [m.id for m in plain.list_modules(project.id)] == ["mod"]
+
+
+def test_rename_to_the_same_name_writes_nothing(plain, root):
+    project = plain.create_project("Same")
+    before = tree_bytes(root)
+    assert plain.rename_project(project.id, "Same").name == "Same"
+    assert plain.rename_project(project.id, "  Same  ").name == "Same"
+    assert tree_bytes(root) == before
+
+
+@pytest.mark.parametrize("name", ["", "   \n", None, 5, ["Name"], {"name": "x"}])
+def test_rename_rejects_an_unusable_name(plain, root, name):
+    project = plain.create_project("Original")
+    before = tree_bytes(root)
+    with pytest.raises(ValueError, match="Project name must not be empty"):
+        plain.rename_project(project.id, name)
+    assert tree_bytes(root) == before
+    assert plain.get_project(project.id).name == "Original"
+
+
+def test_rename_of_an_unknown_project_is_a_404(plain):
+    with pytest.raises(FileNotFoundError):
+        plain.rename_project("missing", "Name")
+
+
+def test_rename_keeps_the_id_referenced_by_subprojects_and_references(plain, root):
+    parent = plain.create_project("Parent")
+    child = plain.create_project("Child", parent_project_id=parent.id)
+    plain.rename_project(parent.id, "Renamed Parent")
+    assert plain.get_project(child.id).parent_project_id == parent.id
+    assert plain.get_project(parent.id).name == "Renamed Parent"
+
+
+def test_rename_commit_message(gitsvc, root):
+    project = gitsvc.create_project("Original")
+    gitsvc.rename_project(project.id, "Renamed")
+    assert subjects(root / project.id)[0] == "Project renamed 'Original' → 'Renamed'"
+
+
+def test_rest_and_ws_rename_broadcast_and_match(client, root):
+    pid = client.post("/projects", json={"name": "Alpha"}).json()["id"]
+    with client.websocket_connect("/ws") as watcher:
+        response = client.put(f"/projects/{pid}/name", json={"name": " Beta "})
+        assert response.status_code == 200, response.text
+        assert response.json()["name"] == "Beta" and response.json()["id"] == pid
+        assert watcher.receive_json() == {"event": "changed", "project_id": pid}
+    assert client.put(f"/projects/{pid}/name", json={"name": ""}).status_code == 400
+    assert client.put(f"/projects/missing/name", json={"name": "X"}).status_code == 404
+    with client.websocket_connect("/ws") as ws, client.websocket_connect("/ws") as watcher:
+        renamed = rpc(ws, "project.rename", {"id": pid, "name": "Gamma"})
+        assert renamed["result"]["name"] == "Gamma"
+        assert watcher.receive_json() == {"event": "changed", "project_id": pid}
+        assert client.get(f"/projects/{pid}").json()["name"] == "Gamma"
+        assert rpc(ws, "project.rename", {"id": pid, "name": " "}, 2)["error"]["code"] == -32602
 
 
 # --- remove: rules --------------------------------------------------------------------------------

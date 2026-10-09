@@ -340,6 +340,15 @@ export function ProjectPage() {
           <Button
             size="xs"
             variant="default"
+            leftSection={<IconPencil size={14} />}
+            disabled={!isAvailable('project.rename')}
+            onClick={() => run('project.rename')}
+          >
+            Rename
+          </Button>
+          <Button
+            size="xs"
+            variant="default"
             leftSection={<IconFolderPlus size={14} />}
             disabled={!isAvailable('project.newSubproject')}
             onClick={() => run('project.newSubproject')}

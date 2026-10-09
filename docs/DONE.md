@@ -1749,3 +1749,19 @@ Newest entries are appended at the end.
       (template picker, preview list) in the module menu and Edit menu.
       Tests: `backend/tests/test_operational_scenarios.py`, stale RBC/type
       expectations updated.
+- [x] **Rename project (display name) from the UI** (2026-10-09). Project
+      right-click menu / Edit menu / project page → "Rename…": changes
+      `Project.name` only; the project id / folder stays (ids are
+      referenced by subprojects, project references, cross-project links
+      and git remotes). `ProjectService.rename_project` strips the name
+      and rejects an empty one (REST 400 / WS -32602), is refused while
+      locked (423 / -32004) and needs `project.admin` in the server
+      edition; renaming to the same name writes nothing. REST `PUT
+      /projects/{id}/name` (+ WS `project.rename`, broadcast `changed`);
+      the git auto-commit reads "Project renamed 'A' → 'B'" (the existing
+      `describe_changes` entry) and the rename is audited
+      (`project.rename`). Frontend: `useRenameProject`,
+      `RenameProjectModal`, `project.rename` registry action (sidebar
+      project node menu, Edit menu, project page button).
+      Tests: `backend/tests/test_project_lifecycle.py` (rename section +
+      REST/WS lock-parity tables).

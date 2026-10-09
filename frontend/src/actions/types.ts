@@ -205,6 +205,8 @@ export type DialogRequest =
     }
   /** The projects a project references (its link configurations may target their modules). */
   | { kind: 'projectReferences'; project: Project }
+  /** Rename a project's display name (its id and folder stay). */
+  | { kind: 'renameProject'; project: Project }
   /** Lock a project (reason); unlocking needs no dialog. */
   | { kind: 'lockProject'; project: Project }
   /** Server edition: check out a module for editing (optional reason); releasing needs no dialog. */

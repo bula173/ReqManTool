@@ -16,6 +16,7 @@ import {
   IconLockAccess,
   IconLockOpen,
   IconLockOff,
+  IconPencil,
   IconPlus,
   IconReportAnalytics,
   IconTemplate,
@@ -31,8 +32,8 @@ import type { Action, ActionContext } from './types';
 /**
  * Actions on a project/subproject and on a module: the sidebar tree nodes'
  * menus, the menu bar and the project page. The target is the clicked node,
- * or the open project / module by default. Rename is not offered: there is no
- * rename API for projects or modules yet (add `project.rename` /
+ * or the open project / module by default. Rename is offered for projects
+ * (`project.rename`); there is no rename API for modules yet (add
  * `module.rename` here once there is). Module folder actions are in
  * `moduleFolderActions.ts`; "Open in new tab" / "Open in new window" are in
  * `tabActions.ts`.
@@ -118,6 +119,22 @@ export const projectActions: Action<'project'>[] = [
     run: (ctx) => {
       const project = loadedProject(ctx);
       if (project) ctx.commands.openDialog({ kind: 'newModule', projectId: project.id, fromTemplate: true });
+    },
+  },
+  {
+    // Renames the display name only: the project id / folder stays (ids are
+    // referenced by subprojects, references, cross-project links and remotes).
+    id: 'project.rename',
+    requires: ['projectAdmin'],
+    element: 'project',
+    edits: true,
+    label: 'Rename…',
+    icon: IconPencil,
+    opensDialog: true,
+    isAvailable: (ctx) => loadedProject(ctx) !== null,
+    run: (ctx) => {
+      const project = loadedProject(ctx);
+      if (project) ctx.commands.openDialog({ kind: 'renameProject', project });
     },
   },
   {

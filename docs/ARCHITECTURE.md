@@ -2140,8 +2140,8 @@ anything else is not logged, and nobody can fill the log anonymously),
 (role, previous role; nothing when the role is unchanged),
 `admin.member_remove` (previous role); `module.lock_break` (module, reason
 and time of the broken lock; the previous owner is the target user); and
-from the core through `HOOKS.audit`: `project.create`, `project.lock`,
-`project.unlock`, `project.remove`, `project.purge`. Locks released by a
+from the core through `HOOKS.audit`: `project.create`, `project.rename`,
+`project.lock`, `project.unlock`, `project.remove`, `project.purge`. Locks released by a
 logout or a deactivation have no entry of their own. A write failure is
 logged, never fails the action. No rotation: an administrator can move the
 file away (a new one starts with the next event). Unparsable lines (hand
@@ -2416,7 +2416,7 @@ resource:
 
 | Resource | Routes |
 |---|---|
-| Projects | `POST/GET /projects` (`GET` lists unloadable projects as `{id, name, error}` stubs; `POST` body: `name`, `description`, optional `template_id`, optional `parent_project_id`), `GET /projects/{id}`, `PUT /projects/{id}/parent` (`{"parent_project_id": id or null}`), `GET/PUT /projects/{id}/references` (`{"references": [ids]}`; WS `project.references` / `project.set_references`), `PUT/DELETE /projects/{id}/lock` (lock `{reason}` / unlock; WS `project.lock` / `project.unlock`), `GET /projects/{id}/removal` (WS `project.removal_info`), `DELETE /projects/{id}` (`{confirm_name, data_dir}`; WS `project.remove`; broadcasts `changed` with `removed: true`) — see "Project lifecycle: lock and remove"; a change of a locked project is 423, `PUT /projects/{id}/row-styles` (`{"row_styles": [...]}`; WS `project.set_row_styles`; 400 invalid) |
+| Projects | `POST/GET /projects` (`GET` lists unloadable projects as `{id, name, error}` stubs; `POST` body: `name`, `description`, optional `template_id`, optional `parent_project_id`), `GET /projects/{id}`, `PUT /projects/{id}/parent` (`{"parent_project_id": id or null}`), `PUT /projects/{id}/name` (`{"name": str}` renames the display name, id/folder stay; WS `project.rename`; 400 empty, 423 locked, admin in the server edition), `GET/PUT /projects/{id}/references` (`{"references": [ids]}`; WS `project.references` / `project.set_references`), `PUT/DELETE /projects/{id}/lock` (lock `{reason}` / unlock; WS `project.lock` / `project.unlock`), `GET /projects/{id}/removal` (WS `project.removal_info`), `DELETE /projects/{id}` (`{confirm_name, data_dir}`; WS `project.remove`; broadcasts `changed` with `removed: true`) — see "Project lifecycle: lock and remove"; a change of a locked project is 423, `PUT /projects/{id}/row-styles` (`{"row_styles": [...]}`; WS `project.set_row_styles`; 400 invalid) |
 | History (git) | `GET /projects/{id}/git` (status; WS `project.git_status`), `POST /projects/{id}/git/enable` (WS `project.git_enable`, broadcasts `changed`, also after a part-way failure; 409 nested/foreign/detached/merge etc. in progress/`current` not checked out, 400 git off or missing or a failed step), `GET /projects/{id}/git/log?limit=` (WS `project.git_log`), `GET .../modules/{m}/requirements/{r}/history` (WS `requirement.history`) — see "Project history (git)" |
 | Baselines (git) | `POST /projects/{id}/baselines` (`{name, description, lock?, lock_reason?}`; WS `baseline.create`, broadcasts `changed`; 409 duplicate name / not `ready` / `baseline` moved by hand, 400 invalid name or git off/missing), `GET /projects/{id}/baselines` (WS `baseline.list`), `GET /projects/{id}/baselines/{name}` (WS `baseline.get`; 409 for a newer-format baseline), `GET .../baselines/{name}/modules/{m}/requirements` (WS `baseline.requirements`), `GET /projects/{id}/baselines/compare?from=&to=` (`to`/`from` = a baseline name or `current`; WS `baseline.compare`) — reads are read-only; see "Project history (git)" |
 | Templates | `GET /templates` → `[{id, source, name, description, modules: [{key, name, prefix, type}], error}]`, `POST /projects/{id}/save-as-template` (`{name, description}`; 409 on a name clash; broadcasts `templates_changed`), `POST /templates/import` (raw template JSON request body, `Content-Type: application/json` required (415 otherwise), UTF-8 with optional BOM, at most 1 MiB (413); invalid → 400, name clash → 409; returns the template summary; broadcasts `templates_changed`; WS: `template.import` `{text}`) |
@@ -2449,7 +2449,8 @@ referencing projects), same as the REST side (`manager.broadcast`, excluding the
 doesn't get a redundant refresh of its own change). Templates and
 subprojects: `template.list`, `project.create` (optional `template_id`,
 `parent_project_id`), `project.set_parent` (`{id, parent_project_id}`,
-broadcasts `changed`), `project.set_references` (`{id, references}`,
+broadcasts `changed`), `project.rename` (`{id, name}`, broadcasts
+`changed`), `project.set_references` (`{id, references}`,
 broadcasts `changed`), `project.references` (`{id}`, read-only),
 `link.incoming` (`{project_id, module_id?}`, read-only),
 `project.set_row_styles` (`{id, row_styles}`,

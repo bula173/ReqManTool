@@ -332,6 +332,22 @@ export function useSetProjectParent(projectId: string) {
   });
 }
 
+/**
+ * Renames a project's display name (its id and folder stay). 400 for an
+ * empty name, 423 while locked, 403 for a non-admin (server edition).
+ */
+export function useRenameProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ projectId, name }: { projectId: string; name: string }) =>
+      api.put<Project>(`/projects/${encodeURIComponent(projectId)}/name`, { name }),
+    onSuccess: (project) => {
+      qc.setQueryData(queryKeys.project(project.id), project);
+      qc.invalidateQueries({ queryKey: queryKeys.projects, exact: true });
+    },
+  });
+}
+
 // --- project lifecycle: lock, unlock, remove -------------------------------------
 
 /** Lock a project (optional reason): the server then refuses every change of it until unlocked. */

@@ -426,6 +426,7 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   'admin.member_remove': 'Member removed',
   'module.lock_break': 'Module lock broken',
   'project.create': 'Project created',
+  'project.rename': 'Project renamed',
   'project.lock': 'Project locked',
   'project.unlock': 'Project unlocked',
   'project.remove': 'Project removed',

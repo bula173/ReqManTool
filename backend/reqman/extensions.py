@@ -192,6 +192,7 @@ class NoLocks:
 
 # Project-level administrative actions the core reports to the audit trail.
 AUDIT_PROJECT_CREATE = "project.create"
+AUDIT_PROJECT_RENAME = "project.rename"
 AUDIT_PROJECT_LOCK = "project.lock"
 AUDIT_PROJECT_UNLOCK = "project.unlock"
 AUDIT_PROJECT_REMOVE = "project.remove"

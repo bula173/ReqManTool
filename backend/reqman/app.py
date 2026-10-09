@@ -415,6 +415,11 @@ class SetProjectParentBody(BaseModel):
     parent_project_id: str | None = None
 
 
+class RenameProjectBody(BaseModel):
+    # Typed loosely so the service validates it and REST/WebSocket reject alike.
+    name: Any = None
+
+
 class SetProjectReferencesBody(BaseModel):
     # Project ids (null or [] = none). Typed loosely so the service validates
     # it and REST/WebSocket reject alike.
@@ -723,6 +728,14 @@ async def create_project(body: CreateProjectBody):
 @app.put("/projects/{project_id}/parent")
 async def set_project_parent(project_id: str, body: SetProjectParentBody):
     project = _wrap(service.set_project_parent, project_id, body.parent_project_id)
+    await manager.broadcast(project_id)
+    return project.to_dict()
+
+
+@app.put("/projects/{project_id}/name")
+async def rename_project(project_id: str, body: RenameProjectBody):
+    """Change the project's display name (its id and folder stay)."""
+    project = _wrap(service.rename_project, project_id, body.name)
     await manager.broadcast(project_id)
     return project.to_dict()
 
@@ -1683,6 +1696,7 @@ RPC_METHODS = {
         p["name"], p.get("description", ""), p.get("template_id"), p.get("parent_project_id")
     ),
     "project.set_parent": lambda p: service.set_project_parent(p["id"], p.get("parent_project_id")),
+    "project.rename": lambda p: service.rename_project(p["id"], p.get("name")),
     "project.set_row_styles": lambda p: service.set_row_styles(p["id"], p.get("row_styles")),
     "project.set_references": lambda p: service.set_project_references(p["id"], p.get("references")),
     "project.references": lambda p: service.project_references(p["id"]),
@@ -1902,7 +1916,8 @@ ACCESS_DENIED_RPC_CODE = -32003
 MODULE_LOCKED_RPC_CODE = -32005
 
 MUTATING_METHODS = {
-    "project.create", "project.set_parent", "project.purge", "project.git_enable", "baseline.create",
+    "project.create", "project.set_parent", "project.rename", "project.purge", "project.git_enable",
+    "baseline.create",
     "project.set_row_styles", "project.set_references", "project.lock", "project.unlock",
     "project.git_set_remote", "project.git_set_auto_push", "project.git_push", "project.git_pull",
     "project.create_from_remote", "project.create_from_provider", "project.git_publish",

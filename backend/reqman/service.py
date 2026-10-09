@@ -83,6 +83,7 @@ from .extensions import (
     AUDIT_PROJECT_CREATE,
     AUDIT_PROJECT_LOCK,
     AUDIT_PROJECT_PURGE,
+    AUDIT_PROJECT_RENAME,
     AUDIT_PROJECT_REMOVE,
     AUDIT_PROJECT_UNLOCK,
     HOOKS,
@@ -1871,6 +1872,38 @@ class ProjectService:
         if project.parent_project_id != parent_project_id:
             project.parent_project_id = parent_project_id
             self.store.save_project(project)
+        return project
+
+    @staticmethod
+    def _checked_project_name(name: Any) -> str:
+        """``name`` stripped, or raise if it is not a usable project display name.
+
+        Like on creation, where the same rule comes from the UI: the name is
+        not empty. It is only displayed (ids are slugs and never change), so
+        no filesystem length limit applies to it.
+        """
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Project name must not be empty")
+        return name.strip()
+
+    @_records_history
+    @_requires(ACTION_PROJECT_ADMIN)
+    def rename_project(self, project_id: str, name: Any) -> Project:
+        """Change the project's display name; its id and folder stay.
+
+        Only ``Project.name`` changes: the id is referenced by subprojects,
+        project references, cross-project links and git remotes. The name is
+        stripped and must not be empty (400); a locked project is refused
+        (423). Renaming to the same name writes nothing (and so commits
+        nothing); otherwise the auto-commit reads "Project renamed 'A' → 'B'".
+        """
+        project = self.store.load_project(project_id)
+        stripped = self._checked_project_name(name)
+        if stripped != project.name:
+            previous = project.name
+            project.name = stripped
+            self.store.save_project(project)
+            audit(AUDIT_PROJECT_RENAME, project_id, name=stripped, previous=previous)
         return project
 
     # --- project lifecycle: lock, unlock, remove ---------------------------------

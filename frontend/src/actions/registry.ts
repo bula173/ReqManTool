@@ -409,6 +409,7 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
       action('module.purge'),
       action('project.purge'),
       divider,
+      action('project.rename'),
       action('project.lock'),
       action('project.unlock'),
       action('project.remove'),
@@ -570,11 +571,12 @@ export const LINK_CONTEXT_MENU: MenuEntry[] = [action('link.goTo'), divider, act
 
 /**
  * Right-click menu of a project / subproject node in the sidebar (left click
- * opens it). Rename joins it with its backlog item.
+ * opens it).
  */
 export const PROJECT_NODE_MENU: MenuEntry[] = [
   action('project.open'),
   divider,
+  action('project.rename'),
   action('project.newSubproject'),
   action('project.newModule'),
   action('project.newModuleFromTemplate'),
