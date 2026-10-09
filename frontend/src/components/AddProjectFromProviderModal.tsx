@@ -62,6 +62,7 @@ export function AddProjectFromProviderModal({
           onChange={selectConnection}
           disabled={addProject.isPending}
           onManage={onManageConnections}
+          label="Clone from"
         />
         {connectionId && (
           <>

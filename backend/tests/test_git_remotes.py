@@ -142,6 +142,7 @@ def test_push_publishes_current_baseline_and_tags(service, root, bare):
     assert status["remote"] == {
         "url": str(bare),
         "auto_push": False,
+        "allow_editor_push": False,
         "ahead": 0,
         "behind": 0,
         "sync_conflict": False,

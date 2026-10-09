@@ -79,6 +79,12 @@ export interface AuthValue {
   mode: 'local' | 'server';
   /** The logged-in user (server edition), else null. */
   user: SessionUser | null;
+  /**
+   * The login account of the sign-in (server edition): publish / push / pull
+   * with its OAuth token, no stored connection ("login" connection id).
+   * Null when the login provider does not host git repositories.
+   */
+  loginAccount: LoginAccount | null;
   /** Server-wide settings (data folder): always in local mode, server admins only in server mode. */
   canManageServer: boolean;
   /** What the user may do in which project. */
@@ -87,9 +93,18 @@ export interface AuthValue {
   logout: () => Promise<void>;
 }
 
+/** The login account of `GET /auth/me` (`AuthSession.login_account`). */
+export interface LoginAccount {
+  id: string;
+  type: string;
+  name: string;
+  url: string;
+}
+
 const LOCAL_AUTH: AuthValue = {
   mode: 'local',
   user: null,
+  loginAccount: null,
   canManageServer: true,
   access: LOCAL_ACCESS,
   logout: async () => undefined,

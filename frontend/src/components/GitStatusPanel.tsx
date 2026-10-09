@@ -41,6 +41,7 @@ import {
   useGitPull,
   useGitPush,
   useGitStatus,
+  useSetGitAllowEditorPush,
   useSetGitAutoPush,
   useSetGitRemote,
 } from '../api/queries';
@@ -123,12 +124,15 @@ function RecentCommits({ projectId }: { projectId: string }) {
 function RemoteSync({ projectId, remote }: { projectId: string; remote: GitRemoteStatus }) {
   const setRemote = useSetGitRemote(projectId);
   const setAutoPush = useSetGitAutoPush(projectId);
+  const setAllowEditorPush = useSetGitAllowEditorPush(projectId);
   const push = useGitPush(projectId);
   const pull = useGitPull(projectId);
   // Server edition: push/pull need the editor role; the remote URL a server admin
   // (it may point anywhere the server reaches); auto-push the project admin role.
   const { access } = useAuth();
   const canSync = access.canEdit(projectId);
+  // Push needs the editor role plus the project's opt-in for editors (admins always push).
+  const canPush = canSync && (access.canAdmin(projectId) || remote.allow_editor_push);
   const canSetRemote = access.canAdmin(projectId) && access.canUseConnections;
   const canSetAutoPush = access.canAdmin(projectId);
   const [editing, setEditing] = useState(false);
@@ -136,7 +140,8 @@ function RemoteSync({ projectId, remote }: { projectId: string; remote: GitRemot
   // Derived, not snapshotted: a live-sync removal of the remote must show the
   // URL form, not stale Push/Pull controls.
   const showForm = editing || remote.url === null;
-  const busy = setRemote.isPending || setAutoPush.isPending || push.isPending || pull.isPending;
+  const busy =
+    setRemote.isPending || setAutoPush.isPending || setAllowEditorPush.isPending || push.isPending || pull.isPending;
 
   const save = () => {
     setRemote.mutate(url.trim() || null, { onSuccess: () => setEditing(false) });
@@ -206,7 +211,7 @@ function RemoteSync({ projectId, remote }: { projectId: string; remote: GitRemot
             variant="default"
             leftSection={<IconCloudUpload size={14} />}
             loading={push.isPending}
-            disabled={(busy && !push.isPending) || !canSync}
+            disabled={(busy && !push.isPending) || !canPush}
             onClick={() => push.mutate()}
           >
             Push
@@ -235,6 +240,16 @@ function RemoteSync({ projectId, remote }: { projectId: string; remote: GitRemot
           onChange={(event) => setAutoPush.mutate(event.currentTarget.checked)}
         />
       )}
+      {remote.url !== null && (
+        <Switch
+          size="xs"
+          label="Allow editors to push"
+          description="Editors (without the project-admin role) may push this project"
+          checked={remote.allow_editor_push}
+          disabled={busy || !canSetAutoPush}
+          onChange={(event) => setAllowEditorPush.mutate(event.currentTarget.checked)}
+        />
+      )}
       {setRemote.isError && (
         <Text size="sm" c="red">
           {errorMessage(setRemote.error, 'Failed to set the remote')}
@@ -243,6 +258,16 @@ function RemoteSync({ projectId, remote }: { projectId: string; remote: GitRemot
       {setAutoPush.isError && (
         <Text size="sm" c="red">
           {errorMessage(setAutoPush.error, 'Failed to change auto-push')}
+        </Text>
+      )}
+      {setAllowEditorPush.isError && (
+        <Text size="sm" c="red">
+          {errorMessage(setAllowEditorPush.error, 'Failed to change the editor push setting')}
+        </Text>
+      )}
+      {push.isError && push.error instanceof ApiError && push.error.status === 403 && (
+        <Text size="sm" c="red">
+          A project admin can allow editors to push (switch above).
         </Text>
       )}
       {push.isError && (

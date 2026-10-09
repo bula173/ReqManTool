@@ -109,6 +109,8 @@ REMOTE_NAME = "origin"
 REMOTE_WORKING_REF = f"refs/remotes/{REMOTE_NAME}/{WORKING_BRANCH}"
 REMOTE_BASELINE_REF = f"refs/remotes/{REMOTE_NAME}/{BASELINE_BRANCH}"
 AUTO_PUSH_CONFIG_KEY = "reqman.autopush"
+# Whether an editor (project.write, not project.admin) may push this project (server edition).
+ALLOW_EDITOR_PUSH_CONFIG_KEY = "reqman.allow-editor-push"
 # The tracked merge/pull request (``reqman.review.branch``/``number``/``url``/``connection``).
 REVIEW_CONFIG_SECTION = "reqman.review"
 REVIEW_BRANCH_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
@@ -2142,6 +2144,12 @@ class GitHistory:
         )
         return result.returncode == 0 and result.stdout.strip() == b"true"
 
+    def _editor_push_allowed(self, info: RepoInfo) -> bool:
+        result = self._repo(
+            info, ["config", "--get", "--type=bool", ALLOW_EDITOR_PUSH_CONFIG_KEY], check=False, read_only=True
+        )
+        return result.returncode == 0 and result.stdout.strip() == b"true"
+
     def _is_ancestor(self, info: RepoInfo, ancestor: str, descendant: str) -> bool:
         result = self._repo(
             info, ["merge-base", "--is-ancestor", ancestor, descendant], check=False, read_only=True
@@ -2158,6 +2166,9 @@ class GitHistory:
         result: dict[str, Any] = {
             "url": url,
             "auto_push": False,
+            # Editors (project.write without project.admin) may push only when the
+            # project admin turned this on (server edition; see ``ProjectService.git_push``).
+            "allow_editor_push": False,
             "ahead": None,
             "behind": None,
             "sync_conflict": False,
@@ -2167,6 +2178,7 @@ class GitHistory:
         if url is None:
             return result
         result["auto_push"] = self._auto_push_enabled(info)
+        result["allow_editor_push"] = self._editor_push_allowed(info)
         result["review"] = self._review_info(info)
         local = self._rev(info, WORKING_REF)
         remote = self._rev(info, REMOTE_WORKING_REF)
@@ -2235,6 +2247,7 @@ class GitHistory:
                     # Auto-push is an opt-in per remote: a later remote must
                     # not inherit it silently.
                     self._repo(info, ["config", "--unset", AUTO_PUSH_CONFIG_KEY], check=False)
+                    self._repo(info, ["config", "--unset", ALLOW_EDITOR_PUSH_CONFIG_KEY], check=False)
                     # A tracked review belongs to the removed remote's repository.
                     self._repo(info, ["config", "--remove-section", REVIEW_CONFIG_SECTION], check=False)
                 return self._remote_info(info)
@@ -2254,6 +2267,7 @@ class GitHistory:
                 # A new remote starts with auto-push off, even if a stale
                 # setting survived (e.g. the remote was removed outside the app).
                 self._repo(info, ["config", "--unset", AUTO_PUSH_CONFIG_KEY], check=False)
+                self._repo(info, ["config", "--unset", ALLOW_EDITOR_PUSH_CONFIG_KEY], check=False)
                 self._repo(info, ["remote", "add", REMOTE_NAME, cleaned])
             else:
                 if self._remote_url(info) != cleaned:
@@ -2269,6 +2283,16 @@ class GitHistory:
             if enabled and self._remote_url(info) is None:
                 raise ValueError("Auto-push needs a configured remote URL")
             self._repo(info, ["config", AUTO_PUSH_CONFIG_KEY, "true" if enabled else "false"])
+            return self._remote_info(info)
+
+    def set_allow_editor_push(self, project_dir: Path, enabled: bool) -> dict[str, Any]:
+        """Allow (or stop allowing) editors to push this project (stored in ``.git/config``)."""
+        self._require_enabled()
+        with self._lock(project_dir):
+            info = self._usable_repo(project_dir)
+            if enabled and self._remote_url(info) is None:
+                raise ValueError("Allowing editor pushes needs a configured remote URL")
+            self._repo(info, ["config", ALLOW_EDITOR_PUSH_CONFIG_KEY, "true" if enabled else "false"])
             return self._remote_info(info)
 
     def _push_refspecs(self, info: RepoInfo) -> list[str]:

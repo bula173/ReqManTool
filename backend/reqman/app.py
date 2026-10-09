@@ -467,12 +467,17 @@ class SetGitAutoPushBody(BaseModel):
     enabled: bool
 
 
+class SetGitAllowEditorPushBody(BaseModel):
+    enabled: bool
+
+
 class AddProjectFromRemoteBody(BaseModel):
     url: str
 
 
 class AddProjectFromProviderBody(BaseModel):
-    connection_id: str
+    # Omitted (or "login"): the login account of the signed-in session (server edition).
+    connection_id: str | None = None
     # The repository path in the provider ("group/subgroup/name", "owner/name").
     repository: Any = None
 
@@ -492,7 +497,9 @@ class UpdateProviderConnectionBody(BaseModel):
 
 
 class PublishProjectBody(BaseModel):
-    connection_id: str
+    # Omitted (or "login"): publish with the login account of the signed-in session
+    # (server edition), no stored connection.
+    connection_id: str | None = None
     namespace_id: Any = None
     name: Any = None
     private: Any = True
@@ -988,6 +995,14 @@ async def set_git_remote(project_id: str, body: SetGitRemoteBody):
 @app.put("/projects/{project_id}/git/auto-push")
 async def set_git_auto_push(project_id: str, body: SetGitAutoPushBody):
     status = _wrap(service.set_git_auto_push, project_id, body.enabled)
+    await manager.broadcast(project_id)
+    return status
+
+
+@app.put("/projects/{project_id}/git/allow-editor-push")
+async def set_git_allow_editor_push(project_id: str, body: SetGitAllowEditorPushBody):
+    """Editors may push this project (project admins only)."""
+    status = _wrap(service.set_git_allow_editor_push, project_id, body.enabled)
     await manager.broadcast(project_id)
     return status
 
@@ -1760,6 +1775,8 @@ RPC_METHODS = {
     "project.git_log": lambda p: service.git_log(p["id"], p.get("limit")),
     "project.git_set_remote": lambda p: service.set_git_remote(p["id"], p.get("url")),
     "project.git_set_auto_push": lambda p: service.set_git_auto_push(p["id"], p["enabled"]),
+    # Editors may push this project (project admins only).
+    "project.git_set_allow_editor_push": lambda p: service.set_git_allow_editor_push(p["id"], p["enabled"]),
     "project.git_push": lambda p: service.git_push(p["id"]),
     "project.git_pull": lambda p: service.git_pull(p["id"]),
     "project.create_from_remote": lambda p: service.add_project_from_remote(p["url"]),
@@ -1776,10 +1793,11 @@ RPC_METHODS = {
     "provider.namespaces": lambda p: service.provider_namespaces(p["id"]),
     "provider.repositories": lambda p: service.provider_repositories(p["id"], p.get("search"), p.get("page")),
     "project.create_from_provider": lambda p: service.add_project_from_provider(
-        p["connection_id"], p.get("repository")
+        p.get("connection_id"), p.get("repository")
     ),
+    # ``connection_id`` omitted (or "login"): the login account of the signed-in session.
     "project.git_publish": lambda p: service.publish_project(
-        p["id"], p["connection_id"], p.get("namespace_id"), p.get("name"), p.get("private", True),
+        p["id"], p.get("connection_id"), p.get("namespace_id"), p.get("name"), p.get("private", True),
         p.get("description"),
     ),
     "project.git_provider": lambda p: service.provider_info_for_project(p["id"]),
@@ -1946,7 +1964,8 @@ MUTATING_METHODS = {
     "project.create", "project.set_parent", "project.rename", "project.purge", "project.git_enable",
     "baseline.create",
     "project.set_row_styles", "project.set_references", "project.lock", "project.unlock",
-    "project.git_set_remote", "project.git_set_auto_push", "project.git_push", "project.git_pull",
+    "project.git_set_remote", "project.git_set_auto_push", "project.git_set_allow_editor_push",
+    "project.git_push", "project.git_pull",
     "project.create_from_remote", "project.create_from_provider", "project.git_publish",
     "project.git_review_start", "project.git_review_forget",
     "attribute.add", "attribute.set_modules",

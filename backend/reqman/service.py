@@ -108,7 +108,14 @@ from .git_repo import (
     validate_baseline_name,
 )
 from .history import FileChange, build_snapshot, compare_snapshots, describe_changes
-from .providers import GITHUB, PROJECT_TOPIC, PROVIDER_LABELS, ProviderError, ProviderService
+from .providers import (
+    GITHUB,
+    LOGIN_CONNECTION_ID,
+    PROJECT_TOPIC,
+    PROVIDER_LABELS,
+    ProviderError,
+    ProviderService,
+)
 from . import module_tree, richtext
 from .models import (
     DEFAULT_MODULE_TYPE,
@@ -966,14 +973,36 @@ class ProjectService:
         self._git_remote_call(lambda: self.history.set_auto_push(project_dir, bool(enabled)))
         return self.history.status(project_dir)
 
+    @_requires(ACTION_PROJECT_ADMIN)
+    def set_git_allow_editor_push(self, project_id: str, enabled: bool) -> dict[str, Any]:
+        """Allow (or stop allowing) editors to push this project; returns the new git status.
+
+        Project admins can always push; an editor (``project.write`` without
+        ``project.admin``) needs this per-project opt-in (server edition).
+        """
+        self.store.load_project(project_id)
+        project_dir = self.store.project_path(project_id)
+        self._git_remote_call(lambda: self.history.set_allow_editor_push(project_dir, bool(enabled)))
+        return self.history.status(project_dir)
+
     @_requires(ACTION_PROJECT_WRITE)
     def git_push(self, project_id: str) -> dict[str, Any]:
         """Push ``current``, ``baseline`` and the ``baseline/*`` tags to the project's remote.
 
         A non-fast-forward rejection (another instance pushed first) is 409:
         pull first. 400 without a configured remote or when git fails.
+        An editor (no ``project.admin``) needs the project's
+        ``remote.allow_editor_push`` opt-in (``set_git_allow_editor_push``).
         """
         self.store.load_project(project_id)
+        if not is_permitted(ACTION_PROJECT_ADMIN, project_id):
+            # An editor pushes only when the project admin opted in for this project.
+            remote = self.history.status(self.store.project_path(project_id)).get("remote") or {}
+            if not remote.get("allow_editor_push"):
+                raise AccessDeniedError(
+                    "Editors may not push this project; a project admin can allow it "
+                    "(Git panel: Allow editors to push)"
+                )
         return self._git_remote_call(lambda: self.history.push(self.store.project_path(project_id)))
 
     @_requires(ACTION_PROJECT_WRITE)
@@ -1137,22 +1166,39 @@ class ProjectService:
         check_permission(ACTION_CONNECTIONS_MANAGE)
         return self.providers.remove_connection(connection_id)
 
-    def provider_namespaces(self, connection_id: str) -> list[dict[str, Any]]:
+    def provider_namespaces(self, connection_id: str | None) -> list[dict[str, Any]]:
         """Where a repository can be created: the user's own namespace, then groups / organisations."""
-        check_permission(ACTION_CONNECTIONS_USE)
-        return self.providers.provider(connection_id).namespaces()
+        self._check_connections_use(connection_id)
+        return self.providers.provider(self._login_or_stored(connection_id)).namespaces()
 
-    def provider_repositories(self, connection_id: str, search: Any = None, page: Any = None) -> dict[str, Any]:
+    def provider_repositories(
+        self, connection_id: str | None, search: Any = None, page: Any = None
+    ) -> dict[str, Any]:
         """One page of the user's repositories (most recently active first), optionally filtered by name."""
-        check_permission(ACTION_CONNECTIONS_USE)
-        provider = self.providers.provider(connection_id)
+        self._check_connections_use(connection_id)
+        provider = self.providers.provider(self._login_or_stored(connection_id))
         return provider.repositories(self.providers.checked_search(search), self.providers.checked_page(page))
+
+    @staticmethod
+    def _login_or_stored(connection_id: str | None) -> str:
+        """``None``/``"login"`` select the login account (server edition); else the connection id."""
+        return LOGIN_CONNECTION_ID if connection_id in (None, LOGIN_CONNECTION_ID) else connection_id
+
+    @staticmethod
+    def _check_connections_use(connection_id: str | None) -> None:
+        """The stored provider connections need ``connections.use``; the login account does not.
+
+        A project admin publishes / pushes with their own login on the login
+        provider's host without the server-wide ``connections.use`` permission.
+        """
+        if connection_id not in (None, LOGIN_CONNECTION_ID):
+            check_permission(ACTION_CONNECTIONS_USE)
 
     @_requires(ACTION_PROJECT_ADMIN)
     def publish_project(
         self,
         project_id: str,
-        connection_id: str,
+        connection_id: str | None = None,
         namespace_id: Any = None,
         name: Any = None,
         private: Any = True,
@@ -1165,8 +1211,13 @@ class ProjectService:
         ``private`` is false. When the repository was created but setting
         the remote or pushing failed, the error says so (and the project is
         reported changed, so clients refresh its status).
+
+        ``connection_id`` omitted (or ``"login"``) publishes with the login
+        account: the OAuth token of the signed-in session on the login
+        provider's host, no stored connection and no ``connections.use``
+        permission needed.
         """
-        check_permission(ACTION_CONNECTIONS_USE)
+        self._check_connections_use(connection_id)
         project = self.store.load_project(project_id)
         project_dir = self.store.project_path(project_id)
         status = self.history.status(project_dir)
@@ -1191,7 +1242,7 @@ class ProjectService:
         if description is not None and not isinstance(description, str):
             raise ValueError("The description must be a string")
         repo_description = (project.description if description is None else description).strip()[:250]
-        provider = self.providers.provider(connection_id)
+        provider = self.providers.provider(self._login_or_stored(connection_id))
         repository = provider.create_repository(namespace_id or "", repo_name.strip(), private, repo_description)
         # The ``reqmantool`` topic marks the repository as a ReqManTool project (the server
         # edition's discovery lists it). GitLab takes it with the creation; GitHub needs a
@@ -1222,16 +1273,18 @@ class ProjectService:
             result["topic_error"] = topic_error
         return result
 
-    def add_project_from_provider(self, connection_id: str, full_path: Any) -> Project:
+    def add_project_from_provider(self, connection_id: str | None, full_path: Any) -> Project:
         """"Add project from GitLab/GitHub": clone a repository picked from the provider's list.
 
         The clone URL comes from the provider API (never from the client);
         then it is the same path as ``add_project_from_remote``.
+        ``connection_id`` omitted (or ``"login"``) lists and clones with the
+        login account (no ``connections.use`` permission needed).
         """
         check_permission(ACTION_PROJECT_CREATE)
-        check_permission(ACTION_CONNECTIONS_USE)
+        self._check_connections_use(connection_id)
         path = self.providers.checked_repository_path(full_path)
-        repository = self.providers.provider(connection_id).repository(path)
+        repository = self.providers.provider(self._login_or_stored(connection_id)).repository(path)
         clone_url = repository.get("clone_url")
         if not clone_url:
             raise ValueError(f"The repository '{path}' has no HTTPS clone URL")

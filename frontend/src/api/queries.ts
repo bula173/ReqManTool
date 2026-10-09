@@ -743,6 +743,20 @@ export function useSetGitAutoPush(projectId: string) {
 }
 
 /**
+ * Allows (or stops allowing) editors to push this project (project admins
+ * only); answers with the new git status.
+ */
+export function useSetGitAllowEditorPush(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (enabled: boolean) => api.put<GitStatus>(`/projects/${projectId}/git/allow-editor-push`, { enabled }),
+    onSuccess: (status) => {
+      qc.setQueryData(queryKeys.gitStatus(projectId), status);
+    },
+  });
+}
+
+/**
  * Pushes `current`, `baseline` and the `baseline/*` tags to the project's
  * remote. 409 when the remote has other commits (pull first), 400 without a
  * configured remote or when git fails (network, access).
@@ -871,7 +885,8 @@ export function useProviderRepositories(
 export function useAddProjectFromProvider() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { connection_id: string; repository: string }) =>
+    // `connection_id` null/"login": the login account of the sign-in (server edition).
+    mutationFn: (body: { connection_id: string | null; repository: string }) =>
       api.post<Project>('/projects/from-provider', body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.projects });
@@ -887,8 +902,9 @@ export function useAddProjectFromProvider() {
 export function usePublishProject(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
+    // `connection_id` null/"login": publish with the login account (server edition).
     mutationFn: (body: {
-      connection_id: string;
+      connection_id: string | null;
       namespace_id: string | null;
       name: string;
       private: boolean;

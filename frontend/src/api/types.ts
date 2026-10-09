@@ -543,6 +543,11 @@ export interface GitRemoteStatus {
   url: string | null;
   /** Push automatically after each commit/baseline (per-project opt-in). */
   auto_push: boolean;
+  /**
+   * Editors (project.write without project.admin) may push this project
+   * (per-project opt-in a project admin sets in the Git panel).
+   */
+  allow_editor_push: boolean;
   /** Commits on `current` the remote does not have (null before the first fetch/push). */
   ahead: number | null;
   /** Fetched remote commits not on `current` (null before the first fetch/push). */
@@ -1219,6 +1224,12 @@ export interface AuthSession {
   expires_at: number;
   /** The user's roles (also GET /auth/permissions, WS `auth.permissions`). */
   permissions?: UserPermissions;
+  /**
+   * The login account for publish / push / pull (the pseudo connection
+   * "login": the OAuth token of this sign-in, server edition), or null when
+   * the login provider does not host git repositories (e.g. plain OIDC).
+   */
+  login_account?: { id: string; type: string; name: string; url: string } | null;
 }
 
 /**

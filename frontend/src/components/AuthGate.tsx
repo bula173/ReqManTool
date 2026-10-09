@@ -41,18 +41,27 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   const user = session.data?.user ?? null;
   const permissions = session.data?.permissions;
+  const loginAccount = session.data?.login_account ?? null;
   const value = useMemo<AuthValue>(
     () =>
       serverMode
         ? {
             mode: 'server',
             user,
+            loginAccount,
             canManageServer: user?.server_admin ?? false,
             access: serverAccess(permissions, user?.server_admin ?? false),
             logout,
           }
-        : { mode: 'local', user: null, canManageServer: true, access: LOCAL_ACCESS, logout: async () => undefined },
-    [serverMode, user, permissions, logout],
+        : {
+            mode: 'local',
+            user: null,
+            loginAccount: null,
+            canManageServer: true,
+            access: LOCAL_ACCESS,
+            logout: async () => undefined,
+          },
+    [serverMode, user, loginAccount, permissions, logout],
   );
 
   if (edition.isPending || (serverMode && session.isPending)) {

@@ -47,6 +47,7 @@ export function PublishProjectModal({
 
   const submit = () => {
     if (!connectionId) return;
+    // "login" (the login account) and a stored connection id go the same way.
     publish.mutate(
       { connection_id: connectionId, namespace_id: ownerId, name: name.trim(), private: isPrivate, description },
       {
@@ -120,7 +121,8 @@ export function PublishProjectModal({
         )}
         <Text size="xs" c="dimmed">
           The repository is created empty, set as this project’s remote and the project is pushed (branch “current”,
-          the baseline branch and baseline tags). Push and Pull then authenticate with the connection’s token.
+          the baseline branch and baseline tags). Push and Pull then authenticate with the same account (the login’s
+          OAuth token or the connection’s token).
         </Text>
         {publish.isError && (
           <Text size="sm" c="red" style={{ wordBreak: 'break-word' }}>
