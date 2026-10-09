@@ -115,7 +115,7 @@ def test_lock_records_who_when_why_and_round_trips(plain, root):
     text = project_file(root, project.id).read_text(encoding="utf-8")
     data = json.loads(text)
     assert text == json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-    assert data["format_version"] == PROJECT_FORMAT.current == 8
+    assert data["format_version"] == PROJECT_FORMAT.current
     keys = list(data)
     assert keys.index("locked") == keys.index("description") + 1
     assert keys.index("attributes") == keys.index("locked") + 1
@@ -191,7 +191,7 @@ def test_version_7_file_with_a_stray_locked_key_loads_unlocked(plain, root):
     assert fresh.get_project(project.id).locked is None
     module = fresh.create_module(project.id, "System", "SYS")  # not refused
     data = json.loads(project_file(root, project.id).read_text(encoding="utf-8"))
-    assert data["format_version"] == 8 and "locked" not in data
+    assert data["format_version"] == PROJECT_FORMAT.current and "locked" not in data
     assert module.id in [m.id for m in fresh.list_modules(project.id)]
 
 

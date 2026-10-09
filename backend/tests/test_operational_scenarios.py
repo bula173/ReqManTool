@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import importlib
 import json
+import sys
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from reqman import richtext
 from reqman.formats import PROJECT_FORMAT, upgrade
