@@ -31,6 +31,11 @@ plugs in through exactly these interfaces:
   forget the memberships of a removed project.
 - **WebSocket methods** (``Hooks.rpc_methods``): JSON-RPC methods an
   edition adds to ``/ws`` (sync or async callables taking the params).
+- **Login account** (``EditionContext.providers``): the edition installs
+  ``ProviderService.login_source`` on the app's provider service, so
+  publish / push / pull can authenticate with the logged-in user's OAuth
+  token for one git command or API call only (``reqman_server/
+  login_account.py``); the local edition has no login source.
 - **Module lock service** (``ModuleLockService``): asked before a write to
   the content of a module (its requirements, the links it is the source
   of); raises ``ModuleLockedError`` (REST 423, WebSocket -32005) when
@@ -333,6 +338,9 @@ class EditionContext:
     # Open a repository as a project (``ProjectService.open_repository_project``: clone once,
     # later fetch): ``(clone URL, is-same-repository(remote URL), git auth(url))`` -> result.
     open_repository: Callable[..., dict[str, Any]] | None = None
+    # The app-level ``reqman.providers.ProviderService`` (connections, tokens): the edition
+    # installs its ``login_source`` on it so publish / push / pull can use the login account.
+    providers: Any = None
 
 
 class ServerEdition(Protocol):

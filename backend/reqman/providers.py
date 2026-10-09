@@ -17,10 +17,14 @@ written to a file, a log, a git config or a remote URL, and never sent to
 the browser. ``REQMAN_TOKEN_STORE=memory`` keeps tokens in process memory
 instead (tests, scratch servers).
 
-Server edition (later): the abstraction point is ``TokenStore`` /
-``ProviderService.token``: a server edition resolves the token of the
-logged-in user's OAuth login instead of a keychain entry; everything
-above it (providers, git authentication) stays the same.
+Server edition: the abstraction point is ``TokenStore`` /
+``ProviderService.token`` — and, for the login account itself,
+``ProviderService.login_source``: the edition resolves the connection and
+OAuth token of the logged-in user's ``github`` / ``gitlab`` / ``gerrit``
+login per request, so publish / push / pull work without a stored
+connection. The pseudo connection id ``LOGIN_CONNECTION_ID`` ("login")
+selects it; the token is read fresh (sessions refresh it), never cached
+and never written anywhere.
 
 git over HTTPS authenticates with the token through ``git_auth_env``:
 ``GIT_CONFIG_COUNT``/``GIT_CONFIG_KEY_<n>``/``GIT_CONFIG_VALUE_<n>``
@@ -45,7 +49,7 @@ import urllib.request
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .formats import CONNECTIONS_FORMAT, check_format_version, upgrade, with_format_version
 
@@ -56,6 +60,9 @@ GITHUB = "github"
 PROVIDERS = (GITLAB, GITHUB)
 PROVIDER_LABELS = {GITLAB: "GitLab", GITHUB: "GitHub"}
 DEFAULT_URLS = {GITLAB: "https://gitlab.com", GITHUB: "https://github.com"}
+# The pseudo connection id of the logged-in user's login provider (server
+# edition): no stored connection, the token comes from ``login_source``.
+LOGIN_CONNECTION_ID = "login"
 
 # Every provider API request gives up after this many seconds.
 HTTP_TIMEOUT_SECONDS = 20.0
@@ -969,10 +976,49 @@ class ProviderService:
         self._lock = threading.Lock()
         # Keychain reads are cached per process (auto-push asks on every change).
         self._token_cache: dict[str, str | None] = {}
+        # Server edition only (``reqman_server`` sets it): resolves the login
+        # provider ``ProviderConnection`` and OAuth token of the current
+        # identity as ``(connection, token)``, or raises ``ValueError`` with
+        # the reason. Read per call, never cached: sessions refresh tokens.
+        self.login_source: Callable[[], tuple[ProviderConnection, str]] | None = None
 
     @classmethod
     def from_env(cls, connections_path: Path) -> "ProviderService":
         return cls(ConnectionStore(connections_path), token_store_from_env())
+
+    # --- the login account (server edition) -------------------------------------------
+
+    def login_connection(self, required: bool = False) -> tuple[ProviderConnection, str] | None:
+        """``(connection, OAuth token)`` of the current identity's login provider, or ``None``.
+
+        ``required`` (publish, provider API calls): no login account is a
+        ``ValueError`` with the reason instead of ``None`` (git falls back
+        to its own credentials when it needs the token for a remote only).
+        """
+        if self.login_source is None:
+            if required:
+                raise ValueError(
+                    "Publishing with the login account needs a signed-in session of this server's "
+                    "GitLab / GitHub login (server.auth_providers); add a provider connection instead"
+                )
+            return None
+        try:
+            found = self.login_source()
+        except ValueError as exc:
+            if required:
+                raise
+            logger.info("No login token for this operation: %s", exc)
+            return None
+        except Exception as exc:  # noqa: BLE001 - git and listings fall back to no token
+            logger.warning("The login account could not be resolved: %s", type(exc).__name__)
+            if required:
+                raise ValueError(f"The login account could not be resolved ({type(exc).__name__})") from exc
+            return None
+        if not isinstance(found, tuple) or len(found) != 2 or not isinstance(found[1], str) or not found[1]:
+            if required:
+                raise ValueError("Your session holds no sign-in token; log out and log in again")
+            return None
+        return found
 
     # --- connections ---
 
@@ -986,7 +1032,15 @@ class ProviderService:
         return self._find(self.connections.load(), connection_id)
 
     def token(self, connection_id: str) -> str | None:
-        """The connection's token (local edition: from the OS keychain). Never sent to a client."""
+        """The connection's token (local edition: from the OS keychain). Never sent to a client.
+
+        ``LOGIN_CONNECTION_ID``: the login OAuth token of the current
+        identity, read fresh on every call (never cached).
+        """
+        if connection_id == LOGIN_CONNECTION_ID:
+            found = self.login_connection(required=True)
+            assert found is not None  # required: never None
+            return found[1]
         if connection_id not in self._token_cache:
             self._token_cache[connection_id] = self.tokens.get(connection_id)
         return self._token_cache[connection_id]
@@ -1108,6 +1162,18 @@ class ProviderService:
     # --- providers ---
 
     def provider(self, connection_id: str) -> Provider:
+        if connection_id == LOGIN_CONNECTION_ID:
+            # The logged-in user's login provider (server edition): no stored
+            # connection, the OAuth token of the session, used as-is.
+            found = self.login_connection(required=True)
+            assert found is not None
+            connection, token = found
+            if connection.provider not in _PROVIDER_CLASSES:
+                raise ValueError(
+                    f"Your login provider '{connection.name}' cannot be used for repositories "
+                    f"({connection.provider})"
+                )
+            return _PROVIDER_CLASSES[connection.provider](connection, token, self.http, oauth=True)
         connection = self.get_connection(connection_id)
         if connection.provider not in _PROVIDER_CLASSES:
             raise ValueError(f"Connection '{connection.name}' has an unknown provider '{connection.provider}'")
@@ -1119,44 +1185,58 @@ class ProviderService:
             )
         return _PROVIDER_CLASSES[connection.provider](connection, token, self.http)
 
+    @staticmethod
+    def _match_connection(connection: ProviderConnection, parts: tuple[str, str, int | None, str]) -> str | None:
+        """The repository path a remote URL's parts name under ``connection``'s URL, or ``None``."""
+        scheme, host, port, path = parts
+        conn = urllib.parse.urlsplit(connection.url)
+        conn_host = (conn.hostname or "").lower()
+        conn_path = conn.path.rstrip("/")
+        if scheme in ("https", "http"):
+            if scheme != conn.scheme or host != conn_host or (port or None) != (conn.port or None):
+                return None
+            if conn_path and not (path == conn_path or path.startswith(conn_path + "/")):
+                return None
+            rest = path[len(conn_path) :]
+        else:
+            if host != conn_host:
+                return None
+            rest = path[len(conn_path) :] if conn_path and path.startswith(conn_path + "/") else path
+        repo = rest.strip("/")
+        if repo.endswith(".git"):
+            repo = repo[: -len(".git")]
+        return repo if _REPOSITORY_PATH_RE.match(repo) else None
+
     def connection_for_remote(self, remote_url: str) -> tuple[ProviderConnection, str] | None:
         """The connection a remote URL belongs to and the repository path in it, or ``None``.
 
         https remotes match scheme, host, port and the connection URL's path
-        prefix; ssh remotes match the host. Read-only and never raises for
-        a malformed URL.
+        prefix; ssh remotes match the host. Stored connections win; in the
+        server edition the login provider's host matches too, so push / pull
+        / review work without a stored connection. Read-only and never
+        raises for a malformed URL.
         """
         parts = parse_remote(remote_url)
         if parts is None:
             return None
-        scheme, host, port, path = parts
         try:
             connections = self.connections.load()
         except ValueError:
-            return None
+            connections = []
         for connection in connections:
-            conn = urllib.parse.urlsplit(connection.url)
-            conn_host = (conn.hostname or "").lower()
-            conn_path = conn.path.rstrip("/")
-            if scheme in ("https", "http"):
-                if scheme != conn.scheme or host != conn_host or (port or None) != (conn.port or None):
-                    continue
-                if conn_path and not (path == conn_path or path.startswith(conn_path + "/")):
-                    continue
-                rest = path[len(conn_path) :]
-            else:
-                if host != conn_host:
-                    continue
-                rest = path[len(conn_path) :] if conn_path and path.startswith(conn_path + "/") else path
-            repo = rest.strip("/")
-            if repo.endswith(".git"):
-                repo = repo[: -len(".git")]
-            if _REPOSITORY_PATH_RE.match(repo):
+            repo = self._match_connection(connection, parts)
+            if repo:
                 return connection, repo
+        login = self.login_connection()
+        if login is not None:
+            repo = self._match_connection(login[0], parts)
+            if repo:
+                return login[0], repo
         return None
 
     def git_auth_env(self, remote_url: str) -> dict[str, str] | None:
-        """Environment for one git process reaching ``remote_url`` with the connection's token.
+        """Environment for one git process reaching ``remote_url`` with the token of its
+        connection, or — server edition — of the logged-in user's login provider.
 
         Only for an https URL under a connection's URL (http only on a
         loopback host). Never raises: without a match or a token git runs

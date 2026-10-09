@@ -136,6 +136,7 @@ else:
             open_repository=lambda clone_url, is_same, auth: service.open_repository_project(
                 clone_url, is_same, auth
             ),
+            providers=providers,
         ),
     )
     logger.info("Server edition: %s", SERVER_EDITION.name)

@@ -45,6 +45,13 @@ Project discovery (``discovery.py``): users logged in through GitLab /
 GitHub see the ReqManTool projects in their repositories and open them
 (the server clones them once into its data directory); REST routes and
 WebSocket methods (``discovery.*``).
+
+Publish / push / pull with the login account (``login_account.py``): the
+OAuth token of the sign-in session resolves the pseudo connection
+``login`` (``ProviderService.login_source``), so a project admin can
+publish a project and push / pull its remote on the login provider's host
+without a stored provider connection; ``GET /auth/me`` reports the login
+account.
 """
 
 from __future__ import annotations
@@ -58,6 +65,7 @@ from .admin import AdminService, build_admin_router, build_rpc_methods
 from .discovery import DiscoveryService, build_discovery_router, build_discovery_rpc_methods
 from .github_oauth import GitHubOAuthClient
 from .audit import AuditLog, AuditService, build_audit_router, build_audit_rpc_methods
+from .login_account import LoginAccountSource
 from .memberships import MembershipRegistry
 from .module_locks import ModuleLockRegistry, ModuleLocks, build_lock_router, build_lock_rpc_methods
 from .middleware import AuthMiddleware
@@ -92,6 +100,7 @@ class ServerEditionImpl:
         self.audit: AuditLog | None = None
         self.repo: RepoAccess | None = None
         self.discovery: DiscoveryService | None = None
+        self.login_account: LoginAccountSource | None = None
 
     def install(self, app, context: EditionContext) -> None:
         settings = load_server_settings(
@@ -123,10 +132,16 @@ class ServerEditionImpl:
             audit=audit,
         )
         repo_roles = repo if repo.enabled else None
+        # Publish / push / pull with the login account: the OAuth token of the
+        # sign-in session, resolved per request (never stored in a connection).
+        login_account = LoginAccountSource(settings, users, sessions, refresh=repo.refresh_token)
+        if context.providers is not None:
+            context.providers.login_source = login_account
         app.include_router(
             build_router(
                 settings, clients, sessions, PendingLogins(), users, permissions,
                 locks=lock_registry, broadcast=context.broadcast, audit=audit, repo=repo_roles,
+                login_account=login_account,
             )
         )
         admin = AdminService(
@@ -159,6 +174,7 @@ class ServerEditionImpl:
         self.audit = audit
         self.repo = repo_roles
         self.discovery = discovery
+        self.login_account = login_account
         if not settings.cookie_secure:
             logger.warning("Server edition: the session cookie is not marked Secure (cookie_secure: false)")
         logger.info(

@@ -9,8 +9,10 @@
   ``frontend_url`` + ``next``. A failure redirects to
   ``frontend_url/?login_error=<message>`` instead.
 - ``GET /auth/me``: the logged-in user, their roles (``permissions``, see
-  ``permissions.Permissions.summary``) and the session's CSRF token (401
-  without a session — the middleware answers).
+  ``permissions.Permissions.summary``), the session's CSRF token (401
+  without a session — the middleware answers) and the login account
+  (``login_account``: the ``login`` provider connection for publish /
+  push / pull, or null when the login has no git host).
 - ``POST /auth/logout``: ends the session and clears the cookie (needs the
   CSRF token when a session exists). The user's module edit locks are
   released when no other session of theirs is left.
@@ -65,6 +67,7 @@ def build_router(
     broadcast: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     audit: AuditLog | None = None,
     repo: RepoAccess | None = None,
+    login_account: Any = None,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -214,6 +217,9 @@ def build_router(
         body = {"user": user.public(), "csrf_token": session.csrf_token, "expires_at": int(session.expires)}
         if permissions is not None:
             body["permissions"] = permissions.summary(user)
+        if login_account is not None:
+            # Publish / push / pull with the login account ("login" connection): its provider, or null.
+            body["login_account"] = login_account.describe(user)
         return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
     @router.post("/auth/logout")
