@@ -1664,10 +1664,24 @@ provider and never receives a token.
   memory. `REQMAN_TOKEN_STORE=memory` keeps them in memory only (tests,
   scratch servers); a `ProjectService` built without a `ProviderService`
   has no connections and in-memory tokens. Responses only carry
-  `has_token`. **Server edition (later):** the abstraction point is
-  `TokenStore` / `ProviderService.token` — the token of the logged-in
-  user's OAuth login instead of a keychain entry; providers and git
-  authentication stay unchanged.
+  `has_token`.
+- **Login account (server edition)**: a user signed in through a `github`
+  or `gitlab` provider publishes / pushes / pulls with their login OAuth
+  token instead of a stored connection — the pseudo connection id `login`
+  (`LOGIN_CONNECTION_ID`), resolved per request by
+  `ProviderService.login_source` (`reqman_server/login_account.py`
+  `LoginAccountSource`; the local edition installs none, so the `login`
+  id answers a refusal). `token()`/`provider()` read it fresh on every
+  call (sessions refresh expiring tokens with the refresh token; nothing
+  is cached, stored in a file, logged or sent to the browser),
+  `connection_for_remote`/`git_auth_env` fall back to it when no stored
+  connection matches the remote's host, so Push / Pull / auto-push of a
+  remote on the login host authenticate with that one git process's extra
+  environment only. `GET /auth/me` reports it (`login_account`, or null
+  when the login provider hosts no git repositories — a plain OIDC single
+  sign-on); publish / provider browsing with it skips the server-wide
+  `connections.use` permission (a project admin needs no stored
+  connection).
 - **HTTP**: stdlib `urllib` (`ProviderHttp`; httpx is a test dependency
   only), a 20 s timeout on every request, responses capped at 8 MiB, and
   redirects are never followed (a token header must not go to another
@@ -1688,7 +1702,15 @@ provider and never receives a token.
   repository (owner namespace / group / organisation, name, private by
   default), sets its HTTPS clone URL as the remote (`set_remote`, probed
   with ls-remote) and pushes (`push`). A failure after the repository was
-  created says so and is broadcast (`project_changed`).
+  created says so and is broadcast (`project_changed`). `connection_id`
+  omitted (or `"login"`) publishes with the login account.
+- **Push permissions**: Push / Pull need `project.write`; Push additionally
+  needs `project.admin`, or the project's opt-in `remote.allow_editor_push`
+  (git config key `reqman.allow-editor-push` next to `reqman.autopush`,
+  set by a project admin in the Git panel: `PUT
+  /projects/{id}/git/allow-editor-push`, WS
+  `project.git_set_allow_editor_push`; cleared with the remote). Auto-push
+  runs after a commit as the committing user's roles allow.
 - **Add project from GitLab/GitHub**: lists the user's repositories (GitLab
   `membership=true` with server-side search; GitHub `/user/repos`,
   filtered by name over at most 500 recently updated repositories), then
@@ -1714,14 +1736,16 @@ provider and never receives a token.
   project is locked.
 - **API**: REST `GET/POST /providers/connections`, `PUT/DELETE
   /providers/connections/{id}`, `GET /providers/connections/{id}/namespaces`,
-  `GET /providers/connections/{id}/repositories?search=&page=`, `POST
-  /projects/from-provider`, `POST /projects/{id}/git/publish`, `GET
+  `GET /providers/connections/{id}/repositories?search=&page=` (`{id}` may be
+  `login`), `POST /projects/from-provider`, `POST /projects/{id}/git/publish`,
+  `PUT /projects/{id}/git/allow-editor-push`, `GET
   /projects/{id}/git/provider`, `GET|POST|DELETE /projects/{id}/git/review`;
   WebSocket `provider.connections`, `provider.add_connection`,
   `provider.update_connection`, `provider.remove_connection`,
   `provider.namespaces`, `provider.repositories`,
   `project.create_from_provider`, `project.git_publish`,
-  `project.git_provider`, `project.git_review_status`,
+  `project.git_set_allow_editor_push`, `project.git_provider`,
+  `project.git_review_status`,
   `project.git_review_start`, `project.git_review_forget`. Connection
   changes broadcast `{"event":"connections_changed"}`; project operations
   broadcast `changed`.
@@ -1730,11 +1754,16 @@ provider and never receives a token.
   (`AddProjectFromProviderModal`), File ▸ Publish project / Request review
   (`PublishProjectModal`, `StartReviewModal`; registry actions in
   `actions/providerActions.ts`), and the Git panel's Publish button and
-  Review section (state, approvals, refresh, forget). The review status
+  Review section (state, approvals, refresh, forget). The connection select
+  (`ProviderConnectionSelect`) offers the login account first (server
+  edition, from `login_account` of `GET /auth/me`, exposed as
+  `useAuth().loginAccount`, id `login`), then the stored connections with a
+  token; the Git panel has the "Allow editors to push" switch next to
+  auto-push. The review status
   query (`['git-review', id]`) is outside the `projects` prefix so project
   changes do not call the provider API.
 - Not yet: issue links (issue URL attribute, create an issue from a
-  requirement), the server edition's OAuth login.
+  requirement), Gerrit as a login/publish provider (see the backlog follow-up).
 
 ## Packaging, configuration and install
 

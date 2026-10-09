@@ -84,27 +84,50 @@ item first (phase A), then test, review and fix by area (phase B).
 
 ### Next — requested, in delivery order
 
-- [ ] Server edition: publish and push projects with the login account
-      (GitHub, GitLab, Gerrit). Requested 2026-10-09. A project-admin (or
-      server admin) logged in through a `github`, `gitlab` or `gerrit`
-      provider can, without a separate "connection": "Publish project"
-      (create the repository/Gerrit project under a chosen org/group/
-      parent, private by default, add the `reqmantool` topic where the
-      host supports it, set it as the project's remote, push `current`,
-      `baseline` and `baseline/*` tags) and Push / Pull an existing remote
-      on that host — authenticated with the user's login OAuth token for
-      that git command only (never stored in repo config or remote URL).
-      Gerrit: new provider type `gerrit` (base URL; login via the
-      company OIDC/OAuth that fronts Gerrit, or Gerrit's own OAuth
-      plugin) — create project via REST `PUT /projects/{name}`, push via
-      HTTPS with the user's Gerrit HTTP credentials (stored server-side
-      per user, encrypted, entered once in the user menu) or SSH; option
-      "push for review" to `refs/for/current` (creates a Gerrit change)
-      instead of a direct push; change status shown in the Git panel.
-      Push/publish require project-admin (editors: push only when the
-      project setting allows). Local edition keeps provider connections.
-      REST + WS parity; provider errors verbatim; docs/SERVER_SETUP.md
-      gets a Gerrit section.
+- [ ] Server edition: Gerrit as a login/publish provider (follow-up of
+      "publish and push with the login account", delivered 2026-10-09 for
+      GitHub/GitLab). A project-admin (or server admin) logged in through a
+      `gerrit` provider can, without a separate "connection": "Publish
+      project" (create the Gerrit project under a chosen parent via REST
+      `PUT /projects/{name}`, set it as the project's remote, push
+      `current`, `baseline` and `baseline/*` tags) and Push / Pull an
+      existing remote on that host — authenticated with the user's login
+      for that git command only (never stored in repo config or remote
+      URL). What remains (the plumbing is in place: `login_source`,
+      `LOGIN_CONNECTION_ID`, `login_account`, the `login` option in
+      `ProviderConnectionSelect`, the publish/push path with it):
+      1. provider type `gerrit` in `reqman_server/settings.py`
+         (`PROVIDER_TYPES`, `_parse_provider`): base URL, login via the
+         company OIDC/OAuth that fronts Gerrit (issuer = base URL) or
+         Gerrit's own OAuth plugin; add `"gerrit"` to
+         `LOGIN_GIT_PROVIDER_TYPES` (`reqman_server/login_account.py`).
+      2. a `GerritProvider` in `reqman/providers.py`: `PUT
+         /projects/{name}` (the response body starts with `)]}'` — strip
+         that XSSI prefix in `ProviderHttp`/`_call`), repository listing /
+         lookup, and `create_repository` mapped to a project creation
+         (name = project name, no namespace field: Gerrit projects are
+         flat; the "parent" parameter selects the tree place).
+      3. HTTPS push with the user's Gerrit HTTP credentials (username +
+         HTTP password from Gerrit's settings, entered once in the user
+         menu and stored server-side per user, encrypted — stdlib
+         `hmac`/`hashlib`-based scheme with a 0600 key file next to the
+         server state; no crypto dependency is available) or SSH push
+         (`ssh -p 29418 <user>@<host> gerrit push`, the user's ssh agent);
+         the credentials ride the same one-git-process extra environment
+         as `git_auth_env` and are never in a remote URL.
+      4. option "push for review" (per project, next to
+         `allow_editor_push`): push to `refs/for/current` instead of
+         `current` (creates a Gerrit change), the change number/url shown
+         in the Git panel's review section like the GitLab/GitHub
+         merge/pull request.
+      5. docs/SERVER_SETUP.md gets a Gerrit section (provider config,
+         HTTP credentials, SSH keys, `refs/for`); REST + WS parity;
+         tests in `backend/tests/test_server_login_account.py` /
+         `test_login_publish_push.py` style; move this entry to
+         docs/DONE.md.
+      Local edition keeps provider connections. Push/publish require
+      project-admin (editors: push only when `allow_editor_push` allows,
+      as delivered).
 - [ ] Server edition: project discovery through a GitHub App (slice 2).
       Requested 2026-10-08; slice 1 (GitHub OAuth App + GitLab: topic
       `reqmantool` + `project.json` scan, "Available on GitHub/GitLab" in

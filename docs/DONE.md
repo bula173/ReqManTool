@@ -1823,3 +1823,62 @@ Newest entries are appended at the end.
       walked (same choice as the traceability matrix; see "Project
       references: follow-ups"), no browser verification, no frontend tests
       (no test runner).
+
+- [x] **Server edition: publish and push projects with the login account
+      (GitHub, GitLab)** (2026-10-09; requested 2026-10-09; the Gerrit
+      half is the backlog follow-up "Gerrit as a login/publish provider").
+      A project-admin (or server admin) signed in through a `github` /
+      `gitlab` provider publishes, pushes and pulls without a stored
+      provider "connection": the login OAuth token of the sign-in session,
+      used for that one git process or provider API call only — never
+      stored in a connection file, a repo config, the remote URL, a log or
+      sent to the browser. Slice 1 (plumbing): the pseudo connection id
+      `login` (`LOGIN_CONNECTION_ID`, `reqman/providers.py`) resolved per
+      request by the new hook `ProviderService.login_source`, which the
+      server edition installs (`reqman_server/login_account.py`
+      `LoginAccountSource`: the identity's user, its login provider when
+      that hosts git repositories, the session's OAuth access token —
+      renewed with the refresh token when it is about to expire, never
+      cached); `token()`/`provider()` handle `login` (OAuth = Bearer),
+      `connection_for_remote`/`git_auth_env` fall back to it, so Push /
+      Pull / auto-push of a remote on the login host authenticate through
+      the one git process's extra environment (`GIT_CONFIG_*` header,
+      base64, no plain token). `EditionContext` gained `providers` (passed
+      from `app.py`) for the install; `GET /auth/me` reports
+      `login_account` (or null: a plain OIDC login hosts no git
+      repositories). Slice 2 (use): `publish_project`,
+      `provider_namespaces`, `provider_repositories`,
+      `add_project_from_provider` take `connection_id` omitted/`"login"`
+      (they then skip the server-wide `connections.use` permission a
+      project-admin does not have) and `PublishProjectBody` /
+      `AddProjectFromProviderBody` made it optional; push permissions:
+      Push needs `project.write` plus `project.admin`, or the new
+      per-project opt-in `remote.allow_editor_push` a project admin sets
+      in the Git panel (git config key `reqman.allow-editor-push` next to
+      `reqman.autopush`, cleared with the remote; REST `PUT
+      /projects/{id}/git/allow-editor-push`, WS
+      `project.git_set_allow_editor_push`, both broadcasting `changed`).
+      Frontend: `ProviderConnectionSelect` offers the login account first
+      ("your login on <host>", from `login_account` of `/auth/me`, exposed
+      as `useAuth().loginAccount`), the Git panel has the "Allow editors to
+      push" switch and disables Push for editors without the opt-in.
+      Files: `backend/reqman/{providers.py, extensions.py, app.py,
+      service.py, git_repo.py}`,
+      `backend/reqman_server/{login_account.py (new), __init__.py,
+      routes.py}`, `backend/tests/{test_server_login_account.py (new),
+      test_login_publish_push.py (new), test_git_remotes.py}`,
+      `frontend/src/{api/{types.ts, queries.ts}, auth/context.ts,
+      components/{AuthGate.tsx, ProviderConnectionSelect.tsx,
+      PublishProjectModal.tsx, AddProjectFromProviderModal.tsx,
+      GitStatusPanel.tsx}}`, `docs/{ARCHITECTURE.md, BACKLOG.md}`.
+      Tests: `test_server_login_account.py` (9: the session token, renewal,
+      the refusal without identity / without a git-hosting login / in the
+      local edition, `git_auth_env`'s base64 header and host scoping,
+      stored connections winning over the login account,
+      `ProjectService`'s `remote_auth` hook), `test_login_publish_push.py`
+      (8: publish / namespaces / repositories with the login account under
+      a guard that denies `connections.use`, the `login` id, the local
+      edition's refusal, the editor push opt-in incl. the REST/WS routes
+      and remote-removal reset, the 403 for an editor without it, Pull
+      staying open). Not covered: browser verification, frontend tests (no
+      test runner), Gerrit (backlog follow-up).
