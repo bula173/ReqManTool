@@ -135,6 +135,14 @@ def _write_json(path: Path, data: Any) -> None:
         raise
 
 
+def _chmod_no_follow(path: str, mode: int) -> None:
+    """``os.chmod`` that never follows a symlink (where the platform can tell)."""
+    if os.chmod in os.supports_follow_symlinks:
+        os.chmod(path, mode, follow_symlinks=False)
+    else:
+        os.chmod(path, mode)
+
+
 class ProjectStore:
     """Reads and writes projects/modules/requirements as JSON files on disk."""
 
@@ -472,9 +480,18 @@ class ProjectStore:
         os.rename(folder, trash)
         self._format_cache.pop(project_id, None)
 
-        def make_writable(func: Any, path: str, _exc: Any) -> None:
-            # Git object files are read-only; on Windows they cannot be deleted as they are.
-            os.chmod(path, 0o700)
+        def make_writable(func: Any, path: str, exc: Any) -> None:
+            # Only a failed delete is retried: in a read-only folder (POSIX) or
+            # of a read-only file (Windows: git object files). Anything else
+            # (an unreadable folder: os.open, os.scandir, ...) is re-raised.
+            error = exc[1] if isinstance(exc, tuple) else exc  # onerror passes exc_info
+            if func not in (os.unlink, os.remove, os.rmdir):
+                raise error
+            # Never follow a link: only the real folder holding ``path`` (inside
+            # the trash) and ``path`` itself when it is not a link are changed.
+            for target in (os.path.dirname(path), path):
+                if not os.path.islink(target):
+                    _chmod_no_follow(target, 0o700)
             func(path)
 
         leftover: str | None = None
@@ -483,7 +500,7 @@ class ProjectStore:
                 shutil.rmtree(trash, onexc=make_writable)
             else:  # pragma: no cover - older Pythons
                 shutil.rmtree(trash, onerror=make_writable)
-        except OSError:
+        except Exception:  # noqa: BLE001 - the project is already gone from the data directory
             leftover = str(trash)
         try:
             staging_parent.rmdir()

@@ -652,6 +652,14 @@ def _no_hooks_dir() -> str:
         return path
 
 
+def _local_timestamp(value: str) -> float:
+    """A ``YYYY-MM-DD HH:MM:SS`` local time (as git reads it) as a Unix time (0 if before 1970)."""
+    try:
+        return max(datetime.fromisoformat(value).timestamp(), 0.0)
+    except (ValueError, OSError, OverflowError):
+        return 0.0
+
+
 def _stderr(result: subprocess.CompletedProcess) -> str:
     text = result.stderr.decode("utf-8", "replace").strip() if result.stderr else ""
     return text or f"exit status {result.returncode}"
@@ -765,6 +773,26 @@ class GitHistory:
         read_only: bool = False,
         timeout: float = _TIMEOUT_SECONDS,
     ) -> subprocess.CompletedProcess:
+        try:
+            result = subprocess.run(
+                self._command(args),
+                cwd=cwd,
+                input=input,
+                capture_output=True,
+                env=_clean_env(env, read_only),
+                timeout=timeout,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise GitNotFound(f"git was not found ('{self.settings.executable}')") from exc
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise GitError(f"git {_subcommand(args)} could not run: {exc}") from exc
+        if check and result.returncode != 0:
+            raise GitError(f"git {_subcommand(args)} failed: {_stderr(result)}")
+        return result
+
+    def _command(self, args: list[str]) -> list[str]:
+        """The full git command line of ``args`` (with the safety ``-c`` overrides)."""
         # No hooks, ever: ``--no-verify`` alone still runs prepare-commit-msg,
         # post-commit, post-rewrite, post-checkout, reference-transaction, ...
         # No other configured program either: no fsmonitor, no automatic gc or
@@ -788,23 +816,72 @@ class GitHistory:
             "protocol.fd.allow=never",
             *args,
         ]
+        return command
+
+    def _repo_lines(
+        self,
+        info: RepoInfo,
+        args: list[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        read_only: bool = False,
+        timeout: float = _TIMEOUT_SECONDS,
+    ) -> Iterator[str]:
+        """Stream the output lines of git on the project's repository (ASCII, without the newline).
+
+        Lets the caller stop reading early (closing the generator kills git),
+        so a long output is never held in memory. git is killed after
+        ``timeout`` seconds, which raises ``GitError`` like a failure does.
+        """
+        assert info.git_dir is not None and info.work_tree is not None
+        full = [f"--git-dir={info.git_dir}", f"--work-tree={info.work_tree}", *args]
+        stderr = tempfile.TemporaryFile()
         try:
-            result = subprocess.run(
-                command,
-                cwd=cwd,
-                input=input,
-                capture_output=True,
-                env=_clean_env(env, read_only),
-                timeout=timeout,
-                check=False,
-            )
-        except FileNotFoundError as exc:
-            raise GitNotFound(f"git was not found ('{self.settings.executable}')") from exc
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise GitError(f"git {_subcommand(args)} could not run: {exc}") from exc
-        if check and result.returncode != 0:
-            raise GitError(f"git {_subcommand(args)} failed: {_stderr(result)}")
-        return result
+            try:
+                process = subprocess.Popen(
+                    self._command(full),
+                    cwd=info.work_tree,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=stderr,
+                    env=_clean_env(env, read_only),
+                )
+            except FileNotFoundError as exc:
+                raise GitNotFound(f"git was not found ('{self.settings.executable}')") from exc
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise GitError(f"git {_subcommand(args)} could not run: {exc}") from exc
+            timed_out = threading.Event()
+
+            def expire() -> None:
+                timed_out.set()
+                process.kill()
+
+            timer = threading.Timer(timeout, expire)
+            timer.daemon = True
+            try:
+                try:
+                    timer.start()
+                except RuntimeError as exc:
+                    raise GitError(f"git {_subcommand(args)} could not run: {exc}") from exc
+                assert process.stdout is not None
+                for raw in process.stdout:
+                    yield raw.decode("ascii", "replace").rstrip("\r\n")
+                returncode = process.wait()
+            finally:
+                timer.cancel()
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
+                if process.stdout is not None:
+                    process.stdout.close()
+            if timed_out.is_set():
+                raise GitError(f"git {_subcommand(args)} could not run: timed out after {timeout:g} seconds")
+            if returncode != 0:
+                stderr.seek(0)
+                text = stderr.read().decode("utf-8", "replace").strip()
+                raise GitError(f"git {_subcommand(args)} failed: {text or f'exit status {returncode}'}")
+        finally:
+            stderr.close()
 
     def _repo(self, info: RepoInfo, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
         """Run git on the project's own repository, named explicitly (never discovered)."""
@@ -1769,22 +1846,42 @@ class GitHistory:
         try:
             if self._head(info, read_only=True) is None:
                 return {**empty, "available": True}
-            args = ["rev-list", "--first-parent", f"--skip={offset}", f"--max-count={limit + 1}"]
+            # ``--timestamp``: "<committer time> <commit>" per line. ``since`` is
+            # filtered here, not with ``--since``: git stops walking at the
+            # first older commit, so a backdated commit (clock skew, another
+            # clone) would hide every newer one behind it (``--since-as-filter``
+            # needs git 2.37). ``--until`` only filters. Skip/limit apply after.
+            args = ["rev-list", "--first-parent", "--timestamp"]
             if author or text:
                 args += ["--fixed-strings", "--regexp-ignore-case"]
             if author:
                 args.append(f"--author={author}")
             if text:
                 args.append(f"--grep={text}")
-            if since:
-                args.append(f"--since={since}")
             if until:
                 args.append(f"--until={until}")
             args.append("HEAD")
             if path is not None:
                 args += ["--", path]
-            listed = self._repo(info, args, read_only=True, env=_LITERAL_PATHS if path is not None else None)
-            commits = [c for c in listed.stdout.decode("ascii", "replace").split() if COMMIT_HASH_PATTERN.match(c)]
+            oldest = _local_timestamp(since) if since else None
+            commits: list[str] = []
+            skipped = 0
+            lines = self._repo_lines(info, args, read_only=True, env=_LITERAL_PATHS if path is not None else None)
+            try:
+                for line in lines:
+                    stamp, _, commit = line.partition(" ")
+                    if not COMMIT_HASH_PATTERN.match(commit) or not stamp.isdigit():
+                        continue
+                    if oldest is not None and int(stamp) < oldest:
+                        continue
+                    if skipped < offset:
+                        skipped += 1
+                        continue
+                    commits.append(commit)
+                    if len(commits) > limit:
+                        break
+            finally:
+                lines.close()
             has_more = len(commits) > limit
             commits = commits[:limit]
             objects = self._commit_objects(info, commits)

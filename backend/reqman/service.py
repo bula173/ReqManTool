@@ -1907,7 +1907,9 @@ class ProjectService:
     @_records_history
     @_requires(ACTION_PROJECT_ADMIN)
     def lock_project(self, project_id: str, reason: Any = None, baseline: str | None = None) -> Project:
-        """Lock a project: every change of it is then refused until it is unlocked (409 if already locked).
+        """Lock a project: every change of it is then refused until it is unlocked.
+
+        Already locked: 423 (WebSocket -32004).
 
         Records who (the git identity commits use), when (UTC) and why, and
         the baseline when locked right after creating one. Locking writes
@@ -1940,6 +1942,15 @@ class ProjectService:
             self.store.save_project(project)
             audit(AUDIT_PROJECT_UNLOCK, project_id)
         return project
+
+    def _check_exact_project_id(self, project_id: str) -> None:
+        """404 unless ``project_id`` is exactly a listed project id.
+
+        On a case-insensitive filesystem "ALPHA" would load project "alpha",
+        yet compare unequal to the ids its subprojects and references store.
+        """
+        if project_id not in self.store.list_project_ids():
+            raise FileNotFoundError(f"Project '{project_id}' not found")
 
     def _removal_blockers(self, project_id: str) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
         """``(subprojects, referencing projects)`` of ``project_id``, each ``{id, name}``, sorted by id.
@@ -2022,6 +2033,7 @@ class ProjectService:
         history off) and ``recovery`` explains, from it, whether and how the
         project could be recovered after removal.
         """
+        self._check_exact_project_id(project_id)
         project = self.store.load_project(project_id)
         subprojects, referencing = self._removal_blockers(project_id)
         status = self.history.status(self.store.project_path(project_id)) if self.history.enabled else None
@@ -2050,6 +2062,7 @@ class ProjectService:
         outside the project folder is touched (``ProjectStore.delete_project``).
         No referencing project exists, so no other project holds links to it.
         """
+        self._check_exact_project_id(project_id)
         project = self.store.load_project(project_id)
         if data_dir is not None:
             if not isinstance(data_dir, str) or (
