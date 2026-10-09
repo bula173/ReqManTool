@@ -363,11 +363,18 @@ def test_app_refuses_to_start_with_a_newer_saved_config(tmp_path, monkeypatch):
         assert config_file.read_bytes() == before
         assert not (tmp_path / "x").exists()
 
-        # An explicit data directory overrides (and does not read) the saved config.
+        # The config file is read for every setting (CLI / env / file), so a
+        # newer one is refused even when the data directory comes from the
+        # environment; only the value would be overridden, never the parsing.
         monkeypatch.setenv("REQMAN_DATA_DIR", str(tmp_path / "explicit"))
+        with pytest.raises(NewerFormatError, match=NEWER_MESSAGE):
+            importlib.reload(app_module)
+        assert config_file.read_bytes() == before
+
+        # With a readable config the environment still wins over the file.
+        config_file.write_text(json.dumps({"format_version": 1, "data_dir": str(tmp_path / "x")}) + "\n")
         importlib.reload(app_module)
         assert app_module.DATA_DIR == (tmp_path / "explicit").resolve()
-        assert config_file.read_bytes() == before
     finally:
         monkeypatch.setenv("REQMAN_DATA_DIR", str(tmp_path / "explicit"))
         importlib.reload(app_module)
