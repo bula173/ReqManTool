@@ -547,16 +547,22 @@ export function useCreateModuleFromTemplate(projectId: string) {
 /**
  * What "Apply chapter template" would add to a module (`POST
  * .../apply-skeleton/preview`, WS `module.preview_skeleton`): read-only, so a
- * plain query keyed by the template; `templateId` null means the built-in
- * template of the module's type.
+ * plain query keyed by the source; `templateId` null means the built-in
+ * template of the module's type, `moduleKey` a module of a project template
+ * (then `templateId` is that project template's id).
  */
-export function useModuleSkeletonPreview(projectId: string, moduleId: string, templateId: string | null) {
+export function useModuleSkeletonPreview(
+  projectId: string,
+  moduleId: string,
+  templateId: string | null,
+  moduleKey: string | null = null,
+) {
   return useQuery({
-    queryKey: [...queryKeys.project(projectId), 'skeleton-preview', moduleId, templateId] as const,
+    queryKey: [...queryKeys.project(projectId), 'skeleton-preview', moduleId, templateId, moduleKey] as const,
     queryFn: () =>
       api.post<ModuleSkeletonPreview>(
         `/projects/${encodeURIComponent(projectId)}/modules/${encodeURIComponent(moduleId)}/apply-skeleton/preview`,
-        { template_id: templateId },
+        { template_id: templateId, module_key: moduleKey },
       ),
     // Always recomputed when the dialog opens: the module may have changed.
     staleTime: 0,
@@ -574,7 +580,7 @@ export function useModuleSkeletonPreview(projectId: string, moduleId: string, te
 export function useApplyModuleSkeleton(projectId: string, moduleId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { template_id: string | null }) =>
+    mutationFn: (body: { template_id: string | null; module_key?: string | null }) =>
       api.post<ApplyModuleSkeletonResult>(
         `/projects/${encodeURIComponent(projectId)}/modules/${encodeURIComponent(moduleId)}/apply-skeleton`,
         body,

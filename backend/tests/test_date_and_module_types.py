@@ -641,7 +641,7 @@ def test_stored_link_configuration_with_disallowed_types_keeps_loading_and_linki
 
 
 def test_project_format_is_current_and_v4_project_loads_without_rewrite(service, tmp_path):
-    assert PROJECT_FORMAT.current == 9
+    assert PROJECT_FORMAT.current == 10
     project = service.create_project("P")
     module = service.create_module(project.id, "Reqs", "REQ")
     service.add_attribute_definition(project.id, "note", "Note")

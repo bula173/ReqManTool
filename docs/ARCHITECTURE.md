@@ -106,6 +106,7 @@ persistence" below.
                                    #   Project: id, name, description,
                                    #   parent_project_id (only if set),
                                    #   references (only if non-empty),
+                                   #   locked, template_id (each only if set),
                                    #   attributes (incl. system ones),
                                    #   id_counters, link_configurations, views,
                                    #   module_order (only if set),
@@ -915,8 +916,18 @@ files.
   `module.apply_skeleton`; read-only preview `POST
   .../apply-skeleton/preview`, WS `module.preview_skeleton`; module menu and
   Edit ▸ "Apply chapter template…", which shows the preview): body
-  `template_id` (a module template; null/omitted: `builtin:<module type>`).
-  Gives an *existing* module the template's heading skeleton
+  `template_id` (a module template; null/omitted: `builtin:<module type>`)
+  and optional `module_key` — then `template_id` is a *project* template
+  (its own namespace, so `builtin:rbc_template` is never read as a module
+  template) and the source is that module entry's skeleton, else the one of
+  the module template it references (the rule `_build_from_template`
+  applies when the project is created). That is how an existing project
+  gets the template's specific chapters instead of the generic ones of a
+  plain module template; an unknown key is 400, a missing template 404.
+  The dialog lists every project template's modules and pre-selects the
+  entry of the template the project was created from (`Project.template_id`,
+  matched by module prefix, then by name). Gives an *existing* module the
+  skeleton's heading tree
   (`ProjectService.apply_module_skeleton`, planned by
   `_module_skeleton_plan`): level by level, a skeleton node whose title
   (case-insensitive, whitespace collapsed) is already a heading under the
@@ -927,9 +938,11 @@ files.
   and view are not merged, except that Object Type is made to apply to the
   module if it did not. Lock, permission and module-lock rules are those of
   every module write (`_records_history`); one commit, one `changed`
-  broadcast. Returns `{template_id, created: [ids], headings: [{id, heading,
-  parent_id, level, under_existing}]}` (the preview: `{template_id,
-  headings, requirements}` with provisional ids). The RBC template gives
+  broadcast. Returns `{template_id, module_key, created: [ids], headings:
+  [{id, heading, parent_id, level, under_existing}]}` (the preview:
+  `{template_id, module_key, headings, requirements}` with provisional ids;
+  `module_key` is null unless the source is a module of a project
+  template). The RBC template gives
   every module an RBC/CENELEC chapter structure (OpScen, StRS, SyRS, SwRS,
   the test specifications and the test execution campaigns).
 - **Listing** (`GET /module-templates`, WS `module_template.list`): like
@@ -1032,7 +1045,7 @@ into any AI chat and pastes the CSV answer back into the CSV import.
 `project.json` and the app config file (`config.json`, see "Packaging,
 configuration and install") start with
 an integer `format_version` (`reqman/formats.py`: `PROJECT_FORMAT`,
-`CONFIG_FORMAT`; project currently 9, config 1). Module, requirement and
+`CONFIG_FORMAT`; project currently 10, config 1). Module, requirement and
 link-pair files have no version of their own; they are governed by their
 project's version. Templates keep their own, separate `format_version`.
 Project format 2 added `AttributeDefinition.modules` (per-module attribute
@@ -1070,6 +1083,12 @@ attribute `module_types` (a version 8 reader matched no module with it) and
 rewrites no module, requirement or link-pair file. The bump makes an older
 ReqManTool refuse a version 9 project instead of reading operational
 scenario modules as requirements modules and dropping their type on save.
+Project format 10 added `Project.template_id` (the project template a
+project was created from; see "Apply chapter template" above); the 9 → 10
+step drops a stray `template_id` key and rewrites no module, requirement or
+link-pair file — a version 9 project simply has no remembered origin. The
+bump makes an older ReqManTool refuse a version 10 project instead of
+forgetting the template on save.
 
 Only optional attributes can be scoped to modules: a required attribute
 always applies to every module. `ProjectService._check_required_scope`
@@ -2183,7 +2202,7 @@ commit (or the other way round).
 
 **Created by / modified by.** Not stored: there are no `created_by` /
 `modified_by` keys in requirement files and no format bump. A new
-requirement key would need project format 9 (an older ReqManTool would
+requirement key would need a project format bump (an older ReqManTool would
 drop it on save), would make every edit rewrite the file, and would
 duplicate what git already records with the right author in both editions.
 The requirement history (`GET .../requirements/{r}/history`) returns them

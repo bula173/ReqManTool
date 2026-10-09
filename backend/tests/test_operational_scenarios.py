@@ -66,7 +66,7 @@ def test_create_operational_scenarios_module_round_trips(service):
     assert service.get_module(project.id, module.id).type == "operational_scenarios"
     path = service.store.root / project.id / "modules" / module.id / "module.json"
     assert json.loads(path.read_text())["type"] == "operational_scenarios"
-    assert json.loads((service.store.root / project.id / "project.json").read_text())["format_version"] == 9
+    assert json.loads((service.store.root / project.id / "project.json").read_text())["format_version"] == PROJECT_FORMAT.current
 
 
 @pytest.mark.parametrize(

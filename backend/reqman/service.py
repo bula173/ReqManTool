@@ -1788,6 +1788,9 @@ class ProjectService:
             )
         except ValueError as exc:
             raise ValueError(f"Template '{template_id}' is invalid: {exc}") from exc
+        # Remembered so "Apply chapter template…" can pre-select this
+        # template's module as the chapter source (project format 10).
+        project.template_id = template_id
 
         with self.store.staging_store() as staging:
             for module in modules:
@@ -5381,11 +5384,44 @@ class ProjectService:
         """A heading title compared case-insensitively with whitespace runs collapsed."""
         return " ".join(text.split()).casefold()
 
-    def _module_skeleton_plan(self, project_id: str, module_id: str, template_id: Any) -> dict[str, Any]:
+    def _project_template_skeleton(self, template_id: str, module_key: str) -> list[SkeletonNode]:
+        """The heading skeleton of one module of a project template (empty: none).
+
+        The other apply-skeleton source: with ``module_key`` the
+        ``template_id`` names a *project* template (its own namespace, so
+        ``builtin:rbc_template`` is never read as a module template) and the
+        skeleton is that module entry's own one, else the one of the module
+        template it references — the rule ``_build_from_template`` applies
+        when the project is created. This is how an existing project gets the
+        template's specific chapters instead of the generic ones of a plain
+        module template. ``module_key`` is a non-empty trimmed string
+        (validated by the caller).
+        """
+        template = self._load_template(template_id)
+        for tmodule in template.modules:
+            if tmodule.key != module_key:
+                continue
+            if tmodule.skeleton is not None:
+                return tmodule.skeleton
+            if tmodule.module_template:
+                try:
+                    return self._load_module_template(tmodule.module_template).skeleton
+                except (FileNotFoundError, ValueError) as exc:
+                    raise ValueError(
+                        f"Template '{template_id}', module '{module_key}': {exc}"
+                    ) from exc
+            return []
+        raise ValueError(f"Template '{template_id}' has no module '{module_key}'")
+
+    def _module_skeleton_plan(
+        self, project_id: str, module_id: str, template_id: Any, module_key: Any = None
+    ) -> dict[str, Any]:
         """What ``apply_module_skeleton`` adds (in memory, nothing written).
 
         ``template_id`` names a module template (None: the built-in one of
-        the module's type, ``builtin:<type>``). Its skeleton is matched level
+        the module's type, ``builtin:<type>``); with ``module_key`` it names
+        a project template instead and that module's skeleton is the source
+        (``_project_template_skeleton``). Its skeleton is matched level
         by level against the module's headings (requirements whose Object
         Type reads "Heading"), by title (``_heading_key``): a skeleton node
         whose title already is a heading under the same parent is descended
@@ -5394,15 +5430,25 @@ class ProjectService:
         """
         project = self.store.load_project(project_id)
         module = self.store.load_module(project_id, module_id)
-        if template_id is None:
-            template_id = make_template_id(BUILTIN_SOURCE, module.type)
-        template = self._load_module_template(template_id)
+        if module_key is None:
+            if template_id is None:
+                template_id = make_template_id(BUILTIN_SOURCE, module.type)
+            skeleton = self._load_module_template(template_id).skeleton
+        else:
+            if template_id is None:
+                raise ValueError("A project template id is required together with a module key")
+            if not isinstance(module_key, str) or not module_key.strip():
+                raise ValueError(
+                    "The module key must be a non-empty string (the key of one of the template's modules)"
+                )
+            module_key = module_key.strip()
+            skeleton = self._project_template_skeleton(template_id, module_key)
         existing = self.store.load_all_requirements(project_id, module_id)
         extended: list[str] = []
         created: list[Requirement] = []
         object_type_id: str | None = None
         heading_value: str | None = None
-        if template.skeleton:
+        if skeleton:
             try:
                 object_type = self._skeleton_object_type(project, module, extended)
                 heading_value = self._object_type_value(object_type, "Heading")
@@ -5426,7 +5472,7 @@ class ProjectService:
 
             additions: list[tuple[str | None, list[SkeletonNode]]] = []
             # Iterative walk (parent id, skeleton nodes at that level), in tree order.
-            stack: list[tuple[str | None, list[SkeletonNode]]] = [(None, template.skeleton)]
+            stack: list[tuple[str | None, list[SkeletonNode]]] = [(None, skeleton)]
             while stack:
                 parent_id, nodes = stack.pop()
                 present = headings_under(parent_id)
@@ -5491,38 +5537,49 @@ class ProjectService:
             "project": project,
             "module": module,
             "template_id": template_id,
+            "module_key": module_key,
             "created": created,
             "headings": headings,
             "extended": extended,
         }
 
-    def preview_module_skeleton(self, project_id: str, module_id: str, template_id: Any = None) -> dict[str, Any]:
+    def preview_module_skeleton(
+        self, project_id: str, module_id: str, template_id: Any = None, module_key: Any = None
+    ) -> dict[str, Any]:
         """The headings ``apply_module_skeleton`` would add (read-only; ids are provisional).
 
-        Returns ``{"template_id", "headings": [{"id", "heading", "parent_id",
-        "level", "under_existing"}], "requirements"}`` (``requirements``:
-        every requirement it would create, headings and their texts).
+        Returns ``{"template_id", "module_key", "headings": [{"id",
+        "heading", "parent_id", "level", "under_existing"}],
+        "requirements"}`` (``requirements``: every requirement it would
+        create, headings and their texts). ``module_key`` is None unless the
+        source is a module of a project template.
         """
-        plan = self._module_skeleton_plan(project_id, module_id, template_id)
+        plan = self._module_skeleton_plan(project_id, module_id, template_id, module_key)
         return {
             "template_id": plan["template_id"],
+            "module_key": plan["module_key"],
             "headings": plan["headings"],
             "requirements": len(plan["created"]),
         }
 
     @_records_history
-    def apply_module_skeleton(self, project_id: str, module_id: str, template_id: Any = None) -> dict[str, Any]:
+    def apply_module_skeleton(
+        self, project_id: str, module_id: str, template_id: Any = None, module_key: Any = None
+    ) -> dict[str, Any]:
         """Add a chapter template's missing headings to an existing module (``_module_skeleton_plan``).
 
-        Idempotent: applying the same template again adds nothing. Existing
-        requirements are never moved, changed or deleted; new headings (and
-        their informative texts) get server-allocated ids and other
-        attributes their defaults. The Object Type attribute is made to
+        The source is a module template, or with ``module_key`` a module of
+        a project template (the template the project was created from, for
+        instance). Idempotent: applying the same source again adds nothing.
+        Existing requirements are never moved, changed or deleted; new
+        headings (and their informative texts) get server-allocated ids and
+        other attributes their defaults. The Object Type attribute is made to
         apply to the module if it did not. Nothing is written when nothing
-        is missing. Returns ``{"template_id", "created": [ids], "headings":
-        [...]}`` (headings as in ``preview_module_skeleton``).
+        is missing. Returns ``{"template_id", "module_key", "created":
+        [ids], "headings": [...]}`` (headings as in
+        ``preview_module_skeleton``).
         """
-        plan = self._module_skeleton_plan(project_id, module_id, template_id)
+        plan = self._module_skeleton_plan(project_id, module_id, template_id, module_key)
         project: Project = plan["project"]
         created: list[Requirement] = plan["created"]
         if created:
@@ -5541,6 +5598,7 @@ class ProjectService:
             self._write_new_requirements(project, module_id, created)
         return {
             "template_id": plan["template_id"],
+            "module_key": plan["module_key"],
             "created": [r.id for r in created],
             "headings": plan["headings"],
         }

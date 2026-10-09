@@ -31,6 +31,11 @@ def _string_list(value: Any) -> list[str]:
     return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
 
 
+def _optional_string(value: Any) -> str | None:
+    """A hand-editable optional string value; anything else (and ``""``) reads as unset."""
+    return value if isinstance(value, str) and value else None
+
+
 @dataclass
 class AttributeDefinition:
     id: str
@@ -426,6 +431,12 @@ class Project:
     # right after ``references``. While set, ``ProjectService`` refuses every
     # change of the project except unlocking it.
     locked: ProjectLock | None = None
+    # The project template this project was created from (project format
+    # 10), or None when it was blank, cloned, imported from a repository or
+    # created before this key existed. Written only when set, right after
+    # ``locked``. Purely informational: no rule depends on it; the UI
+    # pre-selects it as the chapter source in "Apply chapter template…".
+    template_id: str | None = None
     attributes: list[AttributeDefinition] = field(default_factory=list)
     id_counters: dict[str, int] = field(default_factory=dict)
     link_configurations: list[LinkConfiguration] = field(default_factory=list)
@@ -459,6 +470,8 @@ class Project:
             data["references"] = list(self.references)
         if self.locked is not None:
             data["locked"] = self.locked.to_dict()
+        if self.template_id is not None:
+            data["template_id"] = self.template_id
         return {
             **data,
             "attributes": [a.to_dict() for a in self.attributes],
@@ -480,6 +493,7 @@ class Project:
             parent_project_id=data.get("parent_project_id"),
             references=_string_list(data.get("references")),
             locked=ProjectLock.from_dict(data.get("locked")),
+            template_id=_optional_string(data.get("template_id")),
             attributes=[AttributeDefinition.from_dict(a) for a in data.get("attributes", [])],
             id_counters=data.get("id_counters", {}),
             views=[View.from_dict(v) for v in data.get("views", [])],

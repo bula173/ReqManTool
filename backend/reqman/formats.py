@@ -237,9 +237,25 @@ def _project_v8_to_v9(data: dict) -> dict:
     return data
 
 
+def _project_v9_to_v10(data: dict) -> dict:
+    """Project format 9 -> 10: the template a project was created from.
+
+    Version 10 adds the optional ``Project.template_id`` (the project
+    template's id, informational: "Apply chapter template…" pre-selects it).
+    Version 9 had no such key, so a stray one in a hand-edited version 9 file
+    was ignored then and is dropped here so it keeps meaning nothing — an
+    older project simply has no remembered origin. Module, requirement and
+    link-pair files are unchanged. The bump exists so that an older
+    ReqManTool, whose ``Project.from_dict``/``to_dict`` would drop the key on
+    save, refuses version 10 projects instead of forgetting the template.
+    """
+    data.pop("template_id", None)
+    return data
+
+
 PROJECT_FORMAT = FileFormat(
     name="project",
-    current=9,
+    current=10,
     migrations={
         1: _project_v1_to_v2,
         2: _project_v2_to_v3,
@@ -249,6 +265,7 @@ PROJECT_FORMAT = FileFormat(
         6: _project_v6_to_v7,
         7: _project_v7_to_v8,
         8: _project_v8_to_v9,
+        9: _project_v9_to_v10,
     },
 )
 CONFIG_FORMAT = FileFormat(name="config", current=1)

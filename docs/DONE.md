@@ -1824,6 +1824,59 @@ Newest entries are appended at the end.
       references: follow-ups"), no browser verification, no frontend tests
       (no test runner).
 
+- [x] **"Apply chapter template" from a project template's module**
+      (2026-10-09; follow-up of Operational Scenarios / apply-skeleton).
+      `apply_module_skeleton` / `preview_module_skeleton` (and so
+      `POST .../apply-skeleton[/preview]`, WS `module.apply_skeleton` /
+      `module.preview_skeleton`) take a `module_key` beside `template_id`:
+      with it, `template_id` names a *project* template — its own namespace,
+      so `builtin:rbc_template` is never read as a module template — and the
+      source is that module entry's own `skeleton`, else the one of the
+      `module_template` it references (the rule `_build_from_template`
+      applies when the project is created). An existing project therefore
+      gets the template's specific chapters (RBC's `SyRS`, not the generic
+      `builtin:requirements` ones). Refused the same way over REST (400) and
+      WebSocket (-32602): a missing/non-string `module_key`, a `module_key`
+      without a template id, or a template without that module; a missing
+      template stays 404/-32001 and a dangling `module_template` reference
+      names the module and key. Results gain `module_key` (null unless the
+      source is a project template's module).
+      A project created from a template now remembers it:
+      `Project.template_id`, written only when set, right after `locked`,
+      **project format 9 → 10** (`_project_v9_to_v10` drops a stray key, so
+      an older project simply has no remembered origin; the bump makes an
+      older ReqManTool refuse a version 10 project instead of forgetting the
+      template on save); `create_project` records the id, blank/cloned/
+      imported projects have none. The dialog (`ApplySkeletonModal`) lists
+      every valid project template's modules as their own group beside the
+      module templates and pre-selects the origin template's entry for this
+      module (matched by module prefix, then by name) — derived during
+      render, so it applies once the project and templates have loaded
+      unless the user picks a source first; sources are `p:<template
+      id>#<module key>` and `m:<template id>`, and the preview gates "Add
+      chapters" as before. Files: `backend/reqman/{models.py, formats.py,
+      service.py, app.py}`, `backend/tests/test_apply_skeleton_project_
+      template.py (new)`, `backend/tests/{test_operational_scenarios.py,
+      test_date_and_module_types.py}` (format 9 → 10 expectations),
+      `frontend/src/{components/ApplySkeletonModal.tsx, api/types.ts,
+      api/queries.ts}`, `docs/ARCHITECTURE.md` (apply-skeleton sources,
+      project format 10). Tests: `backend/tests/
+      test_apply_skeleton_project_template.py` (18 tests: the RBC-specific
+      chapters, descend-into-existing/idempotence, the module-template
+      fallback, an entry with no skeleton, every refusal, REST/WS parity
+      incl. 400/404 and -32602/-32001, `template_id` round-trip and the
+      9 → 10 downgrade, the REST echo). Checked in the browser (dev
+      servers): the origin template's entry is pre-selected
+      (`p:builtin:rbc_template#syrs`, matched by prefix), the picker lists
+      the project templates in their own group beside the module templates,
+      switching a source re-previews, applying writes the chapters (toast
+      and server data), and a project without a remembered template keeps
+      the generic module template as its default (with the Object Type
+      alert when the project has none). Not covered: a project created
+      before format 10 has no remembered template (its source is still
+      listed and can be picked by hand), no frontend tests (no test
+      runner).
+
 - [x] **Server edition: publish and push projects with the login account
       (GitHub, GitLab)** (2026-10-09; requested 2026-10-09; the Gerrit
       half is the backlog follow-up "Gerrit as a login/publish provider").

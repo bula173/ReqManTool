@@ -209,6 +209,13 @@ export interface Project {
    * except unlocking (`DELETE /projects/{id}/lock`, WS `project.unlock`).
    */
   locked?: ProjectLock | null;
+  /**
+   * The project template this project was created from (project format 10),
+   * omitted for a blank, cloned or imported project. Informational: it lets
+   * "Apply chapter template…" pre-select this template's module as the
+   * chapter source.
+   */
+  template_id?: string | null;
   attributes: AttributeDefinition[];
   link_configurations: LinkConfiguration[];
   views: View[];
@@ -488,6 +495,8 @@ export interface SkeletonHeading {
 /** `POST .../apply-skeleton/preview` (WS `module.preview_skeleton`): read-only. */
 export interface ModuleSkeletonPreview {
   template_id: string;
+  /** The module key when the source is a module of a project template, else null. */
+  module_key: string | null;
   headings: SkeletonHeading[];
   /** Every requirement that would be created: headings plus their informative texts. */
   requirements: number;
@@ -496,6 +505,8 @@ export interface ModuleSkeletonPreview {
 /** `POST .../apply-skeleton` (WS `module.apply_skeleton`). */
 export interface ApplyModuleSkeletonResult {
   template_id: string;
+  /** The module key when the source is a module of a project template, else null. */
+  module_key: string | null;
   /** Ids of every requirement created (headings and informative texts); empty when nothing was missing. */
   created: string[];
   headings: SkeletonHeading[];

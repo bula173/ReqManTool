@@ -187,13 +187,6 @@ item first (phase A), then test, review and fix by area (phase B).
       data volume documented (project repos can also be mirrored to
       GitLab via remotes). Depends on the server-edition items.
 
-- [ ] "Apply chapter template" from a project template's module. Follow-up
-      of Operational Scenarios / apply-skeleton (2026-10-09): today it only
-      takes module templates, so an existing RBC project gets the generic
-      chapters; accept `builtin:rbc_template` + module key (e.g. SyRS) as
-      the source so existing RBC projects get the RBC-specific chapters,
-      and pre-select it when the project was created from that template.
-
 ### Phase B — tests, review and follow-ups of delivered items
 
 Collected review findings and leftovers of the items in Done; handled

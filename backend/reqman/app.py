@@ -558,6 +558,9 @@ class ApplyModuleSkeletonBody(BaseModel):
     # A module template id (its heading skeleton is applied); null/omitted:
     # the built-in template of the module's type. Validated by the service.
     template_id: Any = None
+    # With a project template id, the key of its module whose skeleton is
+    # applied instead (the RBC-specific chapters of e.g. ``SyRS``).
+    module_key: Any = None
 
 
 class SaveModuleAsTemplateBody(BaseModel):
@@ -1432,12 +1435,12 @@ async def create_module_from_template(project_id: str, body: CreateModuleFromTem
 @app.post("/projects/{project_id}/modules/{module_id}/apply-skeleton/preview")
 def preview_module_skeleton(project_id: str, module_id: str, body: ApplyModuleSkeletonBody):
     """Read-only: the chapter headings apply-skeleton would add (no write, no broadcast)."""
-    return _wrap(service.preview_module_skeleton, project_id, module_id, body.template_id)
+    return _wrap(service.preview_module_skeleton, project_id, module_id, body.template_id, body.module_key)
 
 
 @app.post("/projects/{project_id}/modules/{module_id}/apply-skeleton")
 async def apply_module_skeleton(project_id: str, module_id: str, body: ApplyModuleSkeletonBody):
-    result = _wrap(service.apply_module_skeleton, project_id, module_id, body.template_id)
+    result = _wrap(service.apply_module_skeleton, project_id, module_id, body.template_id, body.module_key)
     await manager.broadcast(project_id)
     return result
 
@@ -1839,11 +1842,11 @@ RPC_METHODS = {
         p["project_id"], p["id"], p["name"], p.get("description", ""), p.get("view_id")
     ),
     "module.apply_skeleton": lambda p: service.apply_module_skeleton(
-        p["project_id"], p["id"], p.get("template_id")
+        p["project_id"], p["id"], p.get("template_id"), p.get("module_key")
     ),
     # Read-only, never broadcast (not in MUTATING_METHODS).
     "module.preview_skeleton": lambda p: service.preview_module_skeleton(
-        p["project_id"], p["id"], p.get("template_id")
+        p["project_id"], p["id"], p.get("template_id"), p.get("module_key")
     ),
     "module.get": lambda p: service.get_module(p["project_id"], p["id"]),
     "module.list": lambda p: service.list_modules(p["project_id"]),
