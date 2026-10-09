@@ -14,7 +14,7 @@ Three places are involved:
 
 | Where | What |
 |---|---|
-| GitHub / GitLab / your SSO | An **OAuth application** that lets ReqManTool sign users in. |
+| GitHub / GitLab / your SSO | An **OAuth application** (on GitHub also a **GitHub App**) that lets ReqManTool sign users in. |
 | `config.json` of the server | `mode`, the public address, admins, and the login providers with their **client ID**. |
 | An environment file or the server's secret store | The provider's **client secret**. Never put it in `config.json` or in git. |
 
@@ -59,9 +59,57 @@ to the provider's `scopes` if your projects live in private repositories:
 ```
 
 Users are asked to consent again at their next login. ReqManTool only reads
-and clones with a user's login token; it never pushes with it. A GitHub App
-(fine-grained, installed per repository) is planned as the narrower
-alternative; see `docs/BACKLOG.md`.
+and clones with a user's login token; it never pushes with it.
+
+### GitHub App — the narrower alternative to the `repo` scope
+
+A GitHub App grants fine-grained, read-only repository permissions instead
+of the broad `repo` scope and is installed per organisation or per
+repository. Configure it **beside** (or instead of) the OAuth App above —
+login, callback, repository roles and discovery work the same way:
+
+1. Create it under **Settings → Developer settings → GitHub Apps → New
+   GitHub App**; for a company, create it under the **organisation**
+   (Organisation → Settings → Developer settings → GitHub Apps). Name it,
+   e.g. `ReqManTool`, and set the **Homepage URL** to your `base_url`.
+2. **Repository permissions** — the minimal set, all read-only (it covers
+   sign-in, repository roles, project discovery and cloning):
+   - **Metadata:** read-only — names, visibility, topics (the
+     `reqmantool` topic) and the `permissions` object the roles are read
+     from.
+   - **Contents:** read-only — reads `project.json` and clones.
+3. **User authorization:** check **Request user authorization (OAuth)
+   during installation** — without it, installing the App creates no
+   sign-in for ReqManTool — and leave **Expire user tokens after** at its
+   default: GitHub Apps hand out expiring user-to-server tokens with a
+   refresh token, which ReqManTool renews server-side on its own (nothing
+   to rotate by hand). Set the **User authorization callback URL** to the
+   usual callback, `<base_url>/auth/callback/<provider id>`.
+4. **Install the app** (below the form, or later: Settings → Developer
+   settings → GitHub Apps → your app → Install App) on the organisation(s)
+   or repositories that hold ReqManTool projects. Users who sign in
+   through the app must be allowed on those repositories; discovery shows
+   exactly the repositories of the installations they can access.
+5. Copy the **Client ID** and generate a **client secret** (under
+   *Client secrets and Webhook*); store the secret as
+   `REQMAN_AUTH_<ID>_CLIENT_SECRET`, where `<ID>` is the provider id in
+   upper case (section 5).
+6. Add the provider to `config.json` — `type` stays `github`, and
+   `github_app: true` is the one difference; discovery then reads the
+   App's installations instead of the user's repository list:
+
+   ```json
+   {"id": "github-app", "type": "github", "name": "GitHub App",
+    "url": "https://github.com", "client_id": "<App client ID>",
+    "github_app": true}
+   ```
+
+   With both providers configured, the login page shows one button per
+   provider, so users can migrate at their own pace.
+
+With the minimal read-only permissions above, "Publish project" (which
+creates a repository) needs more; grant the App the extra permissions only
+if you use it, or keep an OAuth App with the `repo` scope for publishing.
 
 ## 3. GitLab (gitlab.com or self-hosted)
 
@@ -175,13 +223,16 @@ section "Available on GitHub" (or GitLab) listing the ReqManTool projects
 in the repositories they can access, and open one with **Open**. No
 provider connection or personal access token is needed: the server uses
 the user's login token, server-side only. The token never reaches the
-browser, a log, the repository's configuration or a remote URL.
+browser, a log, the repository's configuration or a remote URL. A GitHub
+App's user-to-server tokens expire; the server renews them with the
+session's refresh token, so users notice nothing.
 
 - **What is found.** Repositories tagged with the topic `reqmantool`
   ("Publish project" adds it), and repositories whose `project.json` at the
   root of the `current` branch is a ReqManTool project (a background scan).
-  GitHub: the user's own, collaborator and organisation repositories.
-  GitLab: the projects the user is a member of.
+  GitHub OAuth App: the user's own, collaborator and organisation
+  repositories. GitHub App: the repositories of the installations the user
+  can access. GitLab: the projects the user is a member of.
 - **Opening** clones the repository once into the server's data folder,
   shared by every user. Opening it again later fetches and fast-forwards
   it. Opening needs at least GitHub Read / GitLab Guest on the repository.
@@ -190,7 +241,8 @@ browser, a log, the repository's configuration or a remote URL.
   default).
 - **Scopes.** GitLab: `read_api` (section 3). GitHub OAuth App: private
   repositories need the `repo` scope (section 2); without it only public
-  repositories are found and cloned.
+  repositories are found and cloned. GitHub App: no scope — the App's
+  Metadata + Contents read permissions cover it (section 2).
 - **Settings** (`server.discovery`, all optional):
 
   ```json
@@ -212,3 +264,6 @@ browser, a log, the repository's configuration or a remote URL.
 - [ ] `/edition` shows the provider, and `/projects` returns 401 before login.
 - [ ] For GitLab repository roles and discovery: the `read_api` scope is granted.
 - [ ] For private GitHub repositories (OAuth App): `repo` added to the provider's `scopes`.
+- [ ] For a GitHub App provider: `github_app: true`, Metadata + Contents
+      read, installed on the repositories, callback URL and "Request user
+      authorization (OAuth) during installation" set (section 2).

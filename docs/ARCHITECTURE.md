@@ -1947,7 +1947,11 @@ a full example): `auth_providers` (required: a list of `{id, type:
 "gitlab" | "github" | "oidc", name, url (gitlab, default
 https://gitlab.com; github, default https://github.com) | issuer (oidc),
 client_id, client_secret | client_secret_env, scopes, allow_http,
-git_hosts}`), `base_url` (public URL of the backend, used for the OAuth
+git_hosts, github_app (a `github` provider created as a **GitHub App**:
+same login flow, client and roles, but fine-grained read-only permissions
+installed per organisation / repository — project discovery then lists
+the app's installations' repositories instead of `GET /user/repos`)}`,
+`base_url` (public URL of the backend, used for the OAuth
 `redirect_uri`; default: the request's base URL), `frontend_url` (where
 the browser goes after login; default: same origin), `cookie_secure`
 (default true; false for `http://localhost` development),
@@ -1960,7 +1964,9 @@ projects: ["*" | project id, ...]}]`), `project_creation` (`everyone`, the
 default, or `admins`), `module_lock_idle_minutes` (60),
 `require_module_checkout` (false), `repo_roles` (`{enabled: true,
 cache_minutes: 5, grace_minutes: 60}`, or `true`/`false`; see "Roles from
-repository permissions"). Environment:
+repository permissions"), `discovery` (`{enabled: true, cache_minutes: 15,
+max_repos: 200}`, or `true`/`false`; project discovery in the login
+provider's repositories, SERVER_SETUP.md §8). Environment:
 `REQMAN_AUTH_<ID>_CLIENT_ID` / `_CLIENT_SECRET`, `REQMAN_SERVER_BASE_URL`,
 `REQMAN_SERVER_FRONTEND_URL`, `REQMAN_SERVER_COOKIE_SECURE`,
 `REQMAN_SERVER_STATE_DIR`, `REQMAN_SERVER_ADMINS`. The client secret is
@@ -2308,7 +2314,14 @@ from `GET /user` (numeric `id` = subject, `login` = user name; the primary
 verified address of `GET /user/emails`), organizations as groups when a
 group setting is configured. Default scopes `read:user user:email`; a
 GitHub App needs "Metadata: read" (and installation on the repositories),
-an OAuth App needs `repo` to see private repositories' permissions.
+an OAuth App needs `repo` to see private repositories' permissions. A
+`github` provider with `github_app: true` **is** a GitHub App: the same
+client, flows and token refresh (its expiring user-to-server tokens are
+renewed with the session's refresh token), only project discovery
+differs — it lists `GET /user/installations` and `GET
+/user/installations/{id}/repositories` (the installations the user can
+access) instead of `GET /user/repos`, and "Publish project" then needs
+the App's extra permissions (SERVER_SETUP.md §2, "GitHub App").
 
 **Reviewer and the status guards.** `reviewer` ranks between viewer and
 editor: read, plus requirement sign-off. The core (`ProjectService`, only

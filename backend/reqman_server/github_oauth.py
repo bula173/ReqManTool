@@ -24,7 +24,10 @@ Roles from repository permissions (``repo_access.py``) read ``GET
 "Metadata: read" repository permission (and must be installed on the
 repositories); an OAuth App sees private repositories only with the ``repo``
 scope (add it to ``scopes``). A GitHub App with expiring user tokens also
-returns a refresh token, which ``refresh_tokens`` uses.
+returns a refresh token, which ``refresh_tokens`` uses. A ``github``
+provider with ``github_app: true`` (``settings.py``) is such a GitHub App:
+the same client, flows and token refresh; only project discovery reads
+the app's installations (``discovery.py``) instead of ``/user/repos``.
 
 Network calls use ``urllib`` through ``oidc._http_json`` (timeout, size
 limit, no secret in any message).

@@ -30,6 +30,8 @@ Example (``config.json``)::
            "client_id": "...", "client_secret_env": "REQMAN_GITLAB_SECRET",
            "git_hosts": ["ssh.gitlab.example.com"]},
           {"id": "github", "type": "github", "url": "https://github.com", "client_id": "..."},
+          {"id": "github-app", "type": "github", "github_app": true, "url": "https://github.com",
+           "client_id": "..."},
           {"id": "sso", "type": "oidc", "name": "Company SSO",
            "issuer": "https://sso.example.com/realms/main", "client_id": "..."}
         ]
@@ -57,14 +59,19 @@ repository permission (cached ``cache_minutes``, last good role kept for
 ``grace_minutes`` when a lookup fails); ``gitlab`` logins then also request
 the ``read_api`` scope. ``git_hosts``: other host names of the provider's
 git remotes (e.g. an ssh host). ``github`` is plain OAuth 2.0 (default
-scopes ``read:user user:email``; see ``github_oauth.py``).
+scopes ``read:user user:email``; see ``github_oauth.py``); a GitHub App is
+a ``github`` provider with ``github_app: true`` — the same login flow,
+token refresh and roles, but fine-grained repository permissions installed
+per organisation / repository.
 
 Project discovery (``discovery.py``): with ``discovery.enabled`` (default
 true, needs ``repo_roles``) users logged in through a ``gitlab`` / ``github``
 provider see the ReqManTool projects in their repositories (topic
 ``reqmantool``, or a ReqManTool ``project.json`` at the root of the
 ``current`` branch); the scan of at most ``max_repos`` repositories (default
-200) is cached per user for ``cache_minutes`` (default 15).
+200) is cached per user for ``cache_minutes`` (default 15). A ``github_app``
+provider scans the repositories of the app's installations the user can
+access instead of ``GET /user/repos``.
 
 Module edit locks (``module_locks.py``): a lock nobody used for
 ``module_lock_idle_minutes`` (default 60) expires; with
@@ -119,6 +126,10 @@ class ProviderSettings:
     allow_http: bool = False
     # Other host names of the provider's git remotes (e.g. a separate ssh host), for repository roles.
     git_hosts: tuple[str, ...] = ()
+    # A GitHub App instead of a GitHub OAuth App (only meaningful for type "github"): fine-grained
+    # repository permissions installed per organisation / repository; discovery lists the
+    # installations' repositories instead of ``GET /user/repos`` (``discovery.py``).
+    github_app: bool = False
 
     def public_info(self) -> dict[str, Any]:
         return {"id": self.id, "type": self.type, "name": self.name, "login_url": f"/auth/login/{self.id}"}
@@ -269,6 +280,9 @@ def _parse_provider(raw: Any, index: int, env: dict[str, str], repo_roles: bool 
         # Roles from GitLab project permissions read the API with the user's token.
         scopes = (*scopes, GITLAB_API_SCOPE)
     git_hosts = tuple(h.lower() for h in _string_list(raw.get("git_hosts"), f"{what}.git_hosts"))
+    github_app = _bool(raw.get("github_app"), f"{what}.github_app", False)
+    if github_app and provider_type != "github":
+        raise ServerConfigError(f"{what}.github_app can only be set on a provider of type github")
     return ProviderSettings(
         id=provider_id,
         type=provider_type,
@@ -279,6 +293,7 @@ def _parse_provider(raw: Any, index: int, env: dict[str, str], repo_roles: bool 
         scopes=scopes,
         allow_http=allow_http,
         git_hosts=git_hosts,
+        github_app=github_app,
     )
 
 

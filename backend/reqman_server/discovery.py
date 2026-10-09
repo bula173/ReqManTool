@@ -10,11 +10,14 @@ config or a remote URL either).
 Discovery (``DiscoveryService.scan``), per user, in a background thread:
 
 - GitHub: ``GET /user/repos`` (owner, collaborator, organization member;
-  paginated, newest first); a repository is a candidate when its
-  ``topics`` include ``reqmantool``, or when ``project.json`` at the root of
-  its ``current`` branch (the branch ReqManTool works on and clones) parses
-  as a ReqManTool project (``GET /repos/{owner}/{repo}/contents/project.json``
-  with the raw media type).
+  paginated, newest first) — for a ``github_app`` provider (a GitHub App,
+  ``settings.py``) the repositories of the installations the user can
+  access instead (``GET /user/installations``, ``GET
+  /user/installations/{id}/repositories``); a repository is a candidate
+  when its ``topics`` include ``reqmantool``, or when ``project.json`` at
+  the root of its ``current`` branch (the branch ReqManTool works on and
+  clones) parses as a ReqManTool project (``GET
+  /repos/{owner}/{repo}/contents/project.json`` with the raw media type).
 - GitLab: ``GET /projects?membership=true&topic=reqmantool`` plus ``GET
   /projects?membership=true`` scanned the same way (``GET
   /projects/:id/repository/files/project.json/raw?ref=current``).
@@ -42,8 +45,17 @@ opener is not made a member.
 
 Slice 1: GitHub OAuth Apps and GitLab. A GitHub OAuth App sees private
 repositories only with the broad ``repo`` scope (``scopes`` of the
-provider); GitHub App providers (fine-grained, per-installation) are a later
-slice.
+provider).
+
+Slice 2: a GitHub App — a ``github`` provider with ``github_app: true``
+(``settings.py``): the same login flow, OAuth client, API, roles and
+token refresh, but fine-grained read-only repository permissions installed
+per organisation / repository. Its scan lists the repositories of the
+installations the user can access (``GET /user/installations``, ``GET
+/user/installations/{id}/repositories``) instead of ``GET /user/repos``.
+Expiring user-to-server tokens are renewed with the session's refresh
+token as everywhere (``repo_access``), and opening clones with that same
+user token.
 
 REST (session needed; ``POST`` needs the CSRF token):
 
@@ -354,7 +366,11 @@ class DiscoveryService:
         """Look through the user's repositories now (``ProviderError`` / ``ValueError`` when listing fails)."""
         result = _Scan(status="idle")
         if provider.type == GITHUB:
-            candidates = self._github_repositories(user, provider, result)
+            candidates = (
+                self._github_app_repositories(user, provider, result)
+                if provider.github_app
+                else self._github_repositories(user, provider, result)
+            )
         else:
             candidates = self._gitlab_repositories(user, provider, result)
         result.scanned = len(candidates)
@@ -443,14 +459,73 @@ class DiscoveryService:
                 if len(found) >= limit:
                     result.truncated = True
                     return found
-                repository = GitHubProvider._repository(item)
-                if not repository["full_path"]:
-                    continue
-                topics = item.get("topics") if isinstance(item.get("topics"), list) else []
-                found.append(self._entry(provider, repository, PROJECT_TOPIC in topics))
+                entry = self._github_entry(provider, item)
+                if entry is not None:
+                    found.append(entry)
             if len(items) < PAGE_SIZE:
                 return found
             page += 1
+
+    def _github_entry(self, provider: ProviderSettings, item: dict[str, Any]) -> dict[str, Any] | None:
+        """One GitHub repository object (``/user/repos`` and installation repositories share its shape)."""
+        repository = GitHubProvider._repository(item)
+        if not repository["full_path"]:
+            return None
+        topics = item.get("topics") if isinstance(item.get("topics"), list) else []
+        return self._entry(provider, repository, PROJECT_TOPIC in topics)
+
+    def _github_app_installations(self, user: User, provider: ProviderSettings) -> list[int]:
+        """The ids of the GitHub App installations the user can access (``GET /user/installations``)."""
+        ids: list[int] = []
+        page = 1
+        while True:
+            response, _token = self._with_api(
+                user,
+                provider,
+                lambda api, page=page: api.get("/user/installations", {"per_page": PAGE_SIZE, "page": page}),
+            )
+            items = (
+                [i for i in response.data.get("installations") or [] if isinstance(i, dict)]
+                if isinstance(response.data, dict)
+                else []
+            )
+            for item in items:
+                if isinstance(item.get("id"), int):
+                    ids.append(item["id"])
+            if len(items) < PAGE_SIZE:
+                return ids
+            page += 1
+
+    def _github_app_repositories(self, user: User, provider: ProviderSettings, result: _Scan) -> list[dict[str, Any]]:
+        """The repositories of the GitHub App installations the user can access (not ``/user/repos``)."""
+        limit = self.settings.discovery_max_repos
+        found: list[dict[str, Any]] = []
+        for installation in self._github_app_installations(user, provider):
+            page = 1
+            while True:
+                response, _token = self._with_api(
+                    user,
+                    provider,
+                    lambda api, installation=installation, page=page: api.get(
+                        f"/user/installations/{installation}/repositories", {"per_page": PAGE_SIZE, "page": page}
+                    ),
+                )
+                items = (
+                    [i for i in response.data.get("repositories") or [] if isinstance(i, dict)]
+                    if isinstance(response.data, dict)
+                    else []
+                )
+                for item in items:
+                    if len(found) >= limit:
+                        result.truncated = True
+                        return found
+                    entry = self._github_entry(provider, item)
+                    if entry is not None:
+                        found.append(entry)
+                if len(items) < PAGE_SIZE:
+                    break
+                page += 1
+        return found
 
     def _gitlab_pages(
         self, user: User, provider: ProviderSettings, query: dict[str, Any], limit: int

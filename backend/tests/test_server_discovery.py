@@ -33,11 +33,12 @@ from reqman_server.memberships import MembershipRegistry
 from reqman_server.permissions import Permissions
 from reqman_server.repo_access import RepoAccess
 from reqman_server.sessions import SessionStore
-from reqman_server.settings import ProviderSettings, ServerSettings
+from reqman_server.settings import DEFAULT_GITHUB_SCOPES, ProviderSettings, ServerConfigError, ServerSettings, load_server_settings
 from reqman_server.users import LoginClaims, UserRegistry
 
 CHECKOUT = Path(__file__).resolve().parents[2]
 TOKEN = "gho_SECRET_TOKEN_never_leaks"
+RENEWED = "ghu_RENEWED_TOKEN_never_leaks"
 
 
 def git(path: Path, *args: str) -> str:
@@ -114,13 +115,24 @@ def remote(tmp_path):
 
 
 class World:
-    def __init__(self, tmp_path: Path, provider_type: str, routes: dict, repo_roles: bool = True) -> None:
+    def __init__(
+        self,
+        tmp_path: Path,
+        provider_type: str,
+        routes: dict,
+        repo_roles: bool = True,
+        github_app: bool = False,
+        max_repos: int = 50,
+        clients: dict | None = None,
+        session_tokens: dict | None = None,
+    ) -> None:
         url = "https://github.com" if provider_type == "github" else "https://gitlab.example.com"
         self.provider = ProviderSettings(
-            id=provider_type, type=provider_type, name=provider_type.title(), issuer=url, client_id="client"
+            id=provider_type, type=provider_type, name=provider_type.title(), issuer=url, client_id="client",
+            github_app=github_app,
         )
         self.settings = ServerSettings(
-            providers=(self.provider,), state_dir=tmp_path, repo_roles=repo_roles, discovery_max_repos=50
+            providers=(self.provider,), state_dir=tmp_path, repo_roles=repo_roles, discovery_max_repos=max_repos
         )
         self.clock = Clock()
         self.sessions = SessionStore(None, max_age=36_000, idle=36_000, clock=self.clock)
@@ -128,14 +140,16 @@ class World:
         self.user = self.users.login(
             LoginClaims(provider=provider_type, subject="42", name="Alice", email="alice@example.com", username="alice")
         )
-        self.sessions.create(self.user.id, provider=provider_type, oauth_tokens={"access_token": TOKEN})
+        self.sessions.create(
+            self.user.id, provider=provider_type, oauth_tokens=session_tokens or {"access_token": TOKEN}
+        )
         self.http = FakeHttp(routes)
         data = tmp_path / "data"
         data.mkdir()
         self.service = ProjectService(ProjectStore(data), history=GitHistory(GitSettings(enabled=True)))
         remote_url = lambda pid: self.service.history.remote_url(self.service.store.project_path(pid))  # noqa: E731
         project_ids = lambda: self.service.store.list_project_ids()  # noqa: E731
-        self.repo = RepoAccess(self.settings, {}, self.sessions, remote_url, project_ids, http=self.http)
+        self.repo = RepoAccess(self.settings, clients or {}, self.sessions, remote_url, project_ids, http=self.http)
         permissions = Permissions(self.settings, self.users, MembershipRegistry(tmp_path / "m.json"), repo=self.repo)
         self.opened: list[dict] = []
 
@@ -163,6 +177,38 @@ def github_routes(bare: Path) -> dict:
             github_repo("acme/website", "https://github.com/acme/website.git", []),
             github_repo("acme/tagged-empty", "https://github.com/acme/tagged-empty.git", ["reqmantool"]),
         ],
+        ("GET", "/repos/acme/brakes/contents/project.json"): PROJECT_JSON,
+        ("GET", "/repos/acme/scanned/contents/project.json"): {**PROJECT_JSON, "id": "other", "name": "Other"},
+        ("GET", "/repos/acme/website/contents/project.json"): {"name": "website", "version": "1.0.0"},
+        ("GET", "/repos/acme/brakes"): github_repo("acme/brakes", clone, ["reqmantool"], permissions={"pull": True}),
+    }
+
+
+def github_app_routes(bare: Path) -> dict:
+    """A GitHub App answers from its installations instead of ``/user/repos``."""
+    clone = str(bare)
+    return {
+        ("GET", "/user/installations"): {
+            "total_count": 2,
+            "installations": [
+                {"id": 41, "account": {"login": "acme"}},
+                {"id": 42, "account": {"login": "acme-eu"}},
+            ],
+        },
+        ("GET", "/user/installations/41/repositories"): {
+            "total_count": 3,
+            "repositories": [
+                github_repo("acme/brakes", clone, ["reqmantool"]),
+                github_repo("acme/scanned", clone, []),
+                github_repo("acme/website", "https://github.com/acme/website.git", []),
+            ],
+        },
+        ("GET", "/user/installations/42/repositories"): {
+            "total_count": 1,
+            "repositories": [
+                github_repo("acme-eu/tagged-empty", "https://github.com/acme-eu/tagged-empty.git", ["reqmantool"]),
+            ],
+        },
         ("GET", "/repos/acme/brakes/contents/project.json"): PROJECT_JSON,
         ("GET", "/repos/acme/scanned/contents/project.json"): {**PROJECT_JSON, "id": "other", "name": "Other"},
         ("GET", "/repos/acme/website/contents/project.json"): {"name": "website", "version": "1.0.0"},
@@ -244,6 +290,60 @@ def test_gitlab_discovery_uses_topic_filter_and_raw_file(tmp_path, remote):
     assert any("topic=reqmantool" in url for url in listing)
 
 
+# --- GitHub App (slice 2) ------------------------------------------------------------------------
+
+
+def test_github_app_discovery_lists_the_installations_repositories(tmp_path, remote):
+    world = World(tmp_path, "github", github_app_routes(remote["bare"]), github_app=True)
+    result = world(world.discovery.list)
+    assert result["enabled"] is True and result["status"] == "idle" and result["error"] is None
+    by_name = {r["full_name"]: r for r in result["repositories"]}
+    # The repositories of every installation, topic and project.json candidates alike.
+    assert set(by_name) == {"acme/brakes", "acme/scanned", "acme-eu/tagged-empty"}
+    assert by_name["acme/brakes"]["topic"] is True and by_name["acme/brakes"]["project_id"] == "brakes"
+    assert by_name["acme/scanned"]["topic"] is False and by_name["acme/scanned"]["project_id"] == "other"
+    assert "cannot be opened" in by_name["acme-eu/tagged-empty"]["project_error"]
+    # The installations are listed, /user/repos never is.
+    assert world.http.count("/user/repos") == 0
+    assert world.http.count("/user/installations") == 1
+    assert world.http.count("/user/installations/41/repositories") == 1
+    assert world.http.count("/user/installations/42/repositories") == 1
+    assert all(h["Authorization"] == f"Bearer {TOKEN}" for _m, _u, h in world.http.requests)
+    assert TOKEN not in json.dumps(result)
+
+
+def test_github_app_scan_stops_at_max_repos(tmp_path, remote):
+    world = World(tmp_path, "github", github_app_routes(remote["bare"]), github_app=True, max_repos=1)
+    result = world(world.discovery.list)
+    assert result["max_repos"] == 1 and result["truncated"] is True
+    assert [r["full_name"] for r in result["repositories"]] == ["acme/brakes"]
+
+
+def test_github_app_scan_renews_an_expiring_user_token(tmp_path, remote):
+    class Client:
+        """The login provider's OAuth client: a GitHub App's expiring user tokens can be refreshed."""
+
+        def refresh_tokens(self, refresh_token):
+            self.used = refresh_token
+            return {"access_token": RENEWED, "refresh_token": refresh_token, "expires_in": 7200}
+
+    client = Client()
+    world = World(
+        tmp_path,
+        "github",
+        github_app_routes(remote["bare"]),
+        github_app=True,
+        clients={"github": client},
+        session_tokens={"access_token": TOKEN, "refresh_token": "refresh-me", "expires_in": 7200},
+    )
+    world.clock.now += 7200 - 30  # inside the refresh margin
+    result = world(world.discovery.list)
+    assert result["error"] is None and result["repositories"]
+    assert client.used == "refresh-me"
+    # Every API call of the scan carried the renewed token; the expired one never left.
+    assert all(h["Authorization"] == f"Bearer {RENEWED}" for _m, _u, h in world.http.requests)
+
+
 # --- opening -----------------------------------------------------------------------------------
 
 
@@ -275,6 +375,16 @@ def test_open_needs_read_access(tmp_path, remote):
     with pytest.raises(ValueError, match="logged in with"):
         world(world.discovery.open, "gitlab", "acme/brakes")
     assert world.service.store.list_project_ids() == []
+
+
+def test_github_app_open_clones_with_the_user_token(tmp_path, remote):
+    world = World(tmp_path, "github", github_app_routes(remote["bare"]), github_app=True)
+    result = world(world.discovery.open, "github", "acme/brakes")
+    assert result["cloned"] is True and result["project_id"] == remote["project_id"]
+    assert result["role"] == "viewer" and result["permission"] == "Read"
+    env = world.opened[0]["auth"]("https://github.com/acme/brakes.git")
+    assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraHeader"
+    assert TOKEN not in env["GIT_CONFIG_VALUE_0"]
 
 
 def test_open_refuses_a_foreign_clone_url(tmp_path, remote):
@@ -386,3 +496,32 @@ def test_publish_adds_the_reqmantool_topic(tmp_path, provider):
     else:
         created = next(b for m, p, b in http.bodies if m == "POST" and p == "/api/v4/projects")
         assert created["topics"] == ["reqmantool"]
+
+
+# --- the provider configuration --------------------------------------------------------------------
+
+
+def test_github_app_is_a_flag_on_the_github_provider(tmp_path):
+    config = {
+        "server": {
+            "auth_providers": [
+                {
+                    "id": "github-app",
+                    "type": "github",
+                    "github_app": True,
+                    "url": "https://github.com",
+                    "client_id": "app-client-id",
+                }
+            ]
+        }
+    }
+    settings = load_server_settings(config, tmp_path / "config.json", env={})
+    provider = settings.provider("github-app")
+    # A GitHub App is a github provider with a flag: same login flow, client, roles and API.
+    assert provider is not None and provider.type == "github" and provider.github_app is True
+    # GitHub ignores the scope parameter of a GitHub App's authorization; the default stays.
+    assert provider.scopes == DEFAULT_GITHUB_SCOPES
+    # The flag on another provider type is a configuration error, not something to ignore.
+    bad = {"server": {"auth_providers": [{"id": "gitlab", "type": "gitlab", "github_app": True, "client_id": "x"}]}}
+    with pytest.raises(ServerConfigError, match="github_app"):
+        load_server_settings(bad, tmp_path / "config.json", env={})

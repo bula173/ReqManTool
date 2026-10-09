@@ -1935,3 +1935,44 @@ Newest entries are appended at the end.
       and remote-removal reset, the 403 for an editor without it, Pull
       staying open). Not covered: browser verification, frontend tests (no
       test runner), Gerrit (backlog follow-up).
+- [x] **Server edition: project discovery through a GitHub App (slice 2)**
+      (2026-10-09; requested 2026-10-08). A GitHub App is a `github`
+      login provider with the new flag `github_app: true` — deliberately
+      **not** a new provider type: `provider.type` is the dispatch key of
+      the whole provider plumbing (`repo_access` roles and remote
+      matching, `login_account`, the OAuth client, `GitHubProvider`, the
+      `login` connection, `REPO_ROLES`), and a GitHub App differs from an
+      OAuth App only in how discovery lists repositories — a new type
+      would have to be mapped back to `github` in half a dozen places,
+      while the flag keeps every existing rule (repository-permission
+      roles, clone / publish / push with the login token, expiring-token
+      refresh through `repo_access`) working unchanged. Same login flow,
+      callback and client (`GitHubOAuthClient`), but fine-grained
+      read-only permissions (Metadata + Contents read) installed per
+      organisation / repository instead of the broad `repo` scope, and
+      expiring user-to-server tokens renewed with the session's refresh
+      token as before. Discovery (`discovery.py`) for such a provider
+      lists the repositories of the installations the user can access
+      (`GET /user/installations`, `GET
+      /user/installations/{id}/repositories`, paginated; the topic and
+      `project.json` scan, `max_repos` and `truncated` unchanged) instead
+      of `/user/repos`; "Open" authenticates the clone with the user's
+      token exactly as today, and REST + WS (`GET /discovery/projects`,
+      `POST /discovery/refresh`, `POST /discovery/open`, WS
+      `discovery.*`) are unchanged. Settings: `github_app` in
+      `ProviderSettings`, refused on a non-`github` provider. Docs:
+      SERVER_SETUP.md §2 "GitHub App — the narrower alternative to the
+      `repo` scope" (repository permissions, "Request user authorization
+      (OAuth) during installation", token expiry + refresh, callback URL,
+      install per organisation / repository, config example; §8 and the
+      checklist updated), ARCHITECTURE.md (`github_app`, `discovery`, the
+      GitHub App login). Files: `backend/reqman_server/{settings.py,
+      discovery.py, github_oauth.py, __init__.py}`,
+      `backend/tests/test_server_discovery.py`. Tests: 18 (the
+      installations' repositories instead of `/user/repos`, two
+      installations merged, topic / `project.json` candidates, truncation
+      at `max_repos`, an expiring user token renewed before the scan, the
+      clone with the user token, the provider configuration incl. the
+      refusal on another type). Left over: publishing a *new* repository
+      with an App's login token needs extra App permissions (documented in
+      SERVER_SETUP.md); nothing else.

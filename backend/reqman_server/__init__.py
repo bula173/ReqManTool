@@ -44,7 +44,10 @@ permission guard (``project.review``, ``project.approve``).
 Project discovery (``discovery.py``): users logged in through GitLab /
 GitHub see the ReqManTool projects in their repositories and open them
 (the server clones them once into its data directory); REST routes and
-WebSocket methods (``discovery.*``).
+WebSocket methods (``discovery.*``). A GitHub App provider (a ``github``
+login with ``github_app: true``, fine-grained permissions installed per
+organisation / repository) lists the repositories of its installations
+the user can access instead of ``GET /user/repos``.
 
 Publish / push / pull with the login account (``login_account.py``): the
 OAuth token of the sign-in session resolves the pseudo connection
