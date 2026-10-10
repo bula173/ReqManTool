@@ -50,13 +50,20 @@ type AppContext = ActionContext<'app'>;
 
 export const REPOSITORY_URL = 'https://github.com/bula173/ReqManTool';
 
-/** The documentation links of Help ▸ Documentation. */
-export const DOCUMENTATION_LINKS: { key: string; label: string; url: string }[] = [
-  { key: 'readme', label: 'User guide (README)', url: `${REPOSITORY_URL}#readme` },
-  { key: 'architecture', label: 'Architecture', url: `${REPOSITORY_URL}/blob/main/docs/ARCHITECTURE.md` },
-  { key: 'backlog', label: 'Features and backlog', url: `${REPOSITORY_URL}/blob/main/docs/BACKLOG.md` },
-  { key: 'api', label: 'REST API reference (this server)', url: `${API_BASE_URL}/docs` },
-];
+/**
+ * The documentation links of Help ▸ Documentation.
+ *
+ * A function, not a constant: in the desktop app `API_BASE_URL` is only known
+ * once the local backend is up, so the URLs must be built when the menu opens.
+ */
+export function documentationLinks(): { key: string; label: string; url: string }[] {
+  return [
+    { key: 'readme', label: 'User guide (README)', url: `${REPOSITORY_URL}#readme` },
+    { key: 'architecture', label: 'Architecture', url: `${REPOSITORY_URL}/blob/main/docs/ARCHITECTURE.md` },
+    { key: 'backlog', label: 'Features and backlog', url: `${REPOSITORY_URL}/blob/main/docs/BACKLOG.md` },
+    { key: 'api', label: 'REST API reference (this server)', url: `${API_BASE_URL}/docs` },
+  ];
+}
 
 /** Download URL of a project export (the exports cover the whole project). */
 export function exportUrl(projectId: string, format: ExportFormat): string {
@@ -524,9 +531,9 @@ export const appActions: Action<'app'>[] = [
     label: 'Documentation',
     icon: IconBook,
     isAvailable: () => true,
-    run: (ctx) => ctx.commands.openExternal(DOCUMENTATION_LINKS[0].url),
+    run: (ctx) => ctx.commands.openExternal(documentationLinks()[0].url),
     items: (ctx) =>
-      DOCUMENTATION_LINKS.map((link) => ({
+      documentationLinks().map((link) => ({
         key: link.key,
         label: link.label,
         description: link.url,

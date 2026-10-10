@@ -43,7 +43,10 @@ plugs in through exactly these interfaces:
   its choke points (``_records_history`` for methods taking a
   ``module_id``, plus the link, attribute-scope and purge cascades). The
   local edition's ``NoLocks`` is skipped without a call
-  (``module_locks_active``).
+  (``module_locks_active``). It is also asked for the subject of the
+  auto-commits made while the current identity has the module checked out
+  (``module_commit_subject``, optional ``commit_subject``), so a checkout's
+  name labels the history it produced.
 - **Audit trail** (``AuditTrail``): told about the project-level
   administrative actions the core carries out (``AUDIT_*``: project create,
   lock, unlock, remove, purge) after they succeeded, with the acting
@@ -182,15 +185,25 @@ class ModuleLockedError(Exception):
 
 
 class ModuleLockService(Protocol):
-    """Checks module edit locks before a write; raises ``ModuleLockedError`` if another user holds one."""
+    """Checks module edit locks before a write; raises ``ModuleLockedError`` if another user holds one.
+
+    An implementation may also provide ``commit_subject`` (optional: the core
+    asks for it with ``getattr``), the subject line of the auto-commits made
+    while the current identity has ``module_id`` checked out.
+    """
 
     def check_write(self, identity: RequestIdentity | None, project_id: str, module_id: str) -> None: ...
+
+    def commit_subject(self, project_id: str, module_id: str) -> str | None: ...
 
 
 class NoLocks:
     """The local edition's lock service: there are no module locks."""
 
     def check_write(self, identity: RequestIdentity | None, project_id: str, module_id: str) -> None:
+        return None
+
+    def commit_subject(self, project_id: str, module_id: str) -> str | None:
         return None
 
 
@@ -284,6 +297,23 @@ def check_module_write(project_id: str, module_id: str) -> None:
     service = HOOKS.lock_service
     if type(service) is not NoLocks:
         service.check_write(_current_identity.get(), project_id, module_id)
+
+
+def module_commit_subject(project_id: str, module_id: str) -> str | None:
+    """The subject of the auto-commits made while the current identity edits its checked-out ``module_id``.
+
+    Asked of the lock service (the server edition builds it from the module,
+    the user and the checkout's name, ``[module][username][name]``); ``None``
+    in the local edition, without a checkout, or when the lock service does
+    not implement ``commit_subject``. Commits keep their usual message then.
+    """
+    service = HOOKS.lock_service
+    if type(service) is NoLocks:
+        return None
+    get = getattr(service, "commit_subject", None)
+    if get is None:
+        return None
+    return get(project_id, module_id)
 
 
 def audit(action: str, project_id: str | None = None, **details: Any) -> None:

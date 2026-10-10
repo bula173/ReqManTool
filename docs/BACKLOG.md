@@ -84,48 +84,6 @@ item first (phase A), then test, review and fix by area (phase B).
 
 ### Next — requested, in delivery order
 
-- [x] Server edition: Gerrit as a login/publish provider (follow-up of
-      "publish and push with the login account", delivered 2026-10-09 for
-      GitHub/GitLab). A project-admin (or server admin) logged in through a
-      `gerrit` provider can, without a separate "connection": "Publish
-      project" (create the Gerrit project under a chosen parent via REST
-      `PUT /projects/{name}`, set it as the project's remote, push
-      `current`, `baseline` and `baseline/*` tags) and Push / Pull an
-      existing remote on that host — authenticated with the user's login
-      for that git command only (never stored in repo config or remote
-      URL). Core plumbing done:
-      1. provider type `gerrit` in `reqman_server/settings.py`
-         (`PROVIDER_TYPES`, `_parse_provider`): base URL, login via the
-         company OIDC/OAuth that fronts Gerrit (issuer = base URL) or
-         Gerrit's own OAuth plugin; add `"gerrit"` to
-         `LOGIN_GIT_PROVIDER_TYPES` (`reqman_server/login_account.py`). **DONE**
-      2. a `GerritProvider` in `reqman/providers.py`: `PUT
-         /projects/{name}` (the response body starts with `)]}'` — strip
-         that XSSI prefix in `ProviderHttp`/`_call`), repository listing /
-         lookup, and `create_repository` mapped to a project creation
-         (name = project name, no namespace field: Gerrit projects are
-         flat; the "parent" parameter selects the tree place). **DONE**
-      3. HTTPS push with the user's Gerrit HTTP credentials (username +
-         HTTP password from Gerrit's settings, entered once in the user
-         menu and stored server-side per user, encrypted — stdlib
-         `hmac`/`hashlib`-based scheme with a 0600 key file next to the
-         server state; no crypto dependency is available) or SSH push
-         (`ssh -p 29418 <user>@<host> gerrit push`, the user's ssh agent);
-         the credentials ride the same one-git-process extra environment
-         as `git_auth_env` and are never in a remote URL. **DONE**
-      4. option "push for review" (per project, next to
-         `allow_editor_push`): push to `refs/for/current` instead of
-         `current` (creates a Gerrit change), the change number/url shown
-         in the Git panel's review section like the GitLab/GitHub
-         merge/pull request. **DONE**
-      5. docs/SERVER_SETUP.md gets a Gerrit section (provider config,
-         HTTP credentials, SSH keys, `refs/for`); REST + WS parity;
-         tests in `backend/tests/test_server_login_account.py` /
-         `test_login_publish_push.py` style; move this entry to
-         docs/DONE.md. **DONE**
-      Local edition keeps provider connections. Push/publish require
-      project-admin (editors: push only when `allow_editor_push` allows,
-      as delivered).
 - [ ] Server edition: more identity providers and group-based roles.
       Requested 2026-10-08 (after the repository-permission item). Login
       providers, all pluggable through the existing server auth extension
@@ -155,29 +113,6 @@ item first (phase A), then test, review and fix by area (phase B).
       SCIM 2.0 endpoint for user/group provisioning done.
       Git operations run in thread pool (off event loop) done.
       Remaining: group-based roles (automatic assignment at login), tests.
-
-- [x] Desktop app for the local edition (no installation hassle).
-      Requested 2026-10-08. One-click installers built by GitHub Actions
-      on each release: macOS `.dmg` (signed + notarised when a certificate
-      is available), Windows `.msi`, Linux AppImage. Bundles the backend
-      (frozen Python, no system Python/npm needed) and the built frontend
-      in a native window (Tauri preferred for size; Electron acceptable),
-      starts the local server on a free localhost port, stops it on exit;
-      first run asks for the data folder (default `~/ReqManData`);
-      auto-update from GitHub Releases; git integration uses the system
-      `git` if present, otherwise history is off with the usual warning.
-      Builds on the distribution package (done) — the pipx install stays.
-- [x] Docker image for the server edition (self-hosted in a company).
-      Requested 2026-10-08. Official image (multi-arch amd64/arm64,
-      non-root, healthcheck) published by GitHub Actions; `docker compose`
-      example with a persistent volume for the data directory, config via
-      env/secret files (OIDC/LDAP/GitLab settings, licence file), optional
-      reverse proxy with TLS; Helm chart for Kubernetes; one-click deploy
-      templates where practical (Railway, Render, Azure Container Apps);
-      upgrade notes incl. data-format migrations; backup/restore of the
-      data volume documented (project repos can also be mirrored to
-      GitLab via remotes). Depends on the server-edition items.
-
 ### Phase B — tests, review and follow-ups of delivered items
 
 Collected review findings and leftovers of the items in Done; handled

@@ -11,6 +11,7 @@ import { BrowserRouter } from 'react-router-dom';
 import { App } from './App.tsx';
 import { invalidateGitStatus } from './api/queries';
 import { AuthGate } from './components/AuthGate';
+import { DesktopGate } from './components/DesktopGate';
 import './index.css';
 
 const queryClient: QueryClient = new QueryClient({
@@ -30,9 +31,11 @@ createRoot(document.getElementById('root')!).render(
       <ModalsProvider>
         <QueryClientProvider client={queryClient}>
           <BrowserRouter>
-            <AuthGate>
-              <App />
-            </AuthGate>
+            <DesktopGate>
+              <AuthGate>
+                <App />
+              </AuthGate>
+            </DesktopGate>
           </BrowserRouter>
         </QueryClientProvider>
       </ModalsProvider>

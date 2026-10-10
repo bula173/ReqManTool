@@ -1,19 +1,27 @@
 """Module edit locks ("check out for editing") of the server edition.
 
 An editor checks out a module: an exclusive lock with an owner, the time it
-was taken, an optional reason and the time of the owner's last activity.
-While it is held, every write to the module's content by anyone else is
-refused by the core (``ModuleLockedError``: REST 423, WebSocket -32005);
-the owner's own writes refresh it. A lock nobody used for
+was taken, a name and the time of the owner's last activity. The name is
+required when the lock is taken: it labels the commits the editing session
+produces (``commit_subject`` → ``[module][username][name]``, asked of the
+core by ``reqman.extensions.module_commit_subject``). While the lock is
+held, every write to the module's content by anyone else is refused by the
+core (``ModuleLockedError``: REST 423, WebSocket -32005); the owner's own
+writes refresh it. A lock nobody used for
 ``server.module_lock_idle_minutes`` (default 60) expires. With
-``server.require_module_checkout: true`` a module must be checked out
-before anyone can change it; by default unlocked modules stay freely
-editable (a checkout is opt-in, like an exclusive edit in DOORS).
+``server.require_module_checkout`` (default true) a module must be checked
+out before anyone can change it; with it set to ``false`` unlocked modules
+stay freely editable (a checkout is opt-in, like an exclusive edit in
+DOORS).
+
+Anyone who may change the module may check it out (``project.review``, so a
+reviewer can sign off), not only editors.
 
 Storage: ``module_locks.json`` in the server's state directory (server
 state, not project data: projects and their git repositories stay
 edition-agnostic). Fields per lock: ``project_id``, ``module_id``,
-``user_id``, ``since`` and ``last_activity`` (Unix seconds), ``reason``.
+``user_id``, ``since`` and ``last_activity`` (Unix seconds), ``reason``
+(the checkout's name; empty only for a lock taken before it was required).
 Activity is written at most once a minute; a hand edit of the file is
 picked up on the next read.
 
@@ -26,7 +34,8 @@ REST (every route needs a session; state-changing ones the CSRF token):
 - ``GET /projects/{project_id}/module-locks``: ``{project_id,
   require_checkout, idle_minutes, locks: [lock]}`` (readers of the project).
 - ``PUT /projects/{project_id}/modules/{module_id}/lock`` ``{"reason"?: str}``:
-  check out (editors; again by the owner: refresh, new reason).
+  check out (``reason`` is the required name; again by the owner: refresh,
+  new name).
 - ``DELETE /projects/{project_id}/modules/{module_id}/lock``: release one's own lock.
 - ``POST /projects/{project_id}/modules/{module_id}/lock/break``: break
   anyone's lock (project admins, server admins).
@@ -54,7 +63,7 @@ from pydantic import BaseModel
 from reqman.extensions import (
     ACTION_PROJECT_ADMIN,
     ACTION_PROJECT_READ,
-    ACTION_PROJECT_WRITE,
+    ACTION_PROJECT_REVIEW,
     AccessDeniedError,
     ModuleLockedError,
     PermissionGuard,
@@ -86,15 +95,19 @@ def _checked_id(value: Any, what: str) -> str:
 
 
 def _checked_reason(reason: Any) -> str | None:
-    """``None`` (keep / none), or the reason with whitespace collapsed."""
+    """``None`` (keep / none), or the checkout's name with whitespace collapsed.
+
+    Whitespace-only counts as none: a checkout's name is either absent (an
+    old lock being kept) or a real name.
+    """
     if reason is None:
         return None
     if not isinstance(reason, str):
-        raise ValueError("reason must be a string")
+        raise ValueError("the checkout name must be a string")
     reason = " ".join(reason.split())
     if len(reason) > MAX_LOCK_REASON_LENGTH:
-        raise ValueError(f"The reason is too long: at most {MAX_LOCK_REASON_LENGTH} characters")
-    return reason
+        raise ValueError(f"The checkout name is too long: at most {MAX_LOCK_REASON_LENGTH} characters")
+    return reason or None
 
 
 @dataclass
@@ -340,6 +353,30 @@ class ModuleLocks:
             "reason": lock.reason,
         }
 
+    # --- the core's commit subject -------------------------------------------------
+
+    def _commit_name(self, user_id: str) -> str:
+        """The name the commit history shows for a user: their login name, else their display name."""
+        user = self.users.get(user_id)
+        if user is None:
+            return user_id
+        return user.username or user.name or user.email or user_id
+
+    def commit_subject(self, project_id: str, module_id: str) -> str | None:
+        """``[module][username][name]``: the subject of the commits made while the current
+        identity edits its own checked-out ``module_id``.
+
+        ``None`` without the identity's own named lock — the commit then
+        describes the changed files, as it does in the local edition.
+        """
+        lock = self.registry.get(project_id, module_id)
+        if lock is None or not lock.reason:
+            return None
+        identity = current_identity()
+        if identity is None or lock.user_id != identity.user_id:
+            return None
+        return f"[{module_id}][{self._commit_name(lock.user_id)}][{lock.reason}]"
+
     # --- API --------------------------------------------------------------------------------
 
     def _identity(self, project_id: Any, action: str) -> RequestIdentity:
@@ -362,11 +399,18 @@ class ModuleLocks:
         }
 
     def lock(self, project_id: Any, module_id: Any, reason: Any = None) -> dict[str, Any]:
-        identity = self._identity(project_id, ACTION_PROJECT_WRITE)
+        # Anybody who may change the module may check it out (a reviewer signs off too).
+        identity = self._identity(project_id, ACTION_PROJECT_REVIEW)
         module_id = _checked_id(module_id, "module_id")
         reason = _checked_reason(reason)
         if self.module_exists is not None and not self.module_exists(project_id, module_id):
             raise FileNotFoundError(f"Module '{module_id}' not found in project '{project_id}'")
+        held = self.registry.get(project_id, module_id)
+        if held is None and reason is None:
+            raise ValueError(
+                "A checkout needs a name (it names the commits the editing session produces, "
+                "e.g. 'Reworking the braking chapter')"
+            )
         try:
             lock, new = self.registry.acquire(project_id, module_id, identity.user_id, reason)
         except ModuleLockedError:

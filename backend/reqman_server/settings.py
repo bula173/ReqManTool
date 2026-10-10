@@ -22,7 +22,7 @@ Example (``config.json``)::
         ],
         "project_creation": "everyone",
         "module_lock_idle_minutes": 60,
-        "require_module_checkout": false,
+        "require_module_checkout": true,
         "repo_roles": {"enabled": true, "cache_minutes": 5, "grace_minutes": 60},
         "discovery": {"enabled": true, "cache_minutes": 15, "max_repos": 200},
         "auth_providers": [
@@ -75,9 +75,11 @@ access instead of ``GET /user/repos``.
 
 Module edit locks (``module_locks.py``): a lock nobody used for
 ``module_lock_idle_minutes`` (default 60) expires; with
-``require_module_checkout: true`` (default false) a module must be checked
-out before anyone can change it, otherwise unlocked modules stay freely
-editable and a checkout is opt-in.
+``require_module_checkout`` (default true) a module must be checked out
+before anyone can change it. A checkout needs a name, which labels the
+commits of the editing session (``[module][username][name]``). Set it to
+``false`` to make the checkout opt-in, so unlocked modules stay freely
+editable.
 
 Other environment overrides: ``REQMAN_SERVER_BASE_URL``,
 ``REQMAN_SERVER_FRONTEND_URL``, ``REQMAN_SERVER_COOKIE_SECURE`` (``0``/``1``),
@@ -211,7 +213,7 @@ class ServerSettings:
     group_roles: tuple[GroupRole, ...] = ()
     project_creation: str = "everyone"
     module_lock_idle_seconds: int = 60 * 60
-    require_module_checkout: bool = False
+    require_module_checkout: bool = True
     # Roles from repository permissions (``repo_access.py``): on/off, cache lifetime, grace on errors.
     repo_roles: bool = True
     repo_roles_ttl_seconds: int = 5 * 60
@@ -722,7 +724,7 @@ def load_server_settings(
         project_creation=project_creation,
         module_lock_idle_seconds=int(lock_idle),
         require_module_checkout=_bool(
-            raw.get("require_module_checkout"), "server.require_module_checkout", False
+            raw.get("require_module_checkout"), "server.require_module_checkout", True
         ),
         repo_roles=repo_roles,
         repo_roles_ttl_seconds=int(repo_ttl),

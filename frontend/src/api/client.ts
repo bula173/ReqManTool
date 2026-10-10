@@ -12,11 +12,34 @@ function sameOriginWsUrl(): string {
   return `${protocol}//${window.location.host}/ws`;
 }
 
-export const API_BASE_URL: string =
+/** The WebSocket URL of the backend at `base` (`''` = same origin). */
+function wsUrlFor(base: string): string {
+  if (!base) return sameOriginWsUrl();
+  return `${base.replace(/^http/, 'ws')}/ws`;
+}
+
+// In the desktop app's local mode the Rust side starts `reqman serve` on a
+// random port, so the webview cannot know the address at load time:
+// `initApiBase()` below fills these in before the app renders. They stay
+// `let` (not `const`) because ES module imports are live bindings — read them
+// when you build a URL, never copy them into a module-level constant
+// (see `documentationLinks()` in actions/appActions.ts).
+export let API_BASE_URL: string =
   import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.DEV ? `http://${DEV_BACKEND}` : '');
 
-export const WS_URL: string =
+export let WS_URL: string =
   import.meta.env.VITE_WS_URL ?? (import.meta.env.DEV ? `ws://${DEV_BACKEND}/ws` : sameOriginWsUrl());
+
+/**
+ * Points `API_BASE_URL` / `WS_URL` at the desktop app's own backend when the
+ * UI runs inside Tauri in local mode; a no-op everywhere else (a build with
+ * `VITE_API_BASE_URL`, the Vite dev server, a page served by `reqman serve`
+ * itself). `DesktopGate` awaits this before the app renders.
+ */
+export async function setLocalBackend(base: string): Promise<void> {
+  API_BASE_URL = base;
+  WS_URL = wsUrlFor(base);
+}
 
 export class ApiError extends Error {
   status: number;

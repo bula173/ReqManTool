@@ -35,6 +35,8 @@ _TRAILER_VALUE = re.compile(r"[A-Za-z0-9._@+-]{1,128}")
 
 # Subject line budget: entries are added while the subject stays this short.
 MAX_SUBJECT_LENGTH = 72
+# A checkout's subject: ``[module][username][name]`` (``reqman_server.module_locks``).
+_CHECKOUT_SUBJECT = re.compile(r"^\[[^\[\]\n]*\]\[[^\[\]\n]*\]\[[^\[\]\n]*\]$")
 # Body lines listed before "… and N more".
 MAX_BODY_ENTRIES = 200
 # Attribute values in messages are cut to this many characters.
@@ -386,8 +388,35 @@ def describe_changes(changes: list[FileChange], project: Any = None) -> list[str
     return entries
 
 
-def commit_message(entries: list[str], session_id: str | None = None, user_id: str | None = None) -> str:
+def is_checkout_subject(subject: str) -> bool:
+    """Whether ``subject`` is a checkout's ``[module][username][name]`` (built by the server edition)."""
+    return bool(_CHECKOUT_SUBJECT.match(subject))
+
+
+def _fit_subject(subject: str) -> str:
+    """A given subject line (whitespace collapsed) shortened to the subject budget."""
+    subject = " ".join(subject.split())
+    if len(subject) <= MAX_SUBJECT_LENGTH:
+        return subject
+    return subject[: MAX_SUBJECT_LENGTH - 1].rstrip() + "…"
+
+
+def _body(entries: list[str]) -> str:
+    listed = entries[:MAX_BODY_ENTRIES]
+    body = "\n".join(listed)
+    if len(entries) > len(listed):
+        body += f"\n… and {len(entries) - len(listed)} more"
+    return body
+
+
+def commit_message(
+    entries: list[str], session_id: str | None = None, user_id: str | None = None, subject: str | None = None
+) -> str:
     """A commit message: entries joined into the subject while it stays short, the rest in the body.
+
+    ``subject`` (server edition) replaces the generated subject with the given
+    one — the checkout's ``[module][username][name]`` — and moves every entry
+    to the body, so the history reads as *what* a checkout produced.
 
     With ``session_id``, a ``ReqMan-Session: <id>`` trailer marks the commit
     as an auto-commit that a later change of the same editing session may
@@ -396,24 +425,27 @@ def commit_message(entries: list[str], session_id: str | None = None, user_id: s
     user (``user_of``); a value that is not a plain token is left out.
     """
     entries = [e for e in entries if e] or ["Update project data"]
-    subject = entries[0]
-    used = 1
-    while used < len(entries) and len(subject) + 2 + len(entries[used]) <= MAX_SUBJECT_LENGTH:
-        subject += "; " + entries[used]
-        used += 1
-    remaining = len(entries) - used
-    parts = [subject + (f"; +{remaining} more" if remaining else "")]
-    if remaining:
-        listed = entries[:MAX_BODY_ENTRIES]
-        body = "\n".join(listed)
-        if len(entries) > len(listed):
-            body += f"\n… and {len(entries) - len(listed)} more"
-        parts.append(body)
     trailers = []
     if session_id:
         trailers.append(f"{SESSION_TRAILER}: {session_id}")
     if session_id and user_id and _TRAILER_VALUE.fullmatch(user_id):
         trailers.append(f"{USER_TRAILER}: {user_id}")
+
+    if subject is not None:
+        parts = [_fit_subject(subject), _body(entries)]
+        if trailers:
+            parts.append("\n".join(trailers))
+        return "\n\n".join(parts) + "\n"
+
+    head = entries[0]
+    used = 1
+    while used < len(entries) and len(head) + 2 + len(entries[used]) <= MAX_SUBJECT_LENGTH:
+        head += "; " + entries[used]
+        used += 1
+    remaining = len(entries) - used
+    parts = [head + (f"; +{remaining} more" if remaining else "")]
+    if remaining:
+        parts.append(_body(entries))
     if trailers:
         parts.append("\n".join(trailers))
     return "\n\n".join(parts) + "\n"

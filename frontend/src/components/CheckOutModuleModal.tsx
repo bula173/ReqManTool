@@ -7,9 +7,11 @@ import type { Module } from '../api/types';
 
 /**
  * "Check out for editing…" (server edition): takes the module's exclusive
- * edit lock with an optional reason. Until it is released, broken by a
- * project admin or expires without changes, everybody else gets the module
- * read-only (the server refuses their changes with 423).
+ * edit lock with the name of the editing session. Until it is released,
+ * broken by a project admin or expires without changes, everybody else gets
+ * the module read-only (the server refuses their changes with 423). The
+ * name is required and labels the commits the session produces:
+ * `[module][username][name]`.
  */
 export function CheckOutModuleModal({
   projectId,
@@ -21,10 +23,11 @@ export function CheckOutModuleModal({
   onClose: () => void;
 }) {
   const checkOut = useCheckOutModule();
-  const [reason, setReason] = useState('');
+  const [name, setName] = useState('');
+  const title = name.trim();
   const submit = () => {
     checkOut.mutate(
-      { projectId, moduleId: module.id, reason: reason.trim() },
+      { projectId, moduleId: module.id, reason: title },
       {
         onSuccess: () => {
           notifications.show({ message: `Module "${module.name}" checked out for editing`, color: 'green' });
@@ -38,7 +41,7 @@ export function CheckOutModuleModal({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          submit();
+          if (title) submit();
         }}
       >
         <Stack gap="sm">
@@ -48,12 +51,14 @@ export function CheckOutModuleModal({
             a while without changes, and a project admin can break the lock.
           </Text>
           <TextInput
-            label="Reason"
+            label="Name"
+            description="Names your editing session and labels its commits: [module][username][name]"
             placeholder="e.g. Reworking the braking chapter"
+            required
             maxLength={500}
             data-autofocus
-            value={reason}
-            onChange={(event) => setReason(event.currentTarget.value)}
+            value={name}
+            onChange={(event) => setName(event.currentTarget.value)}
           />
           {checkOut.isError && (
             <Alert color="red" p="xs">
@@ -66,7 +71,7 @@ export function CheckOutModuleModal({
             <Button variant="default" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" loading={checkOut.isPending}>
+            <Button type="submit" loading={checkOut.isPending} disabled={!title}>
               Check out
             </Button>
           </Group>

@@ -371,7 +371,10 @@ export function ModulePage() {
       )}
       {needsCheckout && (
         <Alert color="blue" p="xs">
-          <Text size="sm">This server requires checking a module out before changing it.</Text>
+          <Text size="sm">
+            This server requires checking the module out for editing before changing it: use “Check out for
+            editing” and name your session (the name labels its commits).
+          </Text>
         </Alert>
       )}
 

@@ -49,12 +49,15 @@ exclusive edit of a DOORS link module), removing a link configuration,
 narrowing an attribute's scope (the modules whose values are dropped) and
 purging the project (every module). The mirror attribute a link refreshes
 in the target requirement is derived data and is not checked. Local
-edition: ``NoLocks``, a type test.
+edition: ``NoLocks``, a type test. The checkout a mutation writes also
+labels the commit it produces (``_checkout_subject``): its subject line is
+``[module][username][name]`` with the changed files listed in the body.
 """
 
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import functools
 import hashlib
 import inspect
@@ -96,6 +99,7 @@ from .extensions import (
     current_identity,
     guard_active,
     is_permitted,
+    module_commit_subject,
     module_locks_active,
 )
 from .formats import PROJECT_FORMAT, NewerFormatError, upgrade
@@ -411,6 +415,15 @@ def _requires(action: str) -> Callable[[Callable], Callable]:
     return mark
 
 
+# The checkout (server edition) the mutation in progress writes:
+# ``(project_id, "[module][username][name]")``, set by ``_check_module_writes``
+# and read by ``_auto_commit``, which labels the commit with it. ``None`` (no
+# checkout, local edition) keeps the usual message built from the changed files.
+_checkout_subject: contextvars.ContextVar[tuple[str, str] | None] = contextvars.ContextVar(
+    "reqman_checkout_subject", default=None
+)
+
+
 def _records_history(method: Callable) -> Callable:
     """Auto-commit the projects a successful mutation wrote (see ``ProjectService._auto_commit``).
 
@@ -450,19 +463,26 @@ def _records_history(method: Callable) -> Callable:
         if self.store.is_recording():
             return method(self, *args, **kwargs)
         self._last_touched.ids = set()
-        if guards_project:
-            project_id = args[0] if args else kwargs.get("project_id")
-            if isinstance(project_id, str):
-                if guards_lock:
-                    self._require_unlocked(project_id)
-                self._require_no_sync_conflict(project_id)
-                if guards_module and module_locks_active():
-                    module_id = args[1] if len(args) > 1 else kwargs.get("module_id")
-                    self._check_module_writes(project_id, [module_id])
-        with self.store.recording_writes() as touched:
-            result = method(self, *args, **kwargs)
-        for project_id in sorted(touched):
-            self._auto_commit(project_id)
+        # Scoped to this operation: a nested one may name another checkout
+        # (``_check_module_writes``) and the subject is read by its own
+        # ``_auto_commit`` only.
+        subject_token = _checkout_subject.set(None)
+        try:
+            if guards_project:
+                project_id = args[0] if args else kwargs.get("project_id")
+                if isinstance(project_id, str):
+                    if guards_lock:
+                        self._require_unlocked(project_id)
+                    self._require_no_sync_conflict(project_id)
+                    if guards_module and module_locks_active():
+                        module_id = args[1] if len(args) > 1 else kwargs.get("module_id")
+                        self._check_module_writes(project_id, [module_id])
+            with self.store.recording_writes() as touched:
+                result = method(self, *args, **kwargs)
+            for project_id in sorted(touched):
+                self._auto_commit(project_id)
+        finally:
+            _checkout_subject.reset(subject_token)
         self._last_touched.ids = set(touched)
         return result
 
@@ -637,14 +657,20 @@ class ProjectService:
         return describe
 
     def _auto_commit(self, project_id: str) -> None:
-        """Commit a project's changed data files; a git problem is recorded, never raised."""
+        """Commit a project's changed data files; a git problem is recorded, never raised.
+
+        The commit is labelled with the checkout the mutation wrote (its
+        ``[module][username][name]`` subject) when there was one.
+        """
         if not self.history.enabled:
             return
         try:
             project_dir = self.store.project_path(project_id)
         except FileNotFoundError:
             return
-        self.history.auto_commit(project_dir, self._describer(project_id))
+        pending = _checkout_subject.get()
+        subject = pending[1] if pending is not None and pending[0] == project_id else None
+        self.history.auto_commit(project_dir, self._describer(project_id), subject)
 
     def git_status(self, project_id: str) -> dict[str, Any]:
         """The project's history (git) status: state, explanation, branch, HEAD, pending changes.
@@ -884,12 +910,19 @@ class ProjectService:
         Called before anything is written. Free in the local edition (no
         lock service). Non-string ids (a request naming no module) are
         left to the operation's own validation.
+
+        A write to exactly one checked-out module also names its checkout as
+        the subject of the commit this operation produces (``[module][username][name]``).
         """
         if not module_locks_active():
             return
-        for module_id in dict.fromkeys(module_ids):
-            if isinstance(module_id, str):
-                check_module_write(project_id, module_id)
+        ids = [module_id for module_id in dict.fromkeys(module_ids) if isinstance(module_id, str)]
+        for module_id in ids:
+            check_module_write(project_id, module_id)
+        if len(ids) == 1:
+            subject = module_commit_subject(project_id, ids[0])
+            if subject:
+                _checkout_subject.set((project_id, subject))
 
     def _require_no_sync_conflict(self, project_id: str) -> None:
         """Refuse a mutation (409) while the project's git sync conflict is unresolved."""

@@ -1962,7 +1962,7 @@ directory), `admins` (user names / e-mail addresses), `admin_groups`
 `group_roles` (`[{group, role: viewer | reviewer | editor | project-admin,
 projects: ["*" | project id, ...]}]`), `project_creation` (`everyone`, the
 default, or `admins`), `module_lock_idle_minutes` (60),
-`require_module_checkout` (false), `repo_roles` (`{enabled: true,
+`require_module_checkout` (true), `repo_roles` (`{enabled: true,
 cache_minutes: 5, grace_minutes: 60}`, or `true`/`false`; see "Roles from
 repository permissions"), `discovery` (`{enabled: true, cache_minutes: 15,
 max_repos: 200}`, or `true`/`false`; project discovery in the login
@@ -2114,20 +2114,31 @@ every project query.
 ### Module edit locks (slice 3)
 
 An editor checks a module out for exclusive editing ("Check out for
-editing"): a lock with owner, `since`, the owner's `last_activity` and an
-optional reason (at most 500 characters). While it is held, every write to
+editing"): a lock with owner, `since`, the owner's `last_activity` and a
+name (at most 500 characters; required when the lock is taken — it labels
+the commits of the session, see below). Anyone who may change the module
+may check it out (`project.review`, so a reviewer can sign off). While it
+is held, every write to
 the module's content by anyone else — server admins included; they break
 the lock instead — is refused with `ModuleLockedError` (REST 423 with the
 owner, time and reason in `detail`; WebSocket error code **-32005**, kept
 apart from the project lock's -32004 so clients can tell them apart). The
 owner's writes refresh the lock; one unused for
 `server.module_lock_idle_minutes` (default 60) expires (checked lazily on
-every read; clients refetch the lock list every minute). By default an
-unlocked module stays freely editable — a checkout is opt-in, like an
-exclusive edit in DOORS; with `server.require_module_checkout: true` a
-write to an existing module that nobody checked out is refused too (423,
+every read; clients refetch the lock list every minute). With
+`server.require_module_checkout` (default true) a write to an existing
+module that nobody checked out is refused too (423,
 "must be checked out"), while module creation and project-level changes
-are not affected.
+are not affected; set it to `false` and an unlocked module stays freely
+editable — a checkout becomes opt-in, like an exclusive edit in DOORS.
+
+**Commits of a checkout.** A write to a checked-out module labels the
+auto-commit it produces: the subject line is
+`[module][username][name]` (the checkout's name and the owner's login
+name), with the changed files (`SYRS-0001 added`, …) listed in the body
+under the usual `ReqMan-Session` / `ReqMan-User` trailers. Without a
+checkout the subject stays built from the changed files
+(`reqman.history.commit_message`).
 
 **Storage.** `module_locks.json` in the state directory
 (`reqman_server/module_locks.py`): `{project_id, module_id, user_id,

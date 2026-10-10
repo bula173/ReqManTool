@@ -311,7 +311,7 @@ When running the server edition (`mode: server`), the following security control
 - Set `server.cookie_secure: true` in production (default).
 - Restrict `cors_origins` to your frontend domain(s).
 - Use `server.admins` and `server.admin_groups` to limit server administrator access.
-- Enable `server.require_module_checkout: true` for exclusive editing workflows.
+- `server.require_module_checkout` (default `true`): set it to `false` to make the checkout opt-in for exclusive editing workflows.
 - Monitor `audit.jsonl` for suspicious activity.
 
 ## 20. Status

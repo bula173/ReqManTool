@@ -111,7 +111,7 @@ Server Edition Settings (``server`` section)
        ],
        "project_creation": "everyone",
        "module_lock_idle_minutes": 60,
-       "require_module_checkout": false,
+       "require_module_checkout": true,
        "repo_roles": {"enabled": true, "cache_minutes": 5, "grace_minutes": 60},
        "discovery": {"enabled": true, "cache_minutes": 15, "max_repos": 200}
      }
@@ -179,8 +179,8 @@ Server Edition Settings (``server`` section)
      - Auto-release lock after idle
    * - ``require_module_checkout``
      - —
-     - ``false``
-     - Require checkout before edit
+     - ``true``
+     - Require checkout before edit (``false`` = checkout optional)
    * - ``repo_roles``
      - —
      - ``true``

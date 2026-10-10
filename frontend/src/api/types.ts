@@ -1403,13 +1403,14 @@ export interface ModuleLock {
   since: string;
   last_activity: string;
   expires_at: string;
+  /** The checkout's name (required when the lock is taken): it labels the session's commits. */
   reason: string;
 }
 
 /** GET /projects/{id}/module-locks (WS `module.locks`): the project's live module locks. */
 export interface ModuleLocks {
   project_id: string;
-  /** The server requires a checkout before a module can be changed (`server.require_module_checkout`). */
+  /** The server requires a checkout before a module can be changed (`server.require_module_checkout`, default true). */
   require_checkout: boolean;
   /** A lock without activity for this long expires. */
   idle_minutes: number;
