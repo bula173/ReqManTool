@@ -546,8 +546,8 @@ class _CsvImportPlan:
 class _ReqifImportPlan:
     """What a validated ReqIF import writes (``ProjectService._reqif_import_plan``); never persisted.
 
-    ``project`` already carries the new attribute definitions (they are written
-    with the first write that follows).
+    ``project`` already carries the new attribute definitions and link
+    configurations (they are written with the first write that follows).
     """
 
     project: Project
@@ -555,6 +555,11 @@ class _ReqifImportPlan:
     new_attributes: list[AttributeDefinition] = field(default_factory=list)
     # (module id, the requirements to create in that module, in write order)
     new_requirements: list[tuple[str, list[Requirement]]] = field(default_factory=list)
+    # Link configurations the document's SPEC-RELATION-TYPEs described (the
+    # project already carries them, with their mirror attributes).
+    new_link_configurations: list[LinkConfiguration] = field(default_factory=list)
+    # (configuration, new source requirement id, new target requirement id)
+    new_links: list[tuple[LinkConfiguration, str, str]] = field(default_factory=list)
 
 
 # A module prefix becomes part of every requirement id it allocates
@@ -7543,9 +7548,13 @@ class ProjectService:
           (SPEC-OBJECTs no specification refers to are not imported).
         - Attributes: an ATTRIBUTE-DEFINITION whose identifier or name matches
           an attribute of the project reuses it; any other one is added with
-          the file's identifier (or a unique slug) and its datatype as type.
-          Values are validated exactly as add requirement validates them; a
-          rejected value fails the whole import.
+          the file's identifier (or a unique slug) and its datatype as type
+          (an ENUMERATION brings its SPECIFIED-VALUES as choices). Values are
+          validated exactly as add requirement validates them; a rejected
+          value fails the whole import.
+        - Links: a SPEC-RELATION-TYPE becomes a link configuration named after
+          it, each SPEC-RELATION a pair in it. A relation whose end was not
+          imported, or whose module types ReqMan does not link, is skipped.
         """
         plan = self._reqif_import_plan(project_id, reqif_xml)
         project = plan.project
@@ -7567,10 +7576,31 @@ class ProjectService:
                 {k: v for _, requirements in plan.new_requirements for r in requirements for k, v in r.attributes.items()},
             )
 
+        # Links last: their mirror attributes are written onto requirements
+        # that now exist, and each configuration's pair file is written once
+        # with all of its new pairs (like the CSV import does).
+        if plan.new_links:
+            pairs_by_config: dict[str, list[LinkPair]] = {}
+            for config, source_id, target_id in plan.new_links:
+                pairs_by_config.setdefault(config.id, []).append(LinkPair(source_id=source_id, target_id=target_id))
+            for config_id, new_pairs in pairs_by_config.items():
+                pairs = self.store.load_link_pairs(project_id, config_id)
+                pairs.extend(new_pairs)
+                self.store.save_link_pairs(project_id, config_id, pairs)
+            self.store.save_project(project)
+            for config, source_id, target_id in plan.new_links:
+                self._refresh_link_attribute(project_id, config.id, config.source_module_id, source_id, config)
+                if config.target_project_id is None:
+                    self._refresh_link_attribute(
+                        project_id, config.id, config.target_module_id, target_id, config
+                    )
+
         return {
             "modules_created": len(plan.new_modules),
             "requirements_created": sum(len(r) for _, r in plan.new_requirements),
             "attributes_created": len(plan.new_attributes),
+            "link_configurations_created": len(plan.new_link_configurations),
+            "links_created": len(plan.new_links),
             "requirements": [
                 {"module_id": module_id, "id": requirement.id, "parent_id": requirement.parent_id}
                 for module_id, requirements in plan.new_requirements
@@ -7687,8 +7717,29 @@ class ProjectService:
             modules_by_name[name.lower()] = module
             module_map[imported_module.id] = module
 
+        # A file's link mirror attributes become the configurations' own rather
+        # than a second attribute under the same name. ``reqif_export`` writes
+        # each configuration's mirror as a normal ATTRIBUTE-DEFINITION whose id
+        # is the configuration's id, and the SPEC-RELATION-TYPE that names it
+        # as ``SPEC-RELATION-TYPE-<id>``; both halves are dropped here so the
+        # configuration below recreates the one attribute ReqMan keeps for it.
+        for mirror_id in imported.link_mirror_attribute_ids():
+            if mirror_id not in attribute_map:
+                continue
+            mapped = attribute_map.pop(mirror_id)
+            if mapped in by_id:
+                # The project has the attribute itself (not one this import
+                # would add): leave it alone, the configuration reuses its name.
+                continue
+            project.attributes = [a for a in project.attributes if a.id != mapped]
+            new_attributes = [a for a in new_attributes if a.id != mapped]
+
         # --- requirements, in hierarchy order ---
         new_requirements: list[tuple[str, list[Requirement]]] = []
+        # Each imported requirement's id -> (new id, the module it went to), so
+        # a SPEC-RELATION can be resolved to a link between the two. The module
+        # is the in-memory one: a module this import creates is not on disk yet.
+        placed: dict[str, tuple[str, Module]] = {}
         errors = []
         for imported_module in imported.modules:
             module = module_map[imported_module.id]
@@ -7724,18 +7775,93 @@ class ProjectService:
                     order=self._next_sibling_order(siblings + created, parent_id),
                 )
                 id_map[imported_requirement.id] = requirement.id
+                placed[imported_requirement.id] = (requirement.id, module)
                 created.append(requirement)
             if created:
                 new_requirements.append((module.id, created))
         if errors:
             raise ValueError(_import_problem_summary(errors))
 
+        # --- links: a SPEC-RELATION-TYPE per link configuration, one per
+        # (source module, target module) pair the document relates through ---
+        new_configurations, new_links = self._reqif_import_links(project, imported, placed)
+
         return _ReqifImportPlan(
             project=project,
             new_modules=new_modules,
             new_attributes=new_attributes,
             new_requirements=new_requirements,
+            new_link_configurations=new_configurations,
+            new_links=new_links,
         )
+
+    def _reqif_import_links(
+        self, project: Project, imported: Any, placed: dict[str, tuple[str, Module]]
+    ) -> tuple[list[LinkConfiguration], list[tuple[LinkConfiguration, str, str]]]:
+        """The link configurations and pairs a ReqIF document's SPEC-RELATIONs describe.
+
+        A SPEC-RELATION-TYPE becomes a link configuration named after it, as
+        ``reqif_export`` writes it, and each SPEC-RELATION a pair in it. ReqMan
+        configurations run from one source module to one target module, while
+        one relation type can relate several pairs of modules, so the
+        configurations are split per (name, source module, target module) — the
+        one ReqMan configuration per module pair that a ReqManTool export
+        writes maps back to exactly one.
+
+        A relation whose end was not imported, or whose two ends are in module
+        types that do not trace to each other, is skipped: ReqMan refuses such
+        a configuration, and refusing the whole document over a link would be
+        worse than dropping it.
+        """
+        # Keyed by module id (a Module is an unhashable dataclass); the modules
+        # themselves come from ``placed``.
+        modules_by_id = {module.id: module for _, module in placed.values()}
+        pairs_by_configuration: dict[tuple[str, str, str], list[tuple[str, str]]] = {}
+        for link in imported.links:
+            source = placed.get(link.source_id)
+            target = placed.get(link.target_id)
+            if source is None or target is None or source[0] == target[0]:
+                continue
+            pairs_by_configuration.setdefault((link.type_name, source[1].id, target[1].id), []).append(
+                (source[0], target[0])
+            )
+        if not pairs_by_configuration:
+            return [], []
+
+        created: list[LinkConfiguration] = []
+        result: list[tuple[LinkConfiguration, str, str]] = []
+        for (name, source_module_id, target_module_id), pairs in pairs_by_configuration.items():
+            source_module, target_module = modules_by_id[source_module_id], modules_by_id[target_module_id]
+            existing = next(
+                (
+                    c
+                    for c in project.link_configurations
+                    if c.target_project_id is None
+                    and (c.source_module_id, c.target_module_id) == (source_module_id, target_module_id)
+                ),
+                None,
+            )
+            if existing is not None:
+                # A configuration for these two modules already exists: add the
+                # pairs to it rather than a second one with the same modules.
+                config = existing
+            else:
+                try:
+                    self._check_link_types(source_module, target_module)
+                except ValueError:
+                    continue  # a module-type pair ReqMan does not link
+                # A name a project attribute already holds (a foreign tool that
+                # mirrors its links into an attribute) is refused here, and
+                # says so, rather than the document importing without its link.
+                config = self._add_link_configuration(project, name, source_module, target_module)
+                created.append(config)
+            seen = {(p.source_id, p.target_id) for p in self.store.load_link_pairs(project.id, config.id)}
+            for source_id, target_id in pairs:
+                if (source_id, target_id) in seen:
+                    continue
+                seen.add((source_id, target_id))
+                result.append((config, source_id, target_id))
+        return created, result
 
     # --- AI prompt library -------------------------------------------------------
     #

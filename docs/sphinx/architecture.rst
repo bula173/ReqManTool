@@ -102,7 +102,7 @@ Key Files
    * - ``templates.py`` | Project/module templates, validation, import/export
    * - ``*_export.py`` | ReqIF, CSV, XLSX, DOCX export (duck-typed)
    * - ``csv_import.py`` | CSV import with link support
-   * - ``reqif_import.py`` | ReqIF import; XHTML values become rich text again
+   * - ``reqif_import.py`` | ReqIF import; XHTML values become rich text again, SPEC-RELATIONs become links
    * - ``test_results_import.py`` | JUnit/Robot Framework import
 
 Extension Points

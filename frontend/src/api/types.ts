@@ -347,6 +347,10 @@ export interface ReqifImportResult {
   requirements_created: number;
   /** Attribute definitions the project did not have yet. */
   attributes_created: number;
+  /** Link configurations created from the document's SPEC-RELATION-TYPEs. */
+  link_configurations_created: number;
+  /** Links created from the document's SPEC-RELATIONs. */
+  links_created: number;
   /** The created requirements, in the document's hierarchy order (parents before children). */
   requirements: { module_id: string; id: string; parent_id: string | null }[];
 }

@@ -2193,16 +2193,72 @@ Newest entries are appended at the end.
         what the import does and does not do, since a ReqIF document carries
         more than a requirements tool uses.
       - Format limits, documented on the module and repeated in the dialog:
-        enum values (SPECIFIED-VALUES) are not read, so an enum attribute
-        arrives without its choices; SPEC-RELATIONs (link pairs) are not
-        read; a file with several SPEC-OBJECT-TYPEs reads only the first.
-      - Tests: `backend/tests/test_reqif_import.py` (37 tests) covers the
+        a link configuration with no links cannot be imported (the document
+        carries no SPEC-RELATION for it), and a multi-valued attribute keeps
+        only its first value.
+      - Tests: `backend/tests/test_reqif_import.py` (45 tests) covers the
         module on its own, the XHTML→rich-text conversion (formatting,
         spacing, entities, hostile markup), the service (attribute reuse and
         addition, type conflicts, module creation vs. reuse, hierarchy and
         order, defaults, sanitising, required-but-empty, all-or-nothing,
-        history, BOM, encoding) and REST/WebSocket parity.
+        history, BOM, encoding), foreign documents (enumerations, several
+        SPEC-OBJECT-TYPEs, links) and REST/WebSocket parity.
       - Files: `backend/reqman/reqif_import.py` (new),
         `backend/reqman/{service.py,app.py}`,
         `backend/tests/test_reqif_import.py` (new),
         `frontend/src/{api/{queries.ts,types.ts},actions/{appActions.ts,registry.ts,types.ts},components/ImportReqifModal.tsx,layout/AppDialogs.tsx}`.
+- [x] **ReqIF import: the rest of what a document can carry** (2026-10-10;
+      the second half of the "Rich text slice 2" follow-up). The first version
+      imported what ReqManTool's own export writes, which is a narrower slice
+      of ReqIF than another tool produces. Three gaps closed, all found by
+      feeding the importer a document written the way a foreign tool would:
+      1. **Enumerations.** A DATATYPE-DEFINITION-ENUMERATION's SPECIFIED-VALUES
+         are read as the attribute's choices, and an ATTRIBUTE-VALUE-ENUMERATION's
+         ENUM-VALUE-REF is resolved back to the value ReqMan stores. A
+         SPECIFIED-VALUE is read as its EMBEDDED-VALUE KEY when the file has
+         one (what the export writes), else its LONG-NAME, else its IDENTIFIER.
+         An enumeration with no SPECIFIED-VALUES has no choices to validate
+         against, so it arrives as a string attribute instead of one that would
+         reject every value written to it.
+      2. **Several SPEC-OBJECT-TYPEs.** All of them are read, not just the
+         first, so a document with one type per tool area (requirements and
+         test cases, say) keeps each one's attributes. A SPEC-OBJECT's values
+         are typed against the type it names, falling back to the first type
+         that defines them, so an object naming a type the document does not
+         declare still arrives rather than losing its values.
+      3. **SPEC-RELATIONs.** A SPEC-RELATION-TYPE becomes a link configuration
+         named after it (what `reqif_export` writes it as) and each SPEC-RELATION
+         a pair in it, with the read-only mirror attributes ReqMan keeps for a
+         configuration written onto both ends. ReqMan configurations run from
+         one source module to one target module while one relation type can
+         relate several pairs of modules, so they are split per (name, source
+         module, target module) — the one configuration per module pair that a
+         ReqManTool export writes maps back to exactly one. A configuration
+         that already exists between the two modules is reused; a relation whose
+         end was not imported, or whose module types ReqMan does not link, is
+         skipped with the rest of the document still imported. A document
+         ReqManTool wrote round trips: the configuration, its name and its pairs
+         all come back.
+      Two bugs this surfaced, both invisible to a round-trip test because
+      ReqManTool's own export happens to name its datatypes `DATATYPE-*`:
+      - An attribute's type was decided by its datatype's *identifier* instead
+        of the datatype itself, so a document with its own names (`DT-X`) had
+        every attribute read as a string. The parsed datatype's class decides
+        now, which also gives a REAL somewhere to go (a string).
+      - `ReqIFSpecRelationType` has an `attribute_definitions` field just like
+        `ReqIFSpecObjectType` does, so telling the two apart by that field made
+        a relation type look like an object type — and its name unreachable, so
+        no link was ever created. The class decides now.
+      A third was in the import rather than the parser: the export writes a
+      configuration's mirror attribute as an ordinary ATTRIBUTE-DEFINITION under
+      the configuration's name, so the import saw a name already taken and
+      dropped the link. A file's link mirror attributes are now recognised by
+      ReqManTool's own `SPEC-RELATION-TYPE-<id>` naming and become the
+      configuration's own attribute, and a name a *project* attribute holds is
+      reported rather than silently dropping the link.
+      - Tests: `backend/tests/test_reqif_import.py` grew to 45 (8 new) covering
+        each of the three, plus a link round trip through the export and an
+        import that reuses an existing configuration.
+      - Files: `backend/reqman/reqif_import.py`, `backend/reqman/service.py`,
+        `backend/tests/test_reqif_import.py`,
+        `frontend/src/{api/types.ts,components/ImportReqifModal.tsx}`.

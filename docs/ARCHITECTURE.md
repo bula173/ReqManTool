@@ -2463,11 +2463,13 @@ backend/reqman/
                    ReqIF document with the reqif package and returns plain
                    dataclasses (no models/service import). XHTML values come
                    back as rich text (prefix stripped, the export's visible
-                   spacing decoded, richtext.sanitize applied);
+                   spacing decoded, richtext.sanitize applied); an attribute's
+                   type comes from the parsed datatype's class, not the name the
+                   file gives it, and a SPEC-RELATION-TYPE becomes a link
+                   configuration with its SPEC-RELATIONs as pairs;
                    ProjectService._reqif_import_plan validates the document
                    all-or-nothing and import_reqif allocates ids and writes
-                   it. The format limits (enum values, SPEC-RELATIONs, a file
-                   with several SPEC-OBJECT-TYPEs) are on its docstring.
+                   it. The format limits are on its docstring.
   templates.py     Project template format: namespaced ids, reading the
                    built-in templates/ folder, shape checks (no domain
                    rules — ProjectService validates by building the project

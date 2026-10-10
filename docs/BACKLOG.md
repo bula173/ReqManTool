@@ -165,10 +165,14 @@ area by area once phase A is complete.
       rejected]", so some remote rejections map to 400 instead of 409.
 - [ ] Rich text slice 2: follow-ups (2026-10-10). (1) Rich-text
       tables and images (the later slice; `img` is already stored and
-      exported, tables are not). (2) ReqIF import follow-ups: enum
-      values (SPECIFIED-VALUES) and SPEC-RELATIONs are not read (see
-      "ReqIF import" in Done), and a file with several
-      SPEC-OBJECT-TYPEs reads only the first.
+      exported, tables are not). (2) ReqIF: the export still writes an
+      "enum" attribute as a plain string (no ENUMERATION datatype), so
+      enum types and choices survive only one way through a ReqManTool
+      file — the import now reads a real enumeration from another tool,
+      but a ReqManTool export/import round trip returns an enum as a
+      string attribute; writing a DATATYPE-DEFINITION-ENUMERATION with
+      SPECIFIED-VALUES and ATTRIBUTE-VALUE-ENUMERATION would fix it (it
+      changes every file ReqManTool writes, so it is its own decision).
 - [ ] Commit browser: follow-ups (2026-10-08). (1) Structured module
       rename/reorder/folder entries in the compare engine (today shown as
       text notes from `describe_changes`). (2) Text search matching hash

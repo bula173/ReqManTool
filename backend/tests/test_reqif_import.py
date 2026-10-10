@@ -8,6 +8,7 @@ foreign tool's document must import without crashing the project.
 import importlib
 import os
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -496,6 +497,279 @@ def test_import_returns_the_created_requirements(service, module):
     assert rows[0]["parent_id"] is None
     assert rows[1]["parent_id"] == rows[0]["id"]
     assert all(row["module_id"] == rows[0]["module_id"] for row in rows)
+
+
+# --- enumerations, several SPEC-OBJECT-TYPEs and links (foreign documents) ---------
+#
+# A document ReqManTool wrote names its datatypes ``DATATYPE-*`` and writes an
+# enum attribute as a plain string (a documented limit of the export), so these
+# build a document the way another tool would, with its own datatype names, real
+# enumerations, several SPEC-OBJECT-TYPEs and SPEC-RELATIONs.
+
+_XML_HEAD = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<REQ-IF xmlns="http://www.omg.org/spec/ReqIF/20110401/reqif.xsd" '
+    'xmlns:xhtml="http://www.w3.org/1999/xhtml">'
+    "<THE-HEADER><REQ-IF-HEADER IDENTIFIER=\"src\"><TITLE>Source</TITLE></REQ-IF-HEADER></THE-HEADER>"
+    "<CORE-CONTENT><REQ-IF-CONTENT>"
+)
+_XML_TAIL = "</REQ-IF-CONTENT></CORE-CONTENT></REQ-IF>"
+
+_XHTML_DATATYPE = '<DATATYPE-DEFINITION-XHTML IDENTIFIER="DT-X"/>'
+_ENUM_DATATYPE = (
+    '<DATATYPE-DEFINITION-ENUMERATION IDENTIFIER="DT-E"><SPECIFIED-VALUES>'
+    '<SPECIFIED-VALUE IDENTIFIER="SV-H"><PROPERTIES><EMBEDDED-VALUE KEY="high"/></PROPERTIES></SPECIFIED-VALUE>'
+    '<SPECIFIED-VALUE IDENTIFIER="SV-L"><PROPERTIES><EMBEDDED-VALUE KEY="low"/></PROPERTIES></SPECIFIED-VALUE>'
+    "</SPECIFIED-VALUES></DATATYPE-DEFINITION-ENUMERATION>"
+)
+_XHTML_REF = "<TYPE><DATATYPE-DEFINITION-XHTML-REF>DT-X</DATATYPE-DEFINITION-XHTML-REF></TYPE>"
+_ENUM_REF = "<TYPE><DATATYPE-DEFINITION-ENUMERATION-REF>DT-E</DATATYPE-DEFINITION-ENUMERATION-REF></TYPE>"
+
+
+def _xhtml_value(attribute_id: str, value: str) -> str:
+    return (
+        f"<ATTRIBUTE-VALUE-XHTML><DEFINITION><ATTRIBUTE-DEFINITION-XHTML-REF>{attribute_id}"
+        f"</ATTRIBUTE-DEFINITION-XHTML-REF></DEFINITION>"
+        f"<THE-VALUE><xhtml:div>{value}</xhtml:div></THE-VALUE></ATTRIBUTE-VALUE-XHTML>"
+    )
+
+
+def _enum_value(attribute_id: str, ref: str) -> str:
+    return (
+        f"<ATTRIBUTE-VALUE-ENUMERATION><VALUES><ENUM-VALUE-REF>{ref}</ENUM-VALUE-REF></VALUES>"
+        f"<DEFINITION><ATTRIBUTE-DEFINITION-ENUMERATION-REF>{attribute_id}"
+        "</ATTRIBUTE-DEFINITION-ENUMERATION-REF></DEFINITION></ATTRIBUTE-VALUE-ENUMERATION>"
+    )
+
+
+def _spec_object(identifier: str, type_ref: str, values: str = "") -> str:
+    return (
+        f'<SPEC-OBJECT IDENTIFIER="{identifier}"><VALUES>{values}</VALUES>'
+        f"<TYPE><SPEC-OBJECT-TYPE-REF>{type_ref}</SPEC-OBJECT-TYPE-REF></TYPE></SPEC-OBJECT>"
+    )
+
+
+def _specification(identifier: str, name: str, object_refs: Iterable[str]) -> str:
+    children = "".join(
+        f'<SPEC-HIERARCHY IDENTIFIER="H-{ref}"><OBJECT><SPEC-OBJECT-REF>{ref}</SPEC-OBJECT-REF>'
+        "</OBJECT></SPEC-HIERARCHY>"
+        for ref in object_refs
+    )
+    return (
+        f'<SPECIFICATION IDENTIFIER="{identifier}" LONG-NAME="{name}">'
+        f"<CHILDREN>{children}</CHILDREN></SPECIFICATION>"
+    )
+
+
+def _document(*, datatypes: str, spec_types: str, spec_objects: str, specifications: str, relations: str = "") -> str:
+    return (
+        f"{_XML_HEAD}<DATATYPES>{datatypes}</DATATYPES><SPEC-TYPES>{spec_types}</SPEC-TYPES>"
+        f"<SPEC-OBJECTS>{spec_objects}</SPEC-OBJECTS>"
+        f"{f'<SPEC-RELATIONS>{relations}</SPEC-RELATIONS>' if relations else ''}"
+        f"<SPECIFICATIONS>{specifications}</SPECIFICATIONS>{_XML_TAIL}"
+    )
+
+
+_ENUM_TYPES = (
+    '<SPEC-OBJECT-TYPE IDENTIFIER="T-REQ" LONG-NAME="Requirement"><SPEC-ATTRIBUTES>'
+    f'<ATTRIBUTE-DEFINITION-XHTML IDENTIFIER="object_text" LONG-NAME="ObjectText">{_XHTML_REF}'
+    "</ATTRIBUTE-DEFINITION-XHTML>"
+    f'<ATTRIBUTE-DEFINITION-ENUMERATION IDENTIFIER="prio" LONG-NAME="Priority">{_ENUM_REF}'
+    "</ATTRIBUTE-DEFINITION-ENUMERATION>"
+    "</SPEC-ATTRIBUTES></SPEC-OBJECT-TYPE>"
+)
+
+
+def test_enum_attribute_brings_its_specified_values_as_choices():
+    """An ENUMERATION datatype's SPECIFIED-VALUES become the attribute's choices."""
+    document = _document(
+        datatypes=_XHTML_DATATYPE + _ENUM_DATATYPE,
+        spec_types=_ENUM_TYPES,
+        spec_objects=_spec_object("R1", "T-REQ", _xhtml_value("object_text", "x") + _enum_value("prio", "SV-H")),
+        specifications=_specification("S1", "M", ["R1"]),
+    )
+    imported = import_reqif_from_string(document)
+    (attribute,) = [a for a in imported.attributes if a.id == "prio"]
+    assert attribute.type == "enum"
+    assert attribute.choices == ["high", "low"]
+    assert imported.modules[0].requirements[0].attributes["prio"] == "high"
+
+
+def test_enum_value_falls_back_to_the_long_name_then_the_identifier():
+    """A SPECIFIED-VALUE with no embedded key is named by its LONG-NAME, else its id."""
+    datatype = (
+        '<DATATYPE-DEFINITION-ENUMERATION IDENTIFIER="DT-E"><SPECIFIED-VALUES>'
+        '<SPECIFIED-VALUE IDENTIFIER="SV-A" LONG-NAME="Alpha"/>'
+        '<SPECIFIED-VALUE IDENTIFIER="SV-B"/>'
+        "</SPECIFIED-VALUES></DATATYPE-DEFINITION-ENUMERATION>"
+    )
+    document = _document(
+        datatypes=_XHTML_DATATYPE + datatype,
+        spec_types=_ENUM_TYPES,
+        spec_objects=_spec_object(
+            "R1", "T-REQ", _xhtml_value("object_text", "x") + _enum_value("prio", "SV-B")
+        ),
+        specifications=_specification("S1", "M", ["R1"]),
+    )
+    imported = import_reqif_from_string(document)
+    (attribute,) = [a for a in imported.attributes if a.id == "prio"]
+    assert attribute.choices == ["Alpha", "SV-B"]
+    assert imported.modules[0].requirements[0].attributes["prio"] == "SV-B"
+
+
+def test_several_spec_object_types_are_all_read():
+    """A file with one SPEC-OBJECT-TYPE per tool area reads all of them."""
+    test_type = (
+        '<SPEC-OBJECT-TYPE IDENTIFIER="T-TEST" LONG-NAME="Test case"><SPEC-ATTRIBUTES>'
+        f'<ATTRIBUTE-DEFINITION-XHTML IDENTIFIER="object_text" LONG-NAME="ObjectText">{_XHTML_REF}'
+        "</ATTRIBUTE-DEFINITION-XHTML>"
+        f'<ATTRIBUTE-DEFINITION-XHTML IDENTIFIER="steps" LONG-NAME="Steps">{_XHTML_REF}'
+        "</ATTRIBUTE-DEFINITION-XHTML>"
+        "</SPEC-ATTRIBUTES></SPEC-OBJECT-TYPE>"
+    )
+    document = _document(
+        datatypes=_XHTML_DATATYPE,
+        spec_types=_ENUM_TYPES + test_type,
+        spec_objects=(
+            _spec_object("R1", "T-REQ", _xhtml_value("object_text", "a requirement"))
+            + _spec_object("T1", "T-TEST", _xhtml_value("object_text", "a test") + _xhtml_value("steps", "do it"))
+        ),
+        specifications=_specification("S1", "Requirements", ["R1"]) + _specification("S2", "Tests", ["T1"]),
+    )
+    imported = import_reqif_from_string(document)
+    assert {a.id for a in imported.attributes} == {"object_text", "prio", "steps"}
+    # Each object is typed against the type it names, not against the first one.
+    requirement, test_case = imported.modules[0].requirements[0], imported.modules[1].requirements[0]
+    assert "steps" not in requirement.attributes
+    assert test_case.attributes["steps"] == "do it"
+
+
+def test_an_enumeration_with_no_specified_values_arrives_as_a_string_attribute():
+    """Without choices the attribute cannot hold enum values, so it is read as text."""
+    datatype = '<DATATYPE-DEFINITION-ENUMERATION IDENTIFIER="DT-E"/>'
+    document = _document(
+        datatypes=_XHTML_DATATYPE + datatype,
+        spec_types=_ENUM_TYPES,
+        spec_objects=_spec_object("R1", "T-REQ", _xhtml_value("object_text", "x")),
+        specifications=_specification("S1", "M", ["R1"]),
+    )
+    (attribute,) = [a for a in import_reqif_from_string(document).attributes if a.id == "prio"]
+    assert (attribute.type, attribute.choices) == ("string", None)
+
+
+def test_spec_relations_become_links(service):
+    """A SPEC-RELATION-TYPE becomes a link configuration, each relation a pair in it."""
+    document = _document(
+        datatypes=_XHTML_DATATYPE,
+        spec_types=(
+            '<SPEC-OBJECT-TYPE IDENTIFIER="T-REQ" LONG-NAME="Requirement"><SPEC-ATTRIBUTES>'
+            f'<ATTRIBUTE-DEFINITION-XHTML IDENTIFIER="object_text" LONG-NAME="ObjectText">{_XHTML_REF}'
+            "</ATTRIBUTE-DEFINITION-XHTML></SPEC-ATTRIBUTES></SPEC-OBJECT-TYPE>"
+            '<SPEC-RELATION-TYPE IDENTIFIER="RT" LONG-NAME="Verifies"/>'
+        ),
+        spec_objects=(
+            _spec_object("R1", "T-REQ", _xhtml_value("object_text", "Login works"))
+            + _spec_object("T1", "T-REQ", _xhtml_value("object_text", "Login works test"))
+        ),
+        specifications=_specification("S1", "Requirements", ["R1"]) + _specification("S2", "Tests", ["T1"]),
+        relations=(
+            '<SPEC-RELATION IDENTIFIER="REL1"><TYPE><SPEC-RELATION-TYPE-REF>RT</SPEC-RELATION-TYPE-REF></TYPE>'
+            "<SOURCE><SPEC-OBJECT-REF>T1</SPEC-OBJECT-REF></SOURCE>"
+            "<TARGET><SPEC-OBJECT-REF>R1</SPEC-OBJECT-REF></TARGET></SPEC-RELATION>"
+        ),
+    )
+    target = service.create_project("Target").id
+    result = service.import_reqif(target, document)
+    assert result["link_configurations_created"] == 1
+    assert result["links_created"] == 1
+
+    project = service.store.load_project(target)
+    (config,) = project.link_configurations
+    assert config.name == "Verifies"
+    # ReqMan configurations are directional: the relation's source is the source module.
+    assert config.source_module_id == "S2"
+    assert config.target_module_id == "S1"
+
+    (pair,) = service.store.load_link_pairs(target, config.id)
+    source = service.list_requirements(target, config.source_module_id)[0]
+    target_requirement = service.list_requirements(target, config.target_module_id)[0]
+    assert (pair.source_id, pair.target_id) == (source.id, target_requirement.id)
+    # The mirror attributes ReqMan keeps for a configuration are written.
+    assert source.attributes[config.id] == f"> {target_requirement.id}"
+    assert target_requirement.attributes[config.id] == f"< {source.id}"
+
+
+def test_a_relation_whose_end_is_not_imported_is_skipped(service):
+    """A relation to a SPEC-OBJECT no hierarchy reaches has no requirement to link."""
+    document = _document(
+        datatypes=_XHTML_DATATYPE,
+        spec_types=(
+            '<SPEC-OBJECT-TYPE IDENTIFIER="T-REQ" LONG-NAME="Requirement"><SPEC-ATTRIBUTES>'
+            f'<ATTRIBUTE-DEFINITION-XHTML IDENTIFIER="object_text" LONG-NAME="ObjectText">{_XHTML_REF}'
+            "</ATTRIBUTE-DEFINITION-XHTML></SPEC-ATTRIBUTES></SPEC-OBJECT-TYPE>"
+            '<SPEC-RELATION-TYPE IDENTIFIER="RT" LONG-NAME="Verifies"/>'
+        ),
+        spec_objects=_spec_object("R1", "T-REQ", _xhtml_value("object_text", "Login works")),
+        specifications=_specification("S1", "Requirements", ["R1"]),
+        relations=(
+            '<SPEC-RELATION IDENTIFIER="REL1"><TYPE><SPEC-RELATION-TYPE-REF>RT</SPEC-RELATION-TYPE-REF></TYPE>'
+            "<SOURCE><SPEC-OBJECT-REF>GONE</SPEC-OBJECT-REF></SOURCE>"
+            "<TARGET><SPEC-OBJECT-REF>R1</SPEC-OBJECT-REF></TARGET></SPEC-RELATION>"
+        ),
+    )
+    target = service.create_project("Target").id
+    result = service.import_reqif(target, document)
+    assert (result["requirements_created"], result["links_created"]) == (1, 0)
+    assert service.store.load_project(target).link_configurations == []
+
+
+def test_link_round_trips_through_the_export(service):
+    """Export a project with a link, import it back: the configuration and pairs return."""
+    project_id = service.create_project("Source").id
+    requirements = service.create_module(project_id, "Requirements", "R").id
+    tests = service.create_module(project_id, "Tests", "T").id
+    requirement = service.add_requirement(project_id, requirements, {"object_text": "Login works"})
+    test_case = service.add_requirement(project_id, tests, {"object_text": "Login works test"})
+    config = service.create_link_configuration(project_id, "Verifies", tests, requirements)
+    service.link_requirements(project_id, config.id, test_case.id, requirement.id)
+
+    target = service.create_project("Target").id
+    result = service.import_reqif(target, service.export_reqif(project_id))
+    assert (result["link_configurations_created"], result["links_created"]) == (1, 1)
+
+    project = service.store.load_project(target)
+    (imported,) = project.link_configurations
+    assert imported.name == "Verifies"
+    assert (imported.source_module_id, imported.target_module_id) == (tests, requirements)
+    (pair,) = service.store.load_link_pairs(target, imported.id)
+    assert service.store.find_requirement_module(target, pair.source_id) == tests
+    assert service.store.find_requirement_module(target, pair.target_id) == requirements
+    # The mirror attribute belongs to the configuration, not to a second attribute.
+    mirrors = [a for a in project.attributes if a.name == "Verifies"]
+    assert len(mirrors) == 1 and mirrors[0].system
+
+
+def test_an_imported_link_adds_to_an_existing_configuration(service):
+    """A configuration for the same two modules is reused rather than duplicated."""
+    project_id = service.create_project("Source").id
+    first = service.create_module(project_id, "Requirements", "R").id
+    second = service.create_module(project_id, "Tests", "T").id
+    requirement = service.add_requirement(project_id, first, {"object_text": "Login works"})
+    test_case = service.add_requirement(project_id, second, {"object_text": "Login works test"})
+    config = service.create_link_configuration(project_id, "Verifies", second, first)
+    service.link_requirements(project_id, config.id, test_case.id, requirement.id)
+    document = service.export_reqif(project_id)
+
+    target = service.create_project("Target").id
+    target_requirements = service.create_module(target, "Requirements", "R").id
+    target_tests = service.create_module(target, "Tests", "T").id
+    existing = service.create_link_configuration(target, "Satisfies", target_tests, target_requirements)
+    result = service.import_reqif(target, document)
+    # The modules matched, so the document's relations went into the one configuration.
+    assert (result["link_configurations_created"], result["links_created"]) == (0, 1)
+    configurations = service.store.load_project(target).link_configurations
+    assert [c.id for c in configurations] == [existing.id]
+    assert len(service.store.load_link_pairs(target, existing.id)) == 1
 
 
 # --- REST ------------------------------------------------------------------------------

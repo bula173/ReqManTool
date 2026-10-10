@@ -101,9 +101,10 @@ Known Limitations (Deviations)
    * - DEV-002
      - ReqIF exchange
      - Import reads a subset of ReqIF
-     | Enum values and SPEC-RELATIONs are not imported; the export
-       remains the verified path, and the import's limits are documented
-       in the tool and in the import dialog
+     | An enumeration attribute is exported as a plain string (no
+       ENUMERATION datatype), and a link configuration with no links leaves
+       no trace in the file; the export remains the verified path, and the
+       import's limits are documented in the tool and in the import dialog
    * - DEV-003
      - Local edition: no authentication
      - No built-in auth
