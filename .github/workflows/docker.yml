@@ -95,7 +95,8 @@ jobs:
 
       - name: Test healthcheck endpoint
         run: |
-          IMAGE="${{ needs.build.outputs.tags }}" && IMAGE="${IMAGE%%,*}"
+          # needs.build.outputs.tags is multiline: take the first tag only.
+          IMAGE="$(echo "${{ needs.build.outputs.tags }}" | tr ',' '\n' | head -1 | tr -d '[:space:]')"
           docker run -d --name reqman-test -p 8899:8899 \
             -v reqman-test-data:/data \
             -e REQMAN_MODE=local \
@@ -116,4 +117,6 @@ jobs:
       - name: Deploy to staging
         run: |
           echo "Deploy to staging environment (configure as needed)"
-          # Example: kubectl set image deployment/reqman reqman=${{ needs.build.outputs.tags }}
+          # Example (uncomment when wiring up staging; keep the image
+          # reference literal so no expression expands inside this script):
+          # kubectl set image deployment/reqman reqman=ghcr.io/bula173/reqmantool/server:main
