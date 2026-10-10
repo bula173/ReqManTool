@@ -38,7 +38,7 @@ Layer Responsibilities
      | ``app.py`` | Thin FastAPI adapters; REST + WebSocket JSON-RPC parity
    * - **Git History**
      | ``git_repo.py`` | Auto-commit, baselines, history, remotes
-   * - **Export/Import** | ``*_export.py``, ``csv_import.py`` | Duck-typed; ReqIF, CSV, XLSX, DOCX
+   * - **Export/Import** | ``*_export.py``, ``csv_import.py``, ``reqif_import.py`` | Duck-typed; ReqIF, CSV, XLSX, DOCX
 
 Key Design Decisions
 --------------------
@@ -102,6 +102,7 @@ Key Files
    * - ``templates.py`` | Project/module templates, validation, import/export
    * - ``*_export.py`` | ReqIF, CSV, XLSX, DOCX export (duck-typed)
    * - ``csv_import.py`` | CSV import with link support
+   * - ``reqif_import.py`` | ReqIF import; XHTML values become rich text again
    * - ``test_results_import.py`` | JUnit/Robot Framework import
 
 Extension Points

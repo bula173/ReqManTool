@@ -79,7 +79,6 @@ Operating Constraints
 | Constraint | Mitigation |
 |------------|------------|
 | Single active writer per data directory | Documented; server edition adds module edit locks |
-| No ReqIF import | Export verified by independent tool |
 | Local edition: no authentication | Server edition required for multi-user |
 | No full-text search | Not safety-critical |
 | Rich text: images not in ReqIF | Documented; export omits images |
@@ -100,9 +99,11 @@ Known Limitations (Deviations)
      - Single writer (last-write-wins)
      | Local edition design; server edition has module edit locks
    * - DEV-002
-     - ReqIF import
-     - Not implemented
-     | One-way exchange; export verified by independent tool
+     - ReqIF exchange
+     - Import reads a subset of ReqIF
+     | Enum values and SPEC-RELATIONs are not imported; the export
+       remains the verified path, and the import's limits are documented
+       in the tool and in the import dialog
    * - DEV-003
      - Local edition: no authentication
      - No built-in auth

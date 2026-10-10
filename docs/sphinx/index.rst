@@ -8,7 +8,7 @@ ReqManTool Documentation
 
 **ReqManTool** is a local-first, DOORS-inspired requirements management tool for small teams —
 projects, modules, hierarchical requirements, custom attributes, directional
-traceability links, and ReqIF/CSV/XLSX/DOCX export.
+traceability links, and ReqIF/CSV/XLSX/DOCX export with ReqIF/CSV import.
 
 .. image:: https://img.shields.io/badge/version-0.1.0-blue
    :target: https://github.com/bula173/ReqManTool/releases

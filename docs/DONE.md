@@ -16,6 +16,9 @@ Newest entries are appended at the end.
 - [x] Export project to ReqIF (using the `reqif` package) — plain-text attribute
       values (no XHTML/ENUMERATION datatypes); see `reqman/reqif_export.py`
       docstring/limitations for details
+- [x] Import a ReqIF document into a project (the inverse of the export;
+      `reqman/reqif_import.py`) — see "ReqIF import" below for the details
+      and the format's limits
 - [x] Live-sync broadcast: mutating REST/WS calls push `{"event":"changed",
       "project_id":...}` to other connected WebSocket clients
 - [x] Frontend UI — React + Vite + TS, Mantine components, TanStack Query,
@@ -2127,3 +2130,79 @@ Newest entries are appended at the end.
       - Files: `backend/reqman_server/admin.py`,
         `frontend/src/components/AdminModal.tsx`,
         `frontend/src/api/{auth.ts,types.ts}`.
+- [x] **ReqIF import** (2026-10-10; the first half of the "Rich text slice 2"
+      follow-up "no ReqIF importer reads the XHTML back yet"). A ReqIF
+      document becomes requirements of a project, the inverse of the ReqIF
+      export: the value of a `text` attribute comes back out of the XHTML as
+      rich text, so a formatted requirement is still formatted and still
+      editable after the round trip.
+      - `backend/reqman/reqif_import.py` parses the document with the `reqif`
+        package and returns plain dataclasses (`ImportedProject`,
+        `ImportedModule`, `ImportedRequirement`,
+        `ImportedAttributeDefinition`) — no dependency on
+        `models`/`service`, so there is no import cycle:
+        - `import_reqif_from_string(xml)` and `import_reqif_from_file(path)`;
+          a document that cannot be parsed raises `ValueError`.
+        - One SPEC-OBJECT-TYPE is read (what the export writes):
+          ATTRIBUTE-DEFINITIONs become attributes, typed by their
+          `DATATYPE-DEFINITION-*-REF` (XHTML→text, STRING, INTEGER, BOOLEAN,
+          DATE; an ENUMERATION becomes "enum").
+        - One SPECIFICATION per module, in document order; the
+          SPEC-HIERARCHY tree becomes `parent_id` links, parents before
+          children.
+        - Values are typed like the service types them: integers as `int`,
+          booleans as `bool`, a date as `YYYY-MM-DD`, and XHTML as rich text
+          via `xhtml_to_richtext` — the `xhtml:` prefix is stripped, the
+          export's visible spacing (`&#160;`) decoded back to real spaces,
+          and the result run through `richtext.sanitize`, so hostile markup is
+          stripped rather than trusted. A value holding only unformatted
+          paragraphs comes back as plain text, like a value never formatted
+          in the editor.
+      - `ProjectService.import_reqif(project_id, reqif_xml)` writes it. Like
+        the CSV import it is all-or-nothing: `_reqif_import_plan` validates
+        the whole document first and writes nothing, so an invalid document
+        leaves the project exactly as it was.
+        - Nothing of the project is overwritten. A SPECIFICATION whose
+          identifier is a module fills that module (its existing requirements
+          stay); any other one becomes a new module with a unique id and a
+          unique, valid prefix.
+        - Requirements get server-allocated ids and keep the document's order
+          at each level; a SPEC-HIERARCHY child becomes a nested requirement.
+          A SPEC-OBJECT no hierarchy reaches is not imported (there is no
+          place for it); one reached twice is read once.
+        - An ATTRIBUTE-DEFINITION matching an attribute of the project (same
+          id, else same name) reuses it and its values land there; any other
+          one is added. A definition whose type conflicts with the project's
+          (same id, different type) fails the import rather than being added
+          twice.
+        - Values are validated exactly as add requirement validates them
+          (required-but-empty, wrong type, out-of-scope attribute, enum
+          choices), so a bad value fails the whole import with the reason.
+        - The import is one `_records_history` mutation: one auto-commit, and
+          `_mark_rich_text_format` records that the stored values are rich
+          text.
+      - REST: `POST /projects/{id}/import/reqif` — the document is the raw
+        request body (`Content-Type: application/xml` or `text/xml`, 415
+        otherwise; UTF-8 only, 400 otherwise), like the CSV and test-result
+        imports, so no multipart parser is needed and no cross-origin
+        "simple" request can import. WebSocket: `project.import_reqif`
+        (`reqif` in the params), mutating, so it broadcasts `changed`.
+      - Frontend: `useImportReqif` (`api/queries.ts`; refreshes the modules,
+        their requirements and the project), `ImportReqifModal`, the
+        `file.importReqif` action and File ▸ Import ▸ ReqIF. The dialog states
+        what the import does and does not do, since a ReqIF document carries
+        more than a requirements tool uses.
+      - Format limits, documented on the module and repeated in the dialog:
+        enum values (SPECIFIED-VALUES) are not read, so an enum attribute
+        arrives without its choices; SPEC-RELATIONs (link pairs) are not
+        read; a file with several SPEC-OBJECT-TYPEs reads only the first.
+      - Tests: `backend/tests/test_reqif_import.py` (37 tests) covers the
+        module on its own, the XHTML→rich-text conversion (formatting,
+        spacing, entities, hostile markup), the service (attribute reuse and
+        addition, type conflicts, module creation vs. reuse, hierarchy and
+        order, defaults, sanitising, required-but-empty, all-or-nothing,
+        history, BOM, encoding) and REST/WebSocket parity.
+      - Files: `backend/reqman/reqif_import.py` (new),
+        `backend/reqman/{service.py,app.py}`,
+        `backend/tests/test_reqif_import.py` (new),
+        `frontend/src/{api/{queries.ts,types.ts},actions/{appActions.ts,registry.ts,types.ts},components/ImportReqifModal.tsx,layout/AppDialogs.tsx}`.

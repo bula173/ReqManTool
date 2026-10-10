@@ -15,6 +15,7 @@ import { CheckOutModuleModal } from '../components/CheckOutModuleModal';
 import { DataDirModal } from '../components/DataDirSettings';
 import { DropLinkModal } from '../components/DropLinkModal';
 import { ImportCsvModal } from '../components/ImportCsvModal';
+import { ImportReqifModal } from '../components/ImportReqifModal';
 import { PromptsModal } from '../components/PromptsModal';
 import { ImportTemplateModal } from '../components/ImportTemplateModal';
 import { ImportTestResultsModal } from '../components/ImportTestResultsModal';
@@ -169,6 +170,14 @@ export function AppDialogs({ dialog, onClose }: { dialog: DialogRequest | null; 
           projectId={dialog.projectId}
           moduleId={dialog.moduleId}
           moduleName={dialog.moduleName}
+        />
+      );
+    case 'importReqif':
+      return (
+        <ImportReqifModal
+          onClose={onClose}
+          projectId={dialog.projectId}
+          projectName={dialog.projectName}
         />
       );
     case 'newModule':

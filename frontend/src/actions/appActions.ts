@@ -291,6 +291,25 @@ export const appActions: Action<'app'>[] = [
       }
     },
   },
+  {
+    // Imports into the open project (it can create modules); File ▸ Import ▸ ReqIF.
+    id: 'file.importReqif',
+    element: 'app',
+    edits: true,
+    label: 'ReqIF',
+    icon: IconFileImport,
+    opensDialog: true,
+    isAvailable: (ctx) => ctx.project !== null,
+    run: (ctx) => {
+      if (ctx.project) {
+        ctx.commands.openDialog({
+          kind: 'importReqif',
+          projectId: ctx.project.id,
+          projectName: ctx.project.name,
+        });
+      }
+    },
+  },
   exportAction('reqif'),
   exportAction('csv'),
   exportAction('xlsx'),

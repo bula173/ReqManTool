@@ -70,7 +70,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from . import module_tree, richtext
 from .csv_import import ID_COLUMN, LINK_COLUMN_PREFIX, PARENT_COLUMN, RESERVED_COLUMNS
@@ -540,6 +540,49 @@ class _CsvImportPlan:
     unchanged: list[str] = field(default_factory=list)
     # (file row number, configuration, source id, plain target id, already linked)
     links: list[tuple[int, LinkConfiguration, str, str, bool]] = field(default_factory=list)
+
+
+@dataclass
+class _ReqifImportPlan:
+    """What a validated ReqIF import writes (``ProjectService._reqif_import_plan``); never persisted.
+
+    ``project`` already carries the new attribute definitions (they are written
+    with the first write that follows).
+    """
+
+    project: Project
+    new_modules: list[Module] = field(default_factory=list)
+    new_attributes: list[AttributeDefinition] = field(default_factory=list)
+    # (module id, the requirements to create in that module, in write order)
+    new_requirements: list[tuple[str, list[Requirement]]] = field(default_factory=list)
+
+
+# A module prefix becomes part of every requirement id it allocates
+# (``<prefix>-0001``), so it is kept short enough to leave room for them.
+MAX_PREFIX_LENGTH = 24
+
+
+def _import_problem_summary(errors: list[str]) -> str:
+    """``errors`` as one message, truncated so a huge document cannot flood the response."""
+    if len(errors) > MAX_RESULT_IMPORT_ERRORS:
+        hidden = len(errors) - MAX_RESULT_IMPORT_ERRORS
+        return "; ".join(errors[:MAX_RESULT_IMPORT_ERRORS] + [f"... and {hidden} more problem(s)"])
+    return "; ".join(errors)
+
+
+def _hierarchy_rows(requirements: Any, parent_id: str | None = None) -> list[tuple[Any, str | None]]:
+    """``[(requirement, its parent's imported id)]`` in write order (parents before children).
+
+    A ``parent_id`` naming a requirement that is not in the list (a SPEC-OBJECT
+    no SPEC-HIERARCHY of this module refers to) is ignored, so such a row is
+    written at the top level rather than dropped.
+    """
+    known = {r.id for r in requirements}
+    rows: list[tuple[Any, str | None]] = []
+    for requirement in requirements:
+        parent = requirement.parent_id if requirement.parent_id in known else None
+        rows.append((requirement, parent))
+    return rows
 
 
 @dataclass
@@ -7477,6 +7520,222 @@ class ProjectService:
             result["linked"] = len(new_links)
         result["ignored_columns"] = plan.ignored_columns
         return result
+
+    @_records_history
+    def import_reqif(self, project_id: str, reqif_xml: str) -> dict[str, Any]:
+        """Import a ReqIF XML document (``reqif_import.py``) into an existing project.
+
+        All-or-nothing: the whole file is validated (``_reqif_import_plan``)
+        before anything is written, so an invalid document leaves the project
+        unchanged. Nothing of the target project is overwritten: every
+        specification becomes a new requirement, and attributes the project does
+        not have yet are added.
+
+        - Modules: a SPECIFICATION whose identifier is already a module of the
+          project fills that module (its existing requirements are kept), any
+          other one becomes a new module with the specification's identifier
+          when it is free and a unique slug otherwise. Its prefix is a valid
+          one derived from the name, unique in the project (the counters are
+          keyed by it), so imported requirements cannot collide with existing
+          ids.
+        - Requirements: server-allocated ids, in the order the SPEC-HIERARCHY
+          gives them; a SPEC-HIERARCHY child becomes a nested requirement
+          (SPEC-OBJECTs no specification refers to are not imported).
+        - Attributes: an ATTRIBUTE-DEFINITION whose identifier or name matches
+          an attribute of the project reuses it; any other one is added with
+          the file's identifier (or a unique slug) and its datatype as type.
+          Values are validated exactly as add requirement validates them; a
+          rejected value fails the whole import.
+        """
+        plan = self._reqif_import_plan(project_id, reqif_xml)
+        project = plan.project
+
+        for module in plan.new_modules:
+            self.store.save_module(project.id, module)
+        if plan.new_modules:
+            tree = self._module_tree(project)
+            tree.extend({"module": m.id} for m in plan.new_modules)
+            project.module_order = tree
+            self.store.save_project(project)
+
+        for module_id, requirements in plan.new_requirements:
+            self._write_new_requirements(project, module_id, requirements)
+
+        if plan.new_requirements:
+            self._mark_rich_text_format(
+                project,
+                {k: v for _, requirements in plan.new_requirements for r in requirements for k, v in r.attributes.items()},
+            )
+
+        return {
+            "modules_created": len(plan.new_modules),
+            "requirements_created": sum(len(r) for _, r in plan.new_requirements),
+            "attributes_created": len(plan.new_attributes),
+            "requirements": [
+                {"module_id": module_id, "id": requirement.id, "parent_id": requirement.parent_id}
+                for module_id, requirements in plan.new_requirements
+                for requirement in requirements
+            ],
+        }
+
+    def _reqif_import_plan(self, project_id: str, reqif_xml: Any) -> _ReqifImportPlan:
+        """Validate a ReqIF import completely and work out what it would write (nothing is written)."""
+        from .reqif_import import import_reqif_from_string
+
+        if not isinstance(reqif_xml, (str, bytes)):
+            raise ValueError("The ReqIF document must be text")
+        if isinstance(reqif_xml, bytes):
+            try:
+                reqif_xml = reqif_xml.decode("utf-8-sig")
+            except UnicodeDecodeError as exc:
+                raise ValueError(f"The ReqIF document is not valid UTF-8: {exc}") from exc
+        elif reqif_xml.startswith("﻿"):
+            # A UTF-8 BOM read as text: XML parsers reject it as content.
+            reqif_xml = reqif_xml[1:]
+
+        imported = import_reqif_from_string(reqif_xml)
+        project = self.store.load_project(project_id)
+
+        # --- attributes: reuse what the project has, add the rest ---
+        by_id = {a.id: a for a in project.attributes}
+        by_name = {a.name.lower(): a for a in project.attributes if not a.system}
+        attribute_map: dict[str, str] = {}
+        new_attributes: list[AttributeDefinition] = []
+        taken_ids = set(by_id)
+        errors: list[str] = []
+        for imported_attribute in imported.attributes:
+            existing = by_id.get(imported_attribute.id) or by_name.get(imported_attribute.name.lower())
+            if existing is not None:
+                if existing.type != imported_attribute.type:
+                    errors.append(
+                        f"Attribute '{existing.name}' is '{existing.type}' in the project but "
+                        f"'{imported_attribute.type}' in the ReqIF file"
+                    )
+                    continue
+                attribute_map[imported_attribute.id] = existing.id
+                continue
+            if not imported_attribute.name.strip():
+                errors.append("An attribute definition in the ReqIF file has no name")
+                continue
+            attribute_id = imported_attribute.id
+            if attribute_id in taken_ids or not attribute_id.strip():
+                attribute_id = _unique_slug(
+                    imported_attribute.name,
+                    lambda c: c in taken_ids,
+                    fallback="attribute",
+                    max_length=self.store.max_name_length(),
+                )
+            definition = AttributeDefinition(
+                id=attribute_id,
+                name=imported_attribute.name.strip(),
+                type=cast(Any, imported_attribute.type),
+                required=bool(imported_attribute.required),
+                choices=list(imported_attribute.choices or []) or None,
+            )
+            problem = self._value_problem(definition, None)
+            if problem is not None:
+                errors.append(f"Attribute '{definition.name}': {problem}")
+                continue
+            new_attributes.append(definition)
+            taken_ids.add(definition.id)
+            attribute_map[imported_attribute.id] = definition.id
+        if errors:
+            raise ValueError(_import_problem_summary(errors))
+        if new_attributes:
+            project.attributes.extend(new_attributes)
+
+        # --- modules: an existing one by id, else a new one ---
+        modules_by_id = {m.id: m for m in (self.store.load_module(project_id, mid) for mid in self._module_order(project))}
+        modules_by_name = {m.name.lower(): m for m in modules_by_id.values()}
+        taken_module_ids = set(modules_by_id)
+        taken_prefixes = {m.prefix for m in modules_by_id.values()}
+        new_modules: list[Module] = []
+        module_map: dict[str, Module] = {}
+        for imported_module in imported.modules:
+            same_module = modules_by_id.get(imported_module.id) or modules_by_name.get(imported_module.name.lower())
+            if same_module is not None:
+                module_map[imported_module.id] = same_module
+                continue
+            name = imported_module.name.strip() or "Imported module"
+            module_id = imported_module.id
+            if module_id in taken_module_ids or not module_id.strip():
+                module_id = _unique_slug(
+                    name,
+                    lambda c: c in taken_module_ids,
+                    fallback="module",
+                    max_length=self.store.max_name_length(),
+                )
+            prefix = _unique_slug(
+                name,
+                lambda c: c in taken_prefixes,
+                fallback="M",
+                max_length=self.store.max_name_length(),
+            ).upper()[:MAX_PREFIX_LENGTH]
+            if not prefix or not prefix[0].isalpha():
+                prefix = f"M{prefix}"[:MAX_PREFIX_LENGTH]
+            module = Module(
+                id=module_id,
+                name=name,
+                prefix=prefix,
+                description=imported_module.description,
+                type=DEFAULT_MODULE_TYPE,
+            )
+            validate_prefix(module.prefix)
+            new_modules.append(module)
+            taken_module_ids.add(module.id)
+            taken_prefixes.add(module.prefix)
+            modules_by_name[name.lower()] = module
+            module_map[imported_module.id] = module
+
+        # --- requirements, in hierarchy order ---
+        new_requirements: list[tuple[str, list[Requirement]]] = []
+        errors = []
+        for imported_module in imported.modules:
+            module = module_map[imported_module.id]
+            siblings = self.store.load_all_requirements(project_id, module.id)
+            created: list[Requirement] = []
+            id_map: dict[str, str] = {}
+            rows = _hierarchy_rows(imported_module.requirements)
+            for imported_requirement, parent_import_id in rows:
+                attributes: dict[str, Any] = {}
+                for attribute_id, value in imported_requirement.attributes.items():
+                    mapped = attribute_map.get(attribute_id)
+                    if mapped is None:
+                        continue  # an attribute the project rejected: already reported
+                    definition = by_id.get(mapped) or next(a for a in new_attributes if a.id == mapped)
+                    if definition.system or not self._attribute_applies(definition, module.id, module.type):
+                        continue
+                    attributes[mapped] = value
+                attributes = self._sanitized_text_values(project, attributes)
+                problems = self._attribute_problems(
+                    project, attributes, is_create=True, module_id=module.id, module_type=module.type
+                )
+                if problems:
+                    errors.extend(
+                        f"Module '{module.name}', requirement '{imported_requirement.id}': {problem}"
+                        for problem in problems
+                    )
+                    continue
+                parent_id = id_map.get(parent_import_id) if parent_import_id is not None else None
+                requirement = Requirement(
+                    id=self._allocate_requirement_id(project, module),
+                    attributes=self._merged_attributes(project, attributes, module.id, module.type),
+                    parent_id=parent_id,
+                    order=self._next_sibling_order(siblings + created, parent_id),
+                )
+                id_map[imported_requirement.id] = requirement.id
+                created.append(requirement)
+            if created:
+                new_requirements.append((module.id, created))
+        if errors:
+            raise ValueError(_import_problem_summary(errors))
+
+        return _ReqifImportPlan(
+            project=project,
+            new_modules=new_modules,
+            new_attributes=new_attributes,
+            new_requirements=new_requirements,
+        )
 
     # --- AI prompt library -------------------------------------------------------
     #

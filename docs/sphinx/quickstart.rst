@@ -54,6 +54,7 @@ First Steps
 7. **Run reports** — Reports menu → Traceability matrix, Verification report, etc.
 8. **Create baselines** — Git panel → "Create baseline" (requires git history enabled)
 8. **Export** — File → Export → ReqIF / CSV / XLSX / DOCX
+9. **Import** — File → Import → CSV (into the open module), ReqIF (into the open project), Test results
 
 Keyboard Shortcuts
 ------------------

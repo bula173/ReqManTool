@@ -89,6 +89,11 @@ logger = logging.getLogger("reqman.app")
 # config file > default; see config.py.
 SETTINGS = load_settings()
 CORS_ORIGINS = SETTINGS.cors_origins
+# Content types an XML import (ReqIF, test results) accepts, and the size limit
+# of a ReqIF document (the exports are unbounded, so this is generous: a
+# requirements document is mostly XML markup per requirement).
+_XML_MEDIA_TYPES = ("application/xml", "text/xml")
+MAX_REQIF_IMPORT_BYTES = 200 * 1024 * 1024
 # The built frontend served from this origin (release package), or None (API only).
 FRONTEND_DIR = frontend_dir()
 # The server edition (``reqman_server``), imported only with mode "server";
@@ -1340,6 +1345,28 @@ def export_reqif(project_id: str):
     )
 
 
+@app.post("/projects/{project_id}/import/reqif")
+async def import_reqif(project_id: str, request: Request):
+    """Import a ReqIF document into a project (the inverse of the ReqIF export).
+
+    Like the other imports, the document is the raw request body (Content-Type
+    application/xml or text/xml: no multipart parser dependency, and no
+    cross-origin "simple" request can import).
+    """
+    if _media_type(request) not in _XML_MEDIA_TYPES:
+        raise HTTPException(
+            status_code=415, detail="The ReqIF document must be sent with Content-Type: application/xml or text/xml"
+        )
+    raw = await _read_limited_body(request, MAX_REQIF_IMPORT_BYTES, "ReqIF document")
+    try:
+        xml = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="The ReqIF document must be UTF-8 encoded") from exc
+    result = _wrap(service.import_reqif, project_id, xml)
+    await manager.broadcast(project_id)
+    return result
+
+
 @app.get("/projects/{project_id}/export/csv")
 def export_csv(project_id: str):
     csv_text = _wrap(service.export_csv, project_id)
@@ -1591,9 +1618,6 @@ async def import_csv(project_id: str, module_id: str, request: Request, mode: st
 # test_execution module. Like the CSV import, the file is the raw request body
 # (Content-Type application/xml or text/xml: no multipart parser dependency, and
 # no cross-origin "simple" request can import); the options are query parameters.
-_XML_MEDIA_TYPES = ("application/xml", "text/xml")
-
-
 async def _read_result_file(request: Request) -> bytes:
     if _media_type(request) not in _XML_MEDIA_TYPES:
         raise HTTPException(
@@ -1810,6 +1834,7 @@ RPC_METHODS = {
     "project.get": lambda p: service.get_project(p["id"]),
     "project.list": lambda p: service.list_projects(),
     "project.purge": lambda p: {"purged": service.purge_project(p["id"])},
+    "project.import_reqif": lambda p: service.import_reqif(p["project_id"], p["reqif"]),
     "project.git_status": lambda p: service.git_status(p["id"]),
     "project.git_enable": lambda p: service.enable_history(p["id"]),
     "project.git_log": lambda p: service.git_log(p["id"], p.get("limit")),
@@ -2001,7 +2026,8 @@ ACCESS_DENIED_RPC_CODE = -32003
 MODULE_LOCKED_RPC_CODE = -32005
 
 MUTATING_METHODS = {
-    "project.create", "project.set_parent", "project.rename", "project.purge", "project.git_enable",
+    "project.create", "project.set_parent", "project.rename", "project.purge", "project.import_reqif",
+    "project.git_enable",
     "baseline.create",
     "project.set_row_styles", "project.set_references", "project.lock", "project.unlock",
     "project.git_set_remote", "project.git_set_auto_push", "project.git_set_allow_editor_push",

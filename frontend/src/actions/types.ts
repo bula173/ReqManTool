@@ -173,6 +173,8 @@ export type DialogRequest =
   | { kind: 'aiPrompts'; projectId: string; moduleId: string; requirementId: string | null }
   /** JUnit XML / Robot output.xml results into a test_execution module. */
   | { kind: 'importTestResults'; projectId: string; moduleId: string; moduleName: string }
+  /** A ReqIF document into a whole project (can create modules and attributes). */
+  | { kind: 'importReqif'; projectId: string; projectName: string }
   /** `folderId`: the module folder to create it in (null/omitted: the top level). */
   /** `fromTemplate`: open with the module template picker (the list is then fetched right away). */
   | { kind: 'newModule'; projectId: string; folderId?: string | null; fromTemplate?: boolean }

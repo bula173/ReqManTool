@@ -340,6 +340,17 @@ export interface CsvImportResult {
   ignored_columns: string[];
 }
 
+/** What a ReqIF import created (`POST /projects/{id}/import/reqif`). */
+export interface ReqifImportResult {
+  /** Modules created; a SPECIFICATION matching an existing module filled that one instead. */
+  modules_created: number;
+  requirements_created: number;
+  /** Attribute definitions the project did not have yet. */
+  attributes_created: number;
+  /** The created requirements, in the document's hierarchy order (parents before children). */
+  requirements: { module_id: string; id: string; parent_id: string | null }[];
+}
+
 /** Read-only preview of a CSV import (`POST .../import/csv/preview`). */
 export interface CsvImportPreview {
   mode: CsvImportMode;

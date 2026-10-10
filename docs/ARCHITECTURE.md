@@ -2459,6 +2459,15 @@ backend/reqman/
   csv_import.py    The inverse of csv_export.py, same duck-typed pattern:
                    validates CSV text all-or-nothing and returns rows;
                    ProjectService.import_csv allocates ids and writes them.
+  reqif_import.py  The inverse of reqif_export.py, same isolation: parses a
+                   ReqIF document with the reqif package and returns plain
+                   dataclasses (no models/service import). XHTML values come
+                   back as rich text (prefix stripped, the export's visible
+                   spacing decoded, richtext.sanitize applied);
+                   ProjectService._reqif_import_plan validates the document
+                   all-or-nothing and import_reqif allocates ids and writes
+                   it. The format limits (enum values, SPEC-RELATIONs, a file
+                   with several SPEC-OBJECT-TYPEs) are on its docstring.
   templates.py     Project template format: namespaced ids, reading the
                    built-in templates/ folder, shape checks (no domain
                    rules — ProjectService validates by building the project
@@ -2538,6 +2547,7 @@ resource:
 | Links | `POST/DELETE /projects/{id}/links`, `GET /projects/{id}/links/options?from_id=&to_id=&from_project_id=` (WS `requirement.link_options`), `GET /projects/{id}/incoming-links?module_id=` (WS `link.incoming`; read-only) |
 | Export | `GET /projects/{id}/export/reqif`, `GET /projects/{id}/export/csv` |
 | Import | `POST /projects/{id}/modules/{module_id}/import/csv` (raw UTF-8 CSV request body, `Content-Type: text/csv` required (415 otherwise), at most 10 MiB (413); WS: `requirement.import_csv`), `POST .../modules/{m}/import/test-results/preview` and `POST .../modules/{m}/import/test-results` (raw JUnit XML / Robot output.xml body, `Content-Type: application/xml` or `text/xml` (415 otherwise), at most 64 MiB (413), options as query parameters; WS `requirement.preview_test_results` (read-only) / `requirement.import_test_results` with `xml` — see "Test result import") |
+| Import ReqIF | `POST /projects/{id}/import/reqif` (raw ReqIF request body, `Content-Type: application/xml` or `text/xml` (415 otherwise), UTF-8 only (400 otherwise), at most 200 MiB (413); all-or-nothing, can create modules and attributes — see "ReqIF import"); WS: `project.import_reqif` with `reqif` |
 | Verification status | `GET .../modules/{m}/verification-status` (WS `report.verification_status`; read-only, requirements modules only) |
 | Purge | `POST /projects/{id}/purge` |
 | Data directory | `GET/POST /config`, `GET /fs/browse` |

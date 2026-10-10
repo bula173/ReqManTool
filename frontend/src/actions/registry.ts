@@ -364,7 +364,7 @@ export const MENU_BAR: { label: string; entries: MenuEntry[] }[] = [
         kind: 'submenu',
         label: 'Import',
         icon: IconFileImport,
-        entries: [action('file.importCsv'), action('module.importTestResults')],
+        entries: [action('file.importCsv'), action('file.importReqif'), action('module.importTestResults')],
       },
       {
         kind: 'submenu',

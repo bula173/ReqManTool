@@ -83,7 +83,8 @@ ReqManTool runs in two modes:
   generic product → generic application → specific application), shown as
   a tree in the sidebar
 - **Export to ReqIF** (using the [`reqif`](https://github.com/strictdoc-project/reqif)
-  package) and **CSV**
+  package) and **CSV**, and **import a ReqIF document back** — a formatted
+  requirement comes back still formatted
 - **Live sync** — edits in one browser tab/window show up in others without
   a manual refresh
 - A **REST API and a WebSocket JSON-RPC API**, both backed by the same

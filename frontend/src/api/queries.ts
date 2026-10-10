@@ -45,6 +45,7 @@ import type {
   ProviderNamespace,
   ProviderRepositoryPage,
   PublishProjectResult,
+  ReqifImportResult,
   Requirement,
   ReviewStatus,
   StartReviewResult,
@@ -1457,6 +1458,28 @@ export function usePurgeProject() {
     onSuccess: (_result, projectId) => {
       // Every module's requirements (and their histories) live under this prefix.
       qc.invalidateQueries({ queryKey: queryKeys.modules(projectId) });
+    },
+  });
+}
+
+/**
+ * Imports a ReqIF document into a project (the inverse of the ReqIF export,
+ * all-or-nothing). It can create modules, so every module's requirements, the
+ * module list and the project itself (new attribute definitions, id counters)
+ * are refreshed.
+ */
+export function useImportReqif(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (file: Blob) =>
+      api.postBody<ReqifImportResult>(
+        `/projects/${encodeURIComponent(projectId)}/import/reqif`,
+        file,
+        'application/xml',
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.modules(projectId) });
+      qc.invalidateQueries({ queryKey: queryKeys.project(projectId), exact: true });
     },
   });
 }
