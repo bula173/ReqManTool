@@ -4,3 +4,5 @@ reqif>=0.0.60
 openpyxl>=3.1
 python-docx>=1.1
 keyring>=25.0
+cryptography>=42.0
+python-multipart>=0.0.18

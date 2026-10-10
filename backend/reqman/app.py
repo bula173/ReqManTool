@@ -26,9 +26,11 @@ from typing import Any, Literal
 
 from fastapi import (
     FastAPI,
+    File,
     HTTPException,
     Query,
     Request,
+    UploadFile,
     WebSocket,
     WebSocketDisconnect,
 )
