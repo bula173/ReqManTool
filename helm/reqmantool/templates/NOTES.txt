@@ -1,0 +1,36 @@
+ReqManTool Server Edition has been installed.
+
+{{- if .Values.ingress.enabled }}
+Access the application at: https://{{ .Values.ingress.hosts[0].host }}
+{{- else }}
+To access the application, port-forward the service:
+
+  kubectl port-forward svc/{{ include "reqmantool.fullname" . }} 8899:8899
+
+Then open http://localhost:8899 in your browser.
+{{- end }}
+
+Configuration:
+- Config is managed via ConfigMap: {{ include "reqmantool.fullname" . }}-config
+- Secrets are managed via Secret: {{ include "reqmantool.fullname" . }}-secrets
+- Data is persisted in PVC: {{ include "reqmantool.fullname" . }}-data
+
+To update configuration:
+1. Edit the ConfigMap: kubectl edit configmap {{ include "reqmantool.fullname" . }}-config
+2. Restart the pod: kubectl rollout restart deployment/{{ include "reqmantool.fullname" . }}
+
+To update secrets:
+1. Edit the Secret: kubectl edit secret {{ include "reqmantool.fullname" . }}-secrets
+2. Restart the pod: kubectl rollout restart deployment/{{ include "reqmantool.fullname" . }}
+
+Important: The server edition requires at least one OAuth provider configured.
+See docs/SERVER_SETUP.md for details on configuring GitHub, GitLab, or OIDC providers.
+
+Backup/Restore:
+- Backup: kubectl exec <pod> -- tar czf - /data | gzip > reqman-backup-$(date +%Y%m%d).tar.gz
+- Restore: kubectl exec -i <pod> -- tar xzf - -C / < reqman-backup-YYYYMMDD.tar.gz
+
+Upgrade notes:
+- Data format migrations run automatically on startup
+- Check release notes for any manual steps required
+- Always backup before upgrading

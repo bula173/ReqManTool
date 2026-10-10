@@ -33,8 +33,9 @@ stay stable while new entries are appended. Optional filters: ``action``
 (an action, or a prefix ending in ``.`` such as ``auth.``), ``user_id``
 (actor or target) and ``project_id``.
 
-There is no rotation: an administrator may move the file away (a new one
-is started on the next event).
+Rotation: when the log exceeds ``max_size`` (default 100 MiB), it is
+rotated (renamed to ``audit.jsonl.1``, existing ``.1`` to ``.2``, etc.,
+up to ``max_files``; default 10). A new log file is started.
 """
 
 from __future__ import annotations
@@ -67,6 +68,9 @@ MAX_PAGE = 500
 # Longest text value kept in an entry (reasons, names): the log must not grow without bound per event.
 MAX_TEXT = 500
 _CHUNK = 64 * 1024
+# Log rotation defaults
+DEFAULT_MAX_SIZE = 100 * 1024 * 1024  # 100 MiB
+DEFAULT_MAX_FILES = 10
 
 
 def _now_iso() -> str:
@@ -87,13 +91,55 @@ def _clean(value: Any) -> Any:
 
 
 class AuditLog:
-    """Appends audit entries; the core's ``AuditTrail`` (``HOOKS.audit``) and the edition's own recorder."""
+    """Appends audit entries; the core's ``AuditTrail`` (``HOOKS.audit``) and the edition's own recorder.
 
-    def __init__(self, path: Path, users: Any = None) -> None:
+    Rotation: when the file exceeds ``max_size``, it is rotated to ``audit.jsonl.1``,
+    existing ``.1`` to ``.2``, etc., up to ``max_files``.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        users: Any = None,
+        *,
+        max_size: int = DEFAULT_MAX_SIZE,
+        max_files: int = DEFAULT_MAX_FILES,
+    ) -> None:
         self.path = path
+        self.max_size = max_size
+        self.max_files = max_files
         # ``users.UserRegistry`` (optional): names of the users an entry mentions by id.
         self.users = users
         self._lock = threading.Lock()
+
+    def _rotate(self) -> None:
+        """Rotate log files if current file exceeds max_size."""
+        if self.max_size <= 0 or self.max_files <= 0:
+            return
+        try:
+            if not self.path.exists() or self.path.stat().st_size < self.max_size:
+                return
+        except OSError:
+            return
+        # Rotate backwards: .9 -> .10, .8 -> .9, ..., .1 -> .2, current -> .1
+        for i in range(self.max_files - 1, 0, -1):
+            src = self.path.with_name(f"{self.path.name}.{i}")
+            dst = self.path.with_name(f"{self.path.name}.{i + 1}")
+            if src.exists():
+                try:
+                    if dst.exists():
+                        dst.unlink()
+                    src.rename(dst)
+                except OSError:
+                    pass
+        # Move current to .1
+        try:
+            dst = self.path.with_name(f"{self.path.name}.1")
+            if dst.exists():
+                dst.unlink()
+            self.path.rename(dst)
+        except OSError:
+            pass
 
     # --- writing -----------------------------------------------------------------------
 
@@ -140,6 +186,8 @@ class AuditLog:
                 os.write(fd, data)
             finally:
                 os.close(fd)
+        # Check for rotation after writing (outside lock to avoid deadlock)
+        self._rotate()
 
     def safe_record(self, *args: Any, **kwargs: Any) -> None:
         """``record`` for the edition's own events: a failure is logged, never raised (the action happened)."""

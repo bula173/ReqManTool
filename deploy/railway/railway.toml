@@ -1,0 +1,38 @@
+# ReqManTool Server Edition - Railway Deployment
+# Usage: railway up --config deploy/railway/railway.toml
+# Or connect this repo to Railway and it will auto-detect
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "../Dockerfile"
+
+[deploy]
+healthcheckPath = "/edition"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+
+[env]
+REQMAN_DATA_DIR = "/data"
+REQMAN_HOST = "0.0.0.0"
+REQMAN_PORT = "8899"
+REQMAN_MODE = "server"
+REQMAN_CONFIG_FILE = "/config.json"
+
+# These should be set in Railway dashboard as variables (not in this file)
+# REQMAN_AUTH_GITHUB_CLIENT_SECRET = "your-secret"
+# REQMAN_AUTH_GITLAB_CLIENT_SECRET = "your-secret"
+# REQMAN_AUTH_OIDC_CLIENT_SECRET = "your-secret"
+
+[[volumes]]
+name = "reqman-data"
+mountPath = "/data"
+size = "10GB"
+
+[[services]]
+name = "reqman-server"
+
+# Optional: Add a PostgreSQL database if needed for future features
+# [[databases]]
+# name = "postgres"
+# type = "postgresql"

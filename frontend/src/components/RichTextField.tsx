@@ -1,11 +1,13 @@
 import '@mantine/tiptap/styles.css';
+import { IconPhoto } from '@tabler/icons-react';
 import { Menu } from '@mantine/core';
 import { RichTextEditor, useRichTextEditorContext } from '@mantine/tiptap';
 import { IconTextSize } from '@tabler/icons-react';
 import { Color, FontSize, TextStyle } from '@tiptap/extension-text-style';
+import Image from '@tiptap/extension-image';
 import { useEditor, useEditorState } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { FONT_SIZES, editorHtmlToValue, valueToEditorHtml } from './richText';
 
@@ -65,6 +67,72 @@ function FontSizeControl() {
   );
 }
 
+/** Button that opens a file picker, reads the image as a data URL, and inserts it into the editor. */
+function ImageUploadButton({ editor }: { editor: ReturnType<typeof useEditor> | null }) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isUploading, setIsUploading] = useState(false);
+
+  const handleClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !editor) return;
+
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      alert('Please select an image file.');
+      event.target.value = '';
+      return;
+    }
+
+    // Limit file size (2 MB decoded = ~2.6 MB base64)
+    if (file.size > 2_500_000) {
+      alert('Image is too large. Maximum size is 2 MB.');
+      event.target.value = '';
+      return;
+    }
+
+    setIsUploading(true);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      // Insert image at current cursor position
+      editor.chain().focus().setImage({ src: dataUrl }).run();
+      setIsUploading(false);
+      event.target.value = '';
+    };
+    reader.onerror = () => {
+      alert('Failed to read image file.');
+      setIsUploading(false);
+      event.target.value = '';
+    };
+    reader.readAsDataURL(file);
+  };
+
+  return (
+    <>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleFileChange}
+        style={{ display: 'none' }}
+        aria-label="Upload image"
+      />
+      <RichTextEditor.Control
+        aria-label="Insert image"
+        title="Insert image (offline, stored as data URL)"
+        disabled={isUploading || !editor?.can().setImage({ src: '' })}
+        onClick={handleClick}
+      >
+        <IconPhoto size={16} stroke={1.5} />
+      </RichTextEditor.Control>
+    </>
+  );
+}
+
 /**
  * The rich text editor of `text` attributes (TipTap via @mantine/tiptap):
  * bold, italic, underline, strikethrough, bullet/numbered lists, font color
@@ -110,6 +178,11 @@ export default function RichTextField({
       TextStyle,
       Color,
       FontSize,
+      Image.configure({
+        HTMLAttributes: {
+          class: 'reqman-image',
+        },
+      }),
     ],
     content: valueToEditorHtml(value),
     // Keep the value's whitespace exactly (runs of spaces, leading/trailing
@@ -181,6 +254,9 @@ export default function RichTextField({
               colorPickerProps={{ format: 'hex' }}
             />
             <FontSizeControl />
+          </RichTextEditor.ControlsGroup>
+          <RichTextEditor.ControlsGroup>
+            <ImageUploadButton editor={editor} />
           </RichTextEditor.ControlsGroup>
         </RichTextEditor.Toolbar>
         <RichTextEditor.Content className="reqman-rich-text" style={{ minHeight }} />

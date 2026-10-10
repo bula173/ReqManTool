@@ -234,8 +234,7 @@ def parse_prompt(data: Any, prompt_id: str) -> Prompt:
 
 def parse_prompt_text(text: str, prompt_id: str) -> Prompt:
     """Parse a prompt file's JSON text (a leading UTF-8 BOM is ignored)."""
-    if text.startswith("﻿"):
-        text = text[1:]
+    text = text.removeprefix("﻿")
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:

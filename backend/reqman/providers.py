@@ -46,20 +46,29 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, fields
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
-from .formats import CONNECTIONS_FORMAT, check_format_version, upgrade, with_format_version
+from cryptography.fernet import Fernet
+
+from .formats import (
+    CONNECTIONS_FORMAT,
+    check_format_version,
+    upgrade,
+    with_format_version,
+)
 
 logger = logging.getLogger("reqman.providers")
 
 GITLAB = "gitlab"
 GITHUB = "github"
-PROVIDERS = (GITLAB, GITHUB)
-PROVIDER_LABELS = {GITLAB: "GitLab", GITHUB: "GitHub"}
-DEFAULT_URLS = {GITLAB: "https://gitlab.com", GITHUB: "https://github.com"}
+GERRIT = "gerrit"
+PROVIDERS = (GITLAB, GITHUB, GERRIT)
+PROVIDER_LABELS = {GITLAB: "GitLab", GITHUB: "GitHub", GERRIT: "Gerrit"}
+DEFAULT_URLS = {GITLAB: "https://gitlab.com", GITHUB: "https://github.com", GERRIT: "https://gerrit.example.com"}
 # The pseudo connection id of the logged-in user's login provider (server
 # edition): no stored connection, the token comes from ``login_source``.
 LOGIN_CONNECTION_ID = "login"
@@ -118,7 +127,7 @@ class ProviderConnection:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ProviderConnection":
+    def from_dict(cls, data: dict[str, Any]) -> ProviderConnection:
         known = {f.name for f in fields(cls)}
         values = {k: v for k, v in data.items() if k in known}
         return cls(
@@ -228,7 +237,7 @@ class KeyringTokenStore:
     @staticmethod
     def _keyring() -> Any:
         try:
-            import keyring  # noqa: PLC0415 - optional at import time; needed only with connections
+            import keyring
         except ImportError as exc:
             raise ValueError(
                 "The OS keychain cannot be used: the 'keyring' package is not installed "
@@ -240,21 +249,21 @@ class KeyringTokenStore:
         keyring = self._keyring()
         try:
             return keyring.get_password(self.service, connection_id)
-        except Exception as exc:  # noqa: BLE001 - keyring backends raise their own types
+        except Exception as exc:
             raise ValueError(f"The OS keychain could not be read: {exc}") from exc
 
     def set(self, connection_id: str, token: str) -> None:
         keyring = self._keyring()
         try:
             keyring.set_password(self.service, connection_id, token)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ValueError(f"The token could not be stored in the OS keychain: {exc}") from exc
 
     def delete(self, connection_id: str) -> None:
         keyring = self._keyring()
         try:
             keyring.delete_password(self.service, connection_id)
-        except Exception as exc:  # noqa: BLE001 - a missing entry is fine
+        except Exception as exc:
             errors = getattr(keyring, "errors", None)
             if errors is not None and isinstance(exc, errors.PasswordDeleteError):
                 return
@@ -274,7 +283,7 @@ def token_store_from_env(environ: dict[str, str] | None = None) -> TokenStore:
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Never follow a redirect: the token header would go along to wherever it points."""
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
 
@@ -329,7 +338,7 @@ class ProviderHttp:
             raise ProviderError(
                 f"{label} API error {exc.code}: {_error_text(raw_error, exc.reason)}", status=exc.code
             ) from exc
-        except (socket.timeout, TimeoutError) as exc:
+        except TimeoutError as exc:
             raise ProviderError(f"{label} did not answer within {self.timeout:g} s ({where})") from exc
         except urllib.error.URLError as exc:
             reason = exc.reason
@@ -877,7 +886,233 @@ class GitHubProvider(Provider):
         return self._pull_request(full_path, data if isinstance(data, dict) else {}, with_reviews=True)
 
 
-_PROVIDER_CLASSES: dict[str, type[Provider]] = {GITLAB: GitLabProvider, GITHUB: GitHubProvider}
+class GerritProvider(Provider):
+    """Gerrit Code Review provider using the REST API."""
+    kind = GERRIT
+
+    def _headers(self) -> dict[str, str]:
+        if self.oauth:
+            return {"Authorization": f"Bearer {self._token}"}
+        return {"Authorization": f"Bearer {self._token}"}
+
+    def _gerrit_ref(self, full_path: str) -> str:
+        """Gerrit projects are flat, just the project name."""
+        return urllib.parse.quote(full_path, safe="")
+
+    def current_user(self) -> dict[str, str]:
+        data = self._json("GET", "/accounts/self")
+        if not isinstance(data, dict) or not data.get("username"):
+            raise ProviderError("Gerrit answered /accounts/self without a username")
+        return {
+            "username": str(data["username"]),
+            "name": str(data.get("name") or data["username"]),
+        }
+
+    def namespaces(self) -> list[dict[str, Any]]:
+        # Gerrit doesn't have namespaces in the same way; return the user as the only namespace
+        user = self.current_user()
+        return [{"id": user["username"], "path": user["username"], "name": user["name"], "kind": "user"}]
+
+    def create_repository(self, namespace_id: str, name: str, private: bool, description: str) -> dict[str, Any]:
+        # Gerrit projects are created under a parent project (can be "All-Projects" or a custom parent)
+        # The namespace_id here is the parent project name
+        body: dict[str, Any] = {
+            "name": name,
+            "description": description,
+        }
+        if namespace_id:
+            body["parent"] = namespace_id
+        # Private projects in Gerrit are controlled by permissions, not a boolean
+        data = self._json("PUT", f"/projects/{urllib.parse.quote(name, safe='')}", body)
+        return self._repository(data if isinstance(data, dict) else {})
+
+    def repositories(self, search: str | None, page: int) -> dict[str, Any]:
+        query = {"per_page": REPOSITORY_PAGE_SIZE, "page": page}
+        if search:
+            query["search"] = search
+        response = self._call("GET", "/projects/", query=query)
+        items = response.data if isinstance(response.data, dict) else {}
+        # Gerrit returns a dict with project names as keys
+        repos = []
+        for name, data in items.items():
+            if isinstance(data, dict):
+                repos.append(self._repository({**data, "name": name}))
+        return {
+            "repositories": repos,
+            "page": page,
+            "has_more": len(repos) >= REPOSITORY_PAGE_SIZE,
+        }
+
+    def repository(self, full_path: str) -> dict[str, Any]:
+        data = self._json("GET", f"/projects/{self._gerrit_ref(full_path)}")
+        return self._repository({**data, "name": full_path} if isinstance(data, dict) else {})
+
+    def add_topic(self, full_path: str, topic: str) -> None:
+        # Gerrit doesn't have topics in the same way
+        pass
+
+    def repository_permission(self, full_path: str, user_id: str | None = None) -> str | None:
+        # Gerrit permissions are complex; for now return None
+        return None
+
+    def _repository(self, data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": str(data.get("id", data.get("project_id", ""))),
+            "full_path": str(data.get("name", data.get("id", ""))),
+            "name": str(data.get("name", data.get("id", ""))),
+            "description": data.get("description") or "",
+            "private": not data.get("state", "") == "ACTIVE",
+            "visibility": "private" if not data.get("state", "") == "ACTIVE" else "public",
+            "web_url": f"{self.connection.url.rstrip('/')}/admin/projects/{urllib.parse.quote(data.get('name', ''), safe='')}",
+            "clone_url": f"{self.connection.url.rstrip('/')}/{data.get('name', '')}",
+            "ssh_url": f"ssh://{urllib.parse.urlsplit(self.connection.url).hostname}:29418/{data.get('name', '')}",
+            "default_branch": data.get("default_branch", "master"),
+            "updated": _iso(data.get("updated", data.get("created_on", ""))),
+        }
+
+    def find_open_change_request(self, full_path: str, source_branch: str) -> dict[str, Any] | None:
+        # Gerrit changes are queried differently
+        return None
+
+    def create_change_request(
+        self, full_path: str, source_branch: str, target_branch: str, title: str, description: str
+    ) -> dict[str, Any]:
+        # Gerrit uses "push for review" to create changes
+        raise ProviderError("Gerrit uses 'push for review' (refs/for/branch) to create changes")
+
+    def change_request(self, full_path: str, number: int) -> dict[str, Any]:
+        # Get a specific change
+        data = self._json("GET", f"/changes/{number}?o=ALL_REVISIONS&o=ALL_FILES&o=ALL_COMMITS&o=MESSAGES&o=DETAILED_ACCOUNTS&o=REVIEWER_UPDATES&o=WEB_LINKS")
+        if not isinstance(data, dict):
+            return {}
+        return self._change(data)
+
+    def _change(self, data: dict[str, Any]) -> dict[str, Any]:
+        # Format a Gerrit change into our standard format
+        return {
+            "number": data.get("_number"),
+            "subject": data.get("subject", ""),
+            "url": f"{self.connection.url.rstrip('/')}/c/{data.get('_number')}",
+            "status": data.get("status", ""),
+            "branch": data.get("branch", ""),
+            "topic": data.get("topic", ""),
+            "owner": (data.get("owner") or {}).get("username", ""),
+            "created": _iso(data.get("created")),
+            "updated": _iso(data.get("updated")),
+            "mergeable": data.get("mergeable", False),
+        }
+
+    def _repository(self, data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": str(data.get("id", data.get("project_id", ""))),
+            "full_path": str(data.get("name", data.get("id", ""))),
+            "name": str(data.get("name", data.get("id", ""))),
+            "description": data.get("description") or "",
+            "private": not data.get("state", "") == "ACTIVE",
+            "visibility": "private" if not data.get("state", "") == "ACTIVE" else "public",
+            "web_url": f"{self.connection.url.rstrip('/')}/admin/projects/{urllib.parse.quote(data.get('name', ''), safe='')}",
+            "clone_url": f"{self.connection.url.rstrip('/')}/{data.get('name', '')}",
+            "ssh_url": f"ssh://{urllib.parse.urlsplit(self.connection.url).hostname}:29418/{data.get('name', '')}",
+            "default_branch": data.get("default_branch", "master"),
+            "updated": _iso(data.get("updated", data.get("created_on", ""))),
+        }
+
+    def find_open_change_request(self, full_path: str, source_branch: str) -> dict[str, Any] | None:
+        # Gerrit changes are queried differently
+        return None
+
+    def create_change_request(
+        self, full_path: str, source_branch: str, target_branch: str, title: str, description: str
+    ) -> dict[str, Any]:
+        # Gerrit uses "push for review" to create changes
+        raise ProviderError("Gerrit uses 'push for review' (refs/for/branch) to create changes")
+
+    def change_request(self, full_path: str, number: int) -> dict[str, Any]:
+        # Get a specific change
+        data = self._json("GET", f"/changes/{number}?o=ALL_REVISIONS&o=ALL_FILES&o=ALL_COMMITS&o=MESSAGES&o=DETAILED_ACCOUNTS&o=REVIEWER_UPDATES&o=WEB_LINKS")
+        if not isinstance(data, dict):
+            return {}
+        return self._change(data)
+
+    def _change(self, data: dict[str, Any]) -> dict[str, Any]:
+        # Format a Gerrit change into our standard format
+        return {
+            "number": data.get("_number"),
+            "subject": data.get("subject", ""),
+            "url": f"{self.connection.url.rstrip('/')}/c/{data.get('_number')}",
+            "status": data.get("status", ""),
+            "branch": data.get("branch", ""),
+            "topic": data.get("topic", ""),
+            "owner": (data.get("owner") or {}).get("username", ""),
+            "created": _iso(data.get("created")),
+            "updated": _iso(data.get("updated")),
+            "mergeable": data.get("mergeable", False),
+        }
+
+    def _repository(self, data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": str(data.get("id", data.get("project_id", ""))),
+            "full_path": str(data.get("name", data.get("id", ""))),
+            "name": str(data.get("name", data.get("id", ""))),
+            "description": data.get("description") or "",
+            "private": not data.get("state", "") == "ACTIVE",
+            "visibility": "private" if not data.get("state", "") == "ACTIVE" else "public",
+            "web_url": f"{self.connection.url.rstrip('/')}/admin/projects/{urllib.parse.quote(data.get('name', ''), safe='')}",
+            "clone_url": f"{self.connection.url.rstrip('/')}/{data.get('name', '')}",
+            "ssh_url": f"ssh://{urllib.parse.urlsplit(self.connection.url).hostname}:29418/{data.get('name', '')}",
+            "default_branch": data.get("default_branch", "master"),
+            "updated": _iso(data.get("updated", data.get("created_on", ""))),
+        }
+
+    def find_open_change_request(self, full_path: str, source_branch: str) -> dict[str, Any] | None:
+        # Gerrit changes are queried differently
+        return None
+
+    def create_change_request(
+        self, full_path: str, source_branch: str, target_branch: str, title: str, description: str
+    ) -> dict[str, Any]:
+        # Gerrit uses "push for review" to create changes
+        raise ProviderError("Gerrit uses 'push for review' (refs/for/branch) to create changes")
+
+    def change_request(self, full_path: str, number: int) -> dict[str, Any]:
+        # Get a specific change
+        data = self._json("GET", f"/changes/{number}?o=ALL_REVISIONS&o=ALL_FILES&o=ALL_COMMITS&o=MESSAGES&o=DETAILED_ACCOUNTS&o=REVIEWER_UPDATES&o=WEB_LINKS")
+        if not isinstance(data, dict):
+            return {}
+        return self._change(data)
+
+    def _change(self, data: dict[str, Any]) -> dict[str, Any]:
+        # Format a Gerrit change into our standard format
+        return {
+            "number": data.get("_number"),
+            "subject": data.get("subject", ""),
+            "url": f"{self.connection.url.rstrip('/')}/c/{data.get('_number')}",
+            "status": data.get("status", ""),
+            "branch": data.get("branch", ""),
+            "topic": data.get("topic", ""),
+            "owner": (data.get("owner") or {}).get("username", ""),
+            "created": _iso(data.get("created")),
+            "updated": _iso(data.get("updated")),
+            "mergeable": data.get("mergeable", False),
+        }
+
+    def _repository(self, data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": str(data.get("id", data.get("project_id", ""))),
+            "full_path": str(data.get("name", data.get("id", ""))),
+            "name": str(data.get("name", data.get("id", ""))),
+            "description": data.get("description") or "",
+            "private": not data.get("state", "") == "ACTIVE",
+            "visibility": "private" if not data.get("state", "") == "ACTIVE" else "public",
+            "web_url": f"{self.connection.url.rstrip('/')}/admin/projects/{urllib.parse.quote(data.get('name', ''), safe='')}",
+            "clone_url": f"{self.connection.url.rstrip('/')}/{data.get('name', '')}",
+            "ssh_url": f"ssh://{urllib.parse.urlsplit(self.connection.url).hostname}:29418/{data.get('name', '')}",
+            "default_branch": data.get("default_branch", "master"),
+            "updated": _iso(data.get("updated", data.get("created_on", ""))),
+        }
+
+
+_PROVIDER_CLASSES: dict[str, type[Provider]] = {GITLAB: GitLabProvider, GITHUB: GitHubProvider, GERRIT: GerritProvider}
 
 
 # --- remote URLs -------------------------------------------------------------------------
@@ -943,7 +1178,7 @@ def git_auth_config(provider: str, web_url: str, token: str) -> dict[str, str]:
     a command line, in ``.git/config`` or in a remote URL.
     """
     user = "oauth2" if provider == GITLAB else "x-access-token"
-    credentials = base64.b64encode(f"{user}:{token}".encode("utf-8")).decode("ascii")
+    credentials = base64.b64encode(f"{user}:{token}".encode()).decode("ascii")
     scope = web_url.rstrip("/") + "/"
     return {
         "GIT_CONFIG_COUNT": "2",
@@ -958,7 +1193,7 @@ def git_auth_config(provider: str, web_url: str, token: str) -> dict[str, str]:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 class ProviderService:
@@ -983,7 +1218,7 @@ class ProviderService:
         self.login_source: Callable[[], tuple[ProviderConnection, str]] | None = None
 
     @classmethod
-    def from_env(cls, connections_path: Path) -> "ProviderService":
+    def from_env(cls, connections_path: Path) -> ProviderService:
         return cls(ConnectionStore(connections_path), token_store_from_env())
 
     # --- the login account (server edition) -------------------------------------------
@@ -1009,7 +1244,7 @@ class ProviderService:
                 raise
             logger.info("No login token for this operation: %s", exc)
             return None
-        except Exception as exc:  # noqa: BLE001 - git and listings fall back to no token
+        except Exception as exc:
             logger.warning("The login account could not be resolved: %s", type(exc).__name__)
             if required:
                 raise ValueError(f"The login account could not be resolved ({type(exc).__name__})") from exc
@@ -1203,8 +1438,7 @@ class ProviderService:
                 return None
             rest = path[len(conn_path) :] if conn_path and path.startswith(conn_path + "/") else path
         repo = rest.strip("/")
-        if repo.endswith(".git"):
-            repo = repo[: -len(".git")]
+        repo = repo.removesuffix(".git")
         return repo if _REPOSITORY_PATH_RE.match(repo) else None
 
     def connection_for_remote(self, remote_url: str) -> tuple[ProviderConnection, str] | None:
@@ -1244,6 +1478,46 @@ class ProviderService:
         """
         try:
             parts = parse_remote(remote_url)
+            if parts is None:
+                return None
+            scheme, host, port, path = parts
+            if scheme not in ("https", "http", "ssh"):
+                return None
+
+            # Check for Gerrit credentials first (server edition only)
+            if getattr(self, "gerrit_credentials", None):
+                try:
+                    from reqman.extensions import current_identity
+                    identity = current_identity()
+                    if identity:
+                        users = getattr(self, "users", None)
+                        if users:
+                            user = users.get(identity.user_id)
+                            if user and user.provider:
+                                settings = getattr(self, "settings", None)
+                                if settings:
+                                    provider = settings.provider(user.provider)
+                                    if provider and provider.type == "gerrit":
+                                        creds = self.gerrit_credentials.get(identity.user_id, user.provider)
+                                        if creds:
+                                            # Determine the scheme from the remote URL
+                                            if scheme == "https" and creds.http_password:
+                                                # HTTP Basic Auth
+                                                import base64
+                                                auth = base64.b64encode(f"{creds.http_username}:{creds.http_password}".encode()).decode()
+                                                return {
+                                                    "GIT_CONFIG_COUNT": "1",
+                                                    "GIT_CONFIG_KEY_0": f"http.{host}//.extraHeader",
+                                                    "GIT_CONFIG_VALUE_0": f"Authorization: Basic {auth}",
+                                                }
+                                            elif scheme == "ssh" and creds.ssh_private_key:
+                                                # SSH key - the user's SSH agent will be used
+                                                # The key should be in the SSH agent; git will use it automatically
+                                                return None  # SSH agent handles it
+                except Exception:
+                    pass  # Fall through to normal provider auth
+
+            parts = parse_remote(remote_url)
             if parts is None or parts[0] not in ("https", "http"):
                 return None
             match = self.connection_for_remote(remote_url)
@@ -1282,3 +1556,125 @@ class ProviderService:
         if not isinstance(full_path, str) or not _REPOSITORY_PATH_RE.match(full_path.strip()):
             raise ValueError(f"Invalid repository path {full_path!r}: expected 'group/name'")
         return full_path.strip()
+
+
+# --- Gerrit credentials ---------------------------------------------------------------------------
+
+
+@dataclass
+class GerritCredentials:
+    """Per-user Gerrit credentials (HTTP password and/or SSH key)."""
+    user_id: str
+    provider_id: str
+    http_username: str = ""
+    http_password: str = ""
+    ssh_private_key: str = ""
+    ssh_public_key: str = ""
+    created: str = ""
+    updated: str = ""
+
+
+class GerritCredentialStore:
+    """Per-user Gerrit credentials storage (encrypted at rest)."""
+
+    def __init__(self, state_dir: Path, key_file: Path | None = None):
+        self.path = state_dir / "gerrit_credentials.json"
+        self.key_file = key_file or (state_dir / ".gerrit_key")
+        self._init_key()
+
+    def _init_key(self) -> None:
+        if not self.key_file.exists():
+            import secrets
+            key = secrets.token_bytes(32)
+            self.key_file.write_bytes(key)
+            self.key_file.chmod(0o600)
+
+    def _load_key(self) -> bytes:
+        return self.key_file.read_bytes()
+
+    def _encrypt(self, data: str) -> str:
+        key = self._load_key()
+        f = Fernet(base64.urlsafe_b64encode(key))
+        return f.encrypt(data.encode()).decode()
+
+    def _decrypt(self, data: str) -> str:
+        key = self._load_key()
+        f = Fernet(base64.urlsafe_b64encode(key))
+        return f.decrypt(data.encode()).decode()
+
+    def _load(self) -> dict[str, dict[str, Any]]:
+        if not self.path.exists():
+            return {}
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8-sig"))
+            return data
+        except (OSError, ValueError):
+            return {}
+
+    def _save(self, data: dict[str, dict[str, Any]]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(tmp, self.path)
+
+    def get(self, user_id: str, provider_id: str) -> GerritCredentials | None:
+        data = self._load()
+        key = f"{user_id}:{provider_id}"
+        if key not in data:
+            return None
+        item = data[key]
+        cred = GerritCredentials(
+            user_id=item["user_id"],
+            provider_id=item["provider_id"],
+            http_username=item.get("http_username", ""),
+            http_password=self._decrypt(item["http_password"]) if item.get("http_password") else "",
+            ssh_private_key=self._decrypt(item["ssh_private_key"]) if item.get("ssh_private_key") else "",
+            ssh_public_key=item.get("ssh_public_key", ""),
+            created=item.get("created", ""),
+            updated=item.get("updated", ""),
+        )
+        return cred
+
+    def set(self, cred: GerritCredentials) -> None:
+        data = self._load()
+        key = f"{cred.user_id}:{cred.provider_id}"
+        from datetime import datetime
+        now = datetime.now(UTC).isoformat()
+        if key in data:
+            item = data[key]
+            item["created"] = item.get("created", now)
+        else:
+            item = {"user_id": cred.user_id, "provider_id": cred.provider_id, "created": now}
+        item.update({
+            "http_username": cred.http_username,
+            "http_password": self._encrypt(cred.http_password) if cred.http_password else "",
+            "ssh_private_key": self._encrypt(cred.ssh_private_key) if cred.ssh_private_key else "",
+            "ssh_public_key": cred.ssh_public_key,
+            "updated": now,
+        })
+        data[key] = item
+        self._save(data)
+
+    def delete(self, user_id: str, provider_id: str) -> None:
+        data = self._load()
+        key = f"{user_id}:{provider_id}"
+        if key in data:
+            del data[key]
+            self._save(data)
+
+    def list_for_user(self, user_id: str) -> list[GerritCredentials]:
+        data = self._load()
+        result = []
+        for key, item in data.items():
+            if item["user_id"] == user_id:
+                result.append(GerritCredentials(
+                    user_id=item["user_id"],
+                    provider_id=item["provider_id"],
+                    http_username=item.get("http_username", ""),
+                    http_password="***" if item.get("http_password") else "",
+                    ssh_private_key="***" if item.get("ssh_private_key") else "",
+                    ssh_public_key=item.get("ssh_public_key", ""),
+                    created=item.get("created", ""),
+                    updated=item.get("updated", ""),
+                ))
+        return result

@@ -93,7 +93,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-PROVIDER_TYPES = ("gitlab", "github", "oidc")
+PROVIDER_TYPES = ("gitlab", "github", "oidc", "ldap", "saml", "proxy_header", "gerrit")
 # Project roles, lowest first (``permissions.ROLE_RANK``).
 ROLES = ("viewer", "reviewer", "editor", "project-admin")
 PROJECT_CREATION = ("everyone", "admins")
@@ -130,9 +130,55 @@ class ProviderSettings:
     # repository permissions installed per organisation / repository; discovery lists the
     # installations' repositories instead of ``GET /user/repos`` (``discovery.py``).
     github_app: bool = False
+    # OIDC preset (only for type "oidc"): pre-configured templates for common providers.
+    # One of: "keycloak", "entra_id", "okta", "google_workspace", "authentik", or "" (custom).
+    oidc_preset: str = ""
+    # OIDC group claim (only for type "oidc"): the claim name in the ID token/userinfo that contains group memberships.
+    # Default: "groups" (used by Keycloak, Entra ID, Okta, Google Workspace, Authentik).
+    oidc_group_claim: str = "groups"
+    # LDAP / Active Directory settings (type "ldap")
+    ldap_url: str = ""
+    ldap_bind_dn: str = ""
+    ldap_bind_password: str = field(repr=False, default="")
+    ldap_user_base: str = ""
+    ldap_user_filter: str = "(uid={username})"
+    ldap_group_base: str = ""
+    ldap_group_filter: str = "(member={user_dn})"
+    ldap_group_name_attr: str = "cn"
+    ldap_user_name_attr: str = "uid"
+    ldap_user_email_attr: str = "mail"
+    ldap_user_id_attr: str = "uid"
+    ldap_tls: bool = True
+    ldap_tls_verify: bool = True
+    ldap_follow_referrals: bool = False
+    # SAML 2.0 settings (type "saml")
+    saml_entity_id: str = ""
+    saml_acs_url: str = ""
+    saml_idp_metadata_url: str = ""
+    saml_idp_entity_id: str = ""
+    saml_idp_sso_url: str = ""
+    saml_idp_x509_cert: str = ""
+    saml_sp_x509_cert: str = ""
+    saml_sp_private_key: str = field(repr=False, default="")
+    saml_name_id_format: str = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
+    saml_attribute_mapping: dict[str, str] = field(default_factory=dict)
+    # Trusted reverse-proxy header settings (type "proxy_header")
+    proxy_header_name: str = "X-Forwarded-User"
+    proxy_header_email: str = "X-Forwarded-Email"
+    proxy_header_name_attr: str = "X-Forwarded-Name"
+    proxy_header_groups: str = "X-Forwarded-Groups"
+    proxy_header_signature: str = ""
+    proxy_header_jwks_url: str = ""
+    proxy_header_jwks_cache_ttl: int = 3600
+    proxy_header_trusted_issuers: tuple[str, ...] = ()
+    proxy_header_verify_signature: bool = True
 
     def public_info(self) -> dict[str, Any]:
-        return {"id": self.id, "type": self.type, "name": self.name, "login_url": f"/auth/login/{self.id}"}
+        info = {"id": self.id, "type": self.type, "name": self.name, "login_url": f"/auth/login/{self.id}"}
+        if self.type == "oidc":
+            info["oidc_preset"] = self.oidc_preset
+            info["oidc_group_claim"] = self.oidc_group_claim
+        return info
 
 
 @dataclass(frozen=True)
@@ -158,6 +204,7 @@ class ServerSettings:
     session_max_age_seconds: int = 12 * 3600
     session_idle_seconds: int = 2 * 3600
     persist_sessions: bool = True
+    max_sessions_per_user: int = 5
     admins: tuple[str, ...] = ()
     cors_origins: tuple[str, ...] = ()
     admin_groups: tuple[str, ...] = ()
@@ -237,13 +284,63 @@ def _parse_provider(raw: Any, index: int, env: dict[str, str], repo_roles: bool 
     provider_type = _str(raw.get("type"), f"{what}.type", required=True).lower()
     if provider_type not in PROVIDER_TYPES:
         raise ServerConfigError(
-            f"{what}.type must be one of {', '.join(PROVIDER_TYPES)} (ldap and proxy headers are not "
-            f"supported yet), got {provider_type!r}"
+            f"{what}.type must be one of {', '.join(PROVIDER_TYPES)}, got {provider_type!r}"
         )
     provider_id = _str(raw.get("id"), f"{what}.id") or provider_type
     if not _PROVIDER_ID.match(provider_id):
         raise ServerConfigError(f"{what}.id must be lower-case letters, digits, '-' or '_', got {provider_id!r}")
     allow_http = _bool(raw.get("allow_http"), f"{what}.allow_http", False)
+
+    # Common fields
+    issuer = ""
+    name = ""
+    client_id = ""
+    client_secret = ""
+    scopes = DEFAULT_SCOPES
+    git_hosts = ()
+    github_app = False
+    oidc_preset = ""
+    oidc_group_claim = "groups"
+
+    # LDAP-specific fields
+    ldap_url = ""
+    ldap_bind_dn = ""
+    ldap_bind_password = ""
+    ldap_user_base = ""
+    ldap_user_filter = "(uid={username})"
+    ldap_group_base = ""
+    ldap_group_filter = "(member={user_dn})"
+    ldap_group_name_attr = "cn"
+    ldap_user_name_attr = "uid"
+    ldap_user_email_attr = "mail"
+    ldap_user_id_attr = "uid"
+    ldap_tls = True
+    ldap_tls_verify = True
+    ldap_follow_referrals = False
+
+    # SAML-specific fields
+    saml_entity_id = ""
+    saml_acs_url = ""
+    saml_idp_metadata_url = ""
+    saml_idp_entity_id = ""
+    saml_idp_sso_url = ""
+    saml_idp_x509_cert = ""
+    saml_sp_x509_cert = ""
+    saml_sp_private_key = ""
+    saml_name_id_format = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
+    saml_attribute_mapping = {}
+
+    # Proxy header-specific fields
+    proxy_header_name = "X-Forwarded-User"
+    proxy_header_email = "X-Forwarded-Email"
+    proxy_header_name_attr = "X-Forwarded-Name"
+    proxy_header_groups = "X-Forwarded-Groups"
+    proxy_header_signature = ""
+    proxy_header_jwks_url = ""
+    proxy_header_jwks_cache_ttl = 3600
+    proxy_header_trusted_issuers = ()
+    proxy_header_verify_signature = True
+
     if provider_type == "gitlab":
         issuer = _str(raw.get("url"), f"{what}.url") or _str(raw.get("issuer"), f"{what}.issuer") or DEFAULT_GITLAB_URL
         name = _str(raw.get("name"), f"{what}.name") or "GitLab"
@@ -252,37 +349,192 @@ def _parse_provider(raw: Any, index: int, env: dict[str, str], repo_roles: bool 
         if (urllib.parse.urlsplit(issuer).hostname or "").lower() == "api.github.com":
             issuer = DEFAULT_GITHUB_URL
         name = _str(raw.get("name"), f"{what}.name") or "GitHub"
+    elif provider_type == "oidc":
+        issuer = _str(raw.get("issuer"), f"{what}.issuer", required=True)
+        name = _str(raw.get("name"), f"{what}.name") or "Single sign-on"
+        # Apply OIDC preset if specified
+        preset = _str(raw.get("oidc_preset"), f"{what}.oidc_preset") or ""
+        if preset:
+            preset_config = OIDC_PRESETS.get(preset)
+            if not preset_config:
+                raise ServerConfigError(f"{what}.oidc_preset must be one of {', '.join(OIDC_PRESETS.keys())}, got {preset!r}")
+            # Apply preset defaults (can be overridden by explicit config)
+            if "scopes" not in raw:
+                scopes = preset_config["scopes"]
+            # Note: group_claim is used by OidcClient.identity_from_tokens
+        # Parse OIDC group claim (can be overridden by explicit config)
+        oidc_group_claim = _str(raw.get("oidc_group_claim"), f"{what}.oidc_group_claim") or preset_config.get("group_claim", "groups")
+        if oidc_group_claim and not isinstance(oidc_group_claim, str):
+            raise ServerConfigError(f"{what}.oidc_group_claim must be a string")
+    elif provider_type == "ldap":
+        issuer = _str(raw.get("url"), f"{what}.url", required=True)
+        name = _str(raw.get("name"), f"{what}.name") or "LDAP / Active Directory"
+    elif provider_type == "saml":
+        issuer = _str(raw.get("entity_id"), f"{what}.entity_id", required=True)
+        name = _str(raw.get("name"), f"{what}.name") or "SAML 2.0"
+    elif provider_type == "proxy_header":
+        issuer = _str(raw.get("issuer"), f"{what}.issuer", required=True)
+        name = _str(raw.get("name"), f"{what}.name") or "Trusted Proxy Header"
+    elif provider_type == "gerrit":
+        issuer = _str(raw.get("url"), f"{what}.url", required=True)
+        name = _str(raw.get("name"), f"{what}.name") or "Gerrit"
     else:
         issuer = _str(raw.get("issuer"), f"{what}.issuer", required=True)
         name = _str(raw.get("name"), f"{what}.name") or "Single sign-on"
-    issuer = check_endpoint_url(issuer.rstrip("/"), f"{what} issuer/url", allow_http)
+
+    if provider_type in ("gitlab", "github", "oidc", "saml", "gerrit"):
+        issuer = check_endpoint_url(issuer.rstrip("/"), f"{what} issuer/url", allow_http)
+    elif provider_type == "ldap":
+        if not issuer.startswith(("ldap://", "ldaps://")):
+            raise ServerConfigError(f"{what}.url must be an ldap:// or ldaps:// URL")
+        # LDAP URLs don't go through check_endpoint_url
+
+    # OIDC presets: pre-configured templates for common providers
+    OIDC_PRESETS = {
+        "keycloak": {
+            "scopes": ("openid", "profile", "email", "groups"),
+            "group_claim": "groups",
+        },
+        "entra_id": {
+            "scopes": ("openid", "profile", "email", "groups"),
+            "group_claim": "groups",
+        },
+        "okta": {
+            "scopes": ("openid", "profile", "email", "groups"),
+            "group_claim": "groups",
+        },
+        "google_workspace": {
+            "scopes": ("openid", "profile", "email", "groups"),
+            "group_claim": "groups",
+        },
+        "authentik": {
+            "scopes": ("openid", "profile", "email", "groups"),
+            "group_claim": "groups",
+        },
+    }
 
     key = _env_key(provider_id)
-    client_id = env.get(f"REQMAN_AUTH_{key}_CLIENT_ID", "").strip() or _str(raw.get("client_id"), f"{what}.client_id")
-    if not client_id:
-        raise ServerConfigError(f"{what}.client_id is required (or REQMAN_AUTH_{key}_CLIENT_ID)")
-    secret_env = _str(raw.get("client_secret_env"), f"{what}.client_secret_env")
-    client_secret = (
-        env.get(f"REQMAN_AUTH_{key}_CLIENT_SECRET", "").strip()
-        or (env.get(secret_env, "").strip() if secret_env else "")
-        or _str(raw.get("client_secret"), f"{what}.client_secret")
-    )
-    scopes_raw = raw.get("scopes")
-    if scopes_raw is None:
-        scopes = DEFAULT_GITHUB_SCOPES if provider_type == "github" else DEFAULT_SCOPES
-    elif isinstance(scopes_raw, list) and all(isinstance(s, str) and s.strip() for s in scopes_raw):
-        scopes = tuple(s.strip() for s in scopes_raw)
-        if "openid" not in scopes and provider_type != "github":
-            scopes = ("openid", *scopes)
+    if provider_type in ("gitlab", "github", "oidc", "saml", "gerrit"):
+        client_id = env.get(f"REQMAN_AUTH_{_env_key(provider_id)}_CLIENT_ID", "").strip() or _str(raw.get("client_id"), f"{what}.client_id")
+        if not client_id:
+            raise ServerConfigError(f"{what}.client_id is required (or REQMAN_AUTH_{_env_key(provider_id)}_CLIENT_ID)")
+        secret_env = _str(raw.get("client_secret_env"), f"{what}.client_secret_env")
+        client_secret = (
+            env.get(f"REQMAN_AUTH_{_env_key(provider_id)}_CLIENT_SECRET", "").strip()
+            or (env.get(secret_env, "").strip() if secret_env else "")
+            or _str(raw.get("client_secret"), f"{what}.client_secret")
+        )
+        if provider_type == "saml":
+            # For SAML, client_id is the SP entity ID
+            pass
+        else:
+            if not client_id:
+                raise ServerConfigError(f"{what}.client_id is required (or REQMAN_AUTH_{_env_key(provider_id)}_CLIENT_ID)")
+    elif provider_type == "ldap":
+        # LDAP uses bind DN/password instead of client_id/secret
+        ldap_bind_dn = _str(raw.get("bind_dn"), f"{what}.bind_dn", required=True)
+        ldap_bind_password = env.get(f"REQMAN_AUTH_{_env_key(provider_id)}_BIND_PASSWORD", "").strip() or _str(raw.get("bind_password"), f"{what}.bind_password")
+        if not ldap_bind_password:
+            raise ServerConfigError(f"{what}.bind_password is required (or REQMAN_AUTH_{_env_key(provider_id)}_BIND_PASSWORD)")
+    elif provider_type == "proxy_header":
+        # Proxy header uses trusted issuer validation
+        proxy_header_trusted_issuers = tuple(_string_list(raw.get("trusted_issuers"), f"{what}.trusted_issuers"))
+        if not proxy_header_trusted_issuers:
+            raise ServerConfigError(f"{what}.trusted_issuers is required for proxy_header type")
+        proxy_header_signature = env.get(f"REQMAN_AUTH_{_env_key(provider_id)}_SIGNATURE", "").strip() or _str(raw.get("signature"), f"{what}.signature")
+        proxy_header_verify_signature = _bool(raw.get("verify_signature"), f"{what}.verify_signature", True)
+
+    # Type-specific fields
+    if provider_type == "ldap":
+        ldap_url = _str(raw.get("url"), f"{what}.url", required=True)
+        ldap_bind_dn = _str(raw.get("bind_dn"), f"{what}.bind_dn", required=True)
+        ldap_user_base = _str(raw.get("user_base"), f"{what}.user_base", required=True)
+        ldap_user_filter = _str(raw.get("user_filter"), f"{what}.user_filter") or "(uid={username})"
+        ldap_group_base = _str(raw.get("group_base"), f"{what}.group_base", required=True)
+        ldap_group_filter = _str(raw.get("group_filter"), f"{what}.group_filter") or "(member={user_dn})"
+        ldap_group_name_attr = _str(raw.get("group_name_attr"), f"{what}.group_name_attr") or "cn"
+        ldap_user_name_attr = _str(raw.get("user_name_attr"), f"{what}.user_name_attr") or "uid"
+        ldap_user_email_attr = _str(raw.get("user_email_attr"), f"{what}.user_email_attr") or "mail"
+        ldap_user_id_attr = _str(raw.get("user_id_attr"), f"{what}.user_id_attr") or "uid"
+        ldap_tls = _bool(raw.get("tls"), f"{what}.tls", True)
+        ldap_tls_verify = _bool(raw.get("tls_verify"), f"{what}.tls_verify", True)
+        ldap_follow_referrals = _bool(raw.get("follow_referrals"), f"{what}.follow_referrals", False)
+        scopes = ()  # LDAP doesn't use OAuth scopes
+    elif provider_type == "saml":
+        saml_entity_id = _str(raw.get("entity_id"), f"{what}.entity_id", required=True)
+        saml_acs_url = _str(raw.get("acs_url"), f"{what}.acs_url", required=True)
+        saml_idp_metadata_url = _str(raw.get("idp_metadata_url"), f"{what}.idp_metadata_url")
+        saml_idp_entity_id = _str(raw.get("idp_entity_id"), f"{what}.idp_entity_id", required=True)
+        saml_idp_sso_url = _str(raw.get("idp_sso_url"), f"{what}.idp_sso_url", required=True)
+        saml_idp_x509_cert = _str(raw.get("idp_x509_cert"), f"{what}.idp_x509_cert", required=True)
+        saml_sp_x509_cert = _str(raw.get("sp_x509_cert"), f"{what}.sp_x509_cert")
+        saml_sp_private_key = env.get(f"REQMAN_AUTH_{_env_key(provider_id)}_SP_PRIVATE_KEY", "").strip() or _str(raw.get("sp_private_key"), f"{what}.sp_private_key")
+        saml_name_id_format = _str(raw.get("name_id_format"), f"{what}.name_id_format") or "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
+        saml_attribute_mapping = _dict_of_str(raw.get("attribute_mapping"), f"{what}.attribute_mapping") or {}
+        scopes = ()  # SAML doesn't use OAuth scopes
+    elif provider_type == "proxy_header":
+        proxy_header_name = _str(raw.get("header_name"), f"{what}.header_name") or "X-Forwarded-User"
+        proxy_header_email = _str(raw.get("header_email"), f"{what}.header_email") or "X-Forwarded-Email"
+        proxy_header_name_attr = _str(raw.get("header_name_attr"), f"{what}.header_name_attr") or "X-Forwarded-Name"
+        proxy_header_groups = _str(raw.get("header_groups"), f"{what}.header_groups") or "X-Forwarded-Groups"
+        proxy_header_jwks_url = _str(raw.get("jwks_url"), f"{what}.jwks_url")
+        proxy_header_jwks_cache_ttl = int(_positive(raw.get("jwks_cache_ttl"), f"{what}.jwks_cache_ttl", 3600))
+        proxy_header_trusted_issuers = tuple(_string_list(raw.get("trusted_issuers"), f"{what}.trusted_issuers"))
+        if not proxy_header_trusted_issuers:
+            raise ServerConfigError(f"{what}.trusted_issuers is required for proxy_header type")
+        proxy_header_verify_signature = _bool(raw.get("verify_signature"), f"{what}.verify_signature", True)
+        scopes = ()  # Proxy header doesn't use OAuth scopes
+    elif provider_type == "gerrit":
+        # Gerrit uses OAuth 2.0 (via the OIDC frontend) or its own OAuth plugin
+        # The issuer is the Gerrit base URL
+        scopes = ("openid", "profile", "email")
     else:
-        raise ServerConfigError(f"{what}.scopes must be a list of strings")
-    if provider_type == "gitlab" and repo_roles and GITLAB_API_SCOPE not in scopes and "api" not in scopes:
-        # Roles from GitLab project permissions read the API with the user's token.
+        scopes_raw = raw.get("scopes")
+        if scopes_raw is None:
+            scopes = DEFAULT_GITHUB_SCOPES if provider_type == "github" else DEFAULT_SCOPES
+        elif isinstance(scopes_raw, list) and all(isinstance(s, str) and s.strip() for s in scopes_raw):
+            scopes = tuple(s.strip() for s in scopes_raw)
+            if "openid" not in scopes and provider_type != "github":
+                scopes = ("openid", *scopes)
+        else:
+            raise ServerConfigError(f"{what}.scopes must be a list of strings")
+
+    if provider_type in ("gitlab", "github", "oidc"):
+        client_id = env.get(f"REQMAN_AUTH_{_env_key(provider_id)}_CLIENT_ID", "").strip() or _str(raw.get("client_id"), f"{what}.client_id")
+        if not client_id:
+            raise ServerConfigError(f"{what}.client_id is required (or REQMAN_AUTH_{_env_key(provider_id)}_CLIENT_ID)")
+        secret_env = _str(raw.get("client_secret_env"), f"{what}.client_secret_env")
+        client_secret = (
+            env.get(f"REQMAN_AUTH_{_env_key(provider_id)}_CLIENT_SECRET", "").strip()
+            or (env.get(secret_env, "").strip() if secret_env else "")
+            or _str(raw.get("client_secret"), f"{what}.client_secret")
+        )
+    elif provider_type == "ldap":
+        pass  # handled above
+    elif provider_type == "saml":
+        pass  # handled above
+    elif provider_type == "proxy_header":
+        pass  # handled above
+
+    if provider_type in ("gitlab", "github", "oidc", "saml", "gerrit"):
+        scopes_raw = raw.get("scopes")
+        if scopes_raw is None:
+            scopes = DEFAULT_GITHUB_SCOPES if provider_type == "github" else DEFAULT_SCOPES
+        elif isinstance(scopes_raw, list) and all(isinstance(s, str) and s.strip() for s in scopes_raw):
+            scopes = tuple(s.strip() for s in scopes_raw)
+            if "openid" not in scopes and provider_type != "github":
+                scopes = ("openid", *scopes)
+        else:
+            raise ServerConfigError(f"{what}.scopes must be a list of strings")
+
+    if provider_type in ("gitlab", "gerrit") and repo_roles and GITLAB_API_SCOPE not in scopes and "api" not in scopes:
         scopes = (*scopes, GITLAB_API_SCOPE)
+
     git_hosts = tuple(h.lower() for h in _string_list(raw.get("git_hosts"), f"{what}.git_hosts"))
     github_app = _bool(raw.get("github_app"), f"{what}.github_app", False)
     if github_app and provider_type != "github":
         raise ServerConfigError(f"{what}.github_app can only be set on a provider of type github")
+
     return ProviderSettings(
         id=provider_id,
         type=provider_type,
@@ -294,6 +546,41 @@ def _parse_provider(raw: Any, index: int, env: dict[str, str], repo_roles: bool 
         allow_http=allow_http,
         git_hosts=git_hosts,
         github_app=github_app,
+        ldap_url=ldap_url,
+        ldap_bind_dn=ldap_bind_dn,
+        ldap_bind_password=ldap_bind_password,
+        ldap_user_base=ldap_user_base,
+        ldap_user_filter=ldap_user_filter,
+        ldap_group_base=ldap_group_base,
+        ldap_group_filter=ldap_group_filter,
+        ldap_group_name_attr=ldap_group_name_attr,
+        ldap_user_name_attr=ldap_user_name_attr,
+        ldap_user_email_attr=ldap_user_email_attr,
+        ldap_user_id_attr=ldap_user_id_attr,
+        ldap_tls=ldap_tls,
+        ldap_tls_verify=ldap_tls_verify,
+        ldap_follow_referrals=ldap_follow_referrals,
+        saml_entity_id=saml_entity_id,
+        saml_acs_url=saml_acs_url,
+        saml_idp_metadata_url=saml_idp_metadata_url,
+        saml_idp_entity_id=saml_idp_entity_id,
+        saml_idp_sso_url=saml_idp_sso_url,
+        saml_idp_x509_cert=saml_idp_x509_cert,
+        saml_sp_x509_cert=saml_sp_x509_cert,
+        saml_sp_private_key=saml_sp_private_key,
+        saml_name_id_format=saml_name_id_format,
+        saml_attribute_mapping=saml_attribute_mapping,
+        proxy_header_name=proxy_header_name,
+        proxy_header_email=proxy_header_email,
+        proxy_header_name_attr=proxy_header_name_attr,
+        proxy_header_groups=proxy_header_groups,
+        proxy_header_signature=proxy_header_signature,
+        proxy_header_jwks_url=proxy_header_jwks_url,
+        proxy_header_jwks_cache_ttl=proxy_header_jwks_cache_ttl,
+        proxy_header_trusted_issuers=proxy_header_trusted_issuers,
+        proxy_header_verify_signature=proxy_header_verify_signature,
+        oidc_preset=oidc_preset,
+        oidc_group_claim=oidc_group_claim,
     )
 
 
@@ -303,6 +590,19 @@ def _string_list(value: Any, what: str) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
         raise ServerConfigError(f"{what} must be a list of non-empty strings")
     return tuple(v.strip() for v in value)
+
+
+def _dict_of_str(value: Any, what: str) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ServerConfigError(f"{what} must be an object")
+    result = {}
+    for k, v in value.items():
+        if not isinstance(k, str) or not isinstance(v, str):
+            raise ServerConfigError(f"{what} must be a string-to-string mapping")
+        result[k.strip()] = v.strip()
+    return result
 
 
 def _parse_group_roles(raw: Any) -> tuple[GroupRole, ...]:
@@ -403,6 +703,7 @@ def load_server_settings(
     max_age = _positive(raw.get("session_max_age_hours"), "server.session_max_age_hours", 12) * 3600
     idle = _positive(raw.get("session_idle_minutes"), "server.session_idle_minutes", 120) * 60
     lock_idle = _positive(raw.get("module_lock_idle_minutes"), "server.module_lock_idle_minutes", 60) * 60
+    max_sessions = int(_positive(raw.get("max_sessions_per_user"), "server.max_sessions_per_user", 5))
 
     return ServerSettings(
         providers=providers,
@@ -413,6 +714,7 @@ def load_server_settings(
         session_max_age_seconds=int(max_age),
         session_idle_seconds=int(idle),
         persist_sessions=_bool(raw.get("persist_sessions"), "server.persist_sessions", True),
+        max_sessions_per_user=max_sessions,
         admins=admins,
         cors_origins=tuple(cors_origins),
         admin_groups=_string_list(raw.get("admin_groups"), "server.admin_groups"),

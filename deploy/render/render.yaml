@@ -1,0 +1,45 @@
+# ReqManTool Server Edition - Render Deployment
+# Usage: Connect this repo to Render, or use `render deploy` CLI
+# Services: Web Service (Docker) + Persistent Disk
+
+services:
+  - type: web
+    name: reqman-server
+    runtime: docker
+    dockerfilePath: ../Dockerfile
+    dockerContext: ..
+    plan: starter
+    region: oregon
+    autoDeploy: true
+    healthCheckPath: /edition
+    envVars:
+      - key: REQMAN_DATA_DIR
+        value: /data
+      - key: REQMAN_HOST
+        value: 0.0.0.0
+      - key: REQMAN_PORT
+        value: "8899"
+      - key: REQMAN_MODE
+        value: server
+      - key: REQMAN_CONFIG_FILE
+        value: /config.json
+      # These should be set as secret environment variables in Render dashboard
+      - key: REQMAN_AUTH_GITHUB_CLIENT_SECRET
+        sync: false
+      - key: REQMAN_AUTH_GITLAB_CLIENT_SECRET
+        sync: false
+      - key: REQMAN_AUTH_OIDC_CLIENT_SECRET
+        sync: false
+
+disk:
+  name: reqman-data
+  mountPath: /data
+  sizeGB: 10
+  # Note: Render disks are only available on paid plans
+
+# Optional: Add a managed PostgreSQL if needed
+# databases:
+#   - name: reqman-db
+#     databaseName: reqman
+#     user: reqman
+#     plan: starter

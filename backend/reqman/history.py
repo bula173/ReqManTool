@@ -22,8 +22,9 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any
 
 from .richtext import is_rich, to_plain
 
@@ -574,7 +575,7 @@ def _attribute_definition_changes(old_project: Any, new_project: Any) -> dict[st
     """Added/removed/changed attribute definitions between two project.json objects (system ones excluded)."""
     before = _by_id(old_project.get("attributes") if isinstance(old_project, dict) else None)
     after = _by_id(new_project.get("attributes") if isinstance(new_project, dict) else None)
-    entry = lambda item: {"id": item["id"], "name": str(item.get("name") or item["id"])}  # noqa: E731
+    entry = lambda item: {"id": item["id"], "name": str(item.get("name") or item["id"])}
     return {
         "added": [entry(a) for i, a in after.items() if i not in before and not a.get("system")],
         "removed": [entry(a) for i, a in before.items() if i not in after and not a.get("system")],

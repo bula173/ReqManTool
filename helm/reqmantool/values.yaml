@@ -1,0 +1,141 @@
+# ReqManTool Server Edition - Helm chart default values
+
+# Image configuration
+image:
+  repository: ghcr.io/bula173/reqmantool/server
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+# Image pull secrets (for private registry)
+imagePullSecrets: []
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 8899
+  targetPort: 8899
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+  hosts:
+    - host: reqman.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: reqman-tls
+      hosts:
+        - reqman.example.com
+
+# Resource limits
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+# Persistence
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  existingClaim: ""
+
+# Config map for server configuration
+config:
+  data_dir: /data
+  mode: server
+  host: "0.0.0.0"
+  port: 8899
+  cors_origins: ["https://reqman.example.com"]
+  server:
+    base_url: "https://reqman.example.com"
+    cookie_secure: true
+    admins: ["admin@example.com"]
+    auth_providers: []
+    discovery:
+      enabled: true
+      cache_minutes: 15
+      max_repos: 200
+
+# Secrets (create separately or use external secret operator)
+secrets:
+  # github_client_secret: ""
+  # gitlab_client_secret: ""
+  # oidc_client_secret: ""
+  # licence_file: ""
+
+# Security context
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  runAsNonRoot: true
+  readOnlyRootFilesystem: false
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+# Pod security context
+podSecurityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+# Liveness and readiness probes
+livenessProbe:
+  httpGet:
+    path: /edition
+    port: 8899
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /edition
+    port: 8899
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Service account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity
+affinity: {}
+
+# Pod disruption budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Horizontal pod autoscaler
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80

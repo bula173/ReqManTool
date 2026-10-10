@@ -67,6 +67,7 @@ Reads (status, history) take no lock and run with ``GIT_OPTIONAL_LOCKS=0``.
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import getpass
 import logging
@@ -77,19 +78,50 @@ import subprocess
 import tempfile
 import threading
 import time
-import uuid
 import urllib.parse
+import uuid
+from collections.abc import Callable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any
 
 from .extensions import current_identity
-from .history import FileChange, Revision, commit_message, requirement_history, session_of, user_of
+from .history import (
+    FileChange,
+    Revision,
+    commit_message,
+    requirement_history,
+    session_of,
+    user_of,
+)
 
 logger = logging.getLogger("reqman.git")
+
+# Thread pool for running git operations off the event loop
+_GIT_EXECUTOR: ThreadPoolExecutor | None = None
+
+
+def _get_git_executor() -> ThreadPoolExecutor:
+    """Get or create the thread pool executor for git operations."""
+    global _GIT_EXECUTOR
+    if _GIT_EXECUTOR is None:
+        _GIT_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="reqman-git")
+    return _GIT_EXECUTOR
+
+
+def _shutdown_git_executor() -> None:
+    """Shutdown the git executor (called on shutdown)."""
+    global _GIT_EXECUTOR
+    if _GIT_EXECUTOR is not None:
+        _GIT_EXECUTOR.shutdown(wait=True)
+        _GIT_EXECUTOR = None
+
+
+atexit.register(_shutdown_git_executor)
 
 WORKING_BRANCH = "current"
 WORKING_REF = f"refs/heads/{WORKING_BRANCH}"
@@ -473,7 +505,7 @@ class GitSettings:
     executable: str = "git"
 
     @classmethod
-    def from_env(cls, environ: Mapping[str, str] | None = None) -> "GitSettings":
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> GitSettings:
         """Settings from the environment.
 
         - ``REQMAN_GIT``: ``off``/``0``/``false``/``no`` turns history off (default on).
@@ -762,9 +794,7 @@ class GitHistory:
     def enabled(self) -> bool:
         return self.settings.enabled
 
-    # --- running git ------------------------------------------------------------
-
-    def _run(
+    async def _run_async(
         self,
         args: list[str],
         cwd: Path | None,
@@ -775,6 +805,43 @@ class GitHistory:
         read_only: bool = False,
         timeout: float = _TIMEOUT_SECONDS,
     ) -> subprocess.CompletedProcess:
+        """Run git command in a thread pool to avoid blocking the event loop."""
+        loop = asyncio.get_running_loop()
+        executor = _get_git_executor()
+
+        def _run_sync() -> subprocess.CompletedProcess:
+            try:
+                result = subprocess.run(
+                    self._command(args),
+                    cwd=cwd,
+                    input=input,
+                    capture_output=True,
+                    env=_clean_env(env, read_only),
+                    timeout=timeout,
+                    check=False,
+                )
+            except FileNotFoundError as exc:
+                raise GitNotFound(f"git was not found ('{self.settings.executable}')") from exc
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise GitError(f"git {_subcommand(args)} could not run: {exc}") from exc
+            if check and result.returncode != 0:
+                raise GitError(f"git {_subcommand(args)} failed: {_stderr(result)}")
+            return result
+
+        return await loop.run_in_executor(executor, _run_sync)
+
+    def _run_sync(
+        self,
+        args: list[str],
+        cwd: Path | None,
+        *,
+        input: bytes | None = None,
+        env: Mapping[str, str] | None = None,
+        check: bool = True,
+        read_only: bool = False,
+        timeout: float = _TIMEOUT_SECONDS,
+    ) -> subprocess.CompletedProcess:
+        """Synchronous git command execution (runs in thread pool)."""
         try:
             result = subprocess.run(
                 self._command(args),
@@ -793,8 +860,21 @@ class GitHistory:
             raise GitError(f"git {_subcommand(args)} failed: {_stderr(result)}")
         return result
 
+    def _run(
+        self,
+        args: list[str],
+        cwd: Path | None,
+        *,
+        input: bytes | None = None,
+        env: Mapping[str, str] | None = None,
+        check: bool = True,
+        read_only: bool = False,
+        timeout: float = _TIMEOUT_SECONDS,
+    ) -> subprocess.CompletedProcess:
+        """Synchronous git command execution (blocking)."""
+        return self._run_sync(args, cwd, input=input, env=env, check=check, read_only=read_only, timeout=timeout)
+
     def _command(self, args: list[str]) -> list[str]:
-        """The full git command line of ``args`` (with the safety ``-c`` overrides)."""
         # No hooks, ever: ``--no-verify`` alone still runs prepare-commit-msg,
         # post-commit, post-rewrite, post-checkout, reference-transaction, ...
         # No other configured program either: no fsmonitor, no automatic gc or
@@ -1393,7 +1473,7 @@ class GitHistory:
                 self._record(project_dir, None)
                 if committed:
                     self._auto_push_if_enabled(project_dir, info)
-            except Exception as exc:  # noqa: BLE001 - the files are saved; never fail the mutation
+            except Exception as exc:
                 if not isinstance(exc, (GitError, OSError)):
                     logger.exception("Unexpected auto-commit error for %s", project_dir)
                 self._record(project_dir, f"Auto-commit failed (the files are saved; retried on the next change): {exc}")
@@ -1432,7 +1512,7 @@ class GitHistory:
                 info = self._init(project_dir)
                 self._commit_pending(info, None, message=f"Create project '{project_name}'\n")
                 self._record(project_dir, None)
-            except Exception as exc:  # noqa: BLE001 - the project is created; never fail it
+            except Exception as exc:
                 if not isinstance(exc, (GitError, OSError)):
                     logger.exception("Unexpected error creating the repository of %s", project_dir)
                 self._record(project_dir, f"Creating the project repository failed: {exc}")
@@ -1506,7 +1586,7 @@ class GitHistory:
                         self._commit_pending(info, describe)
             except RepoConflict:
                 raise  # refused before anything was changed
-            except Exception as exc:  # noqa: BLE001 - reported as a 400 with the recorded error
+            except Exception as exc:
                 if not isinstance(exc, (GitError, OSError)):
                     logger.exception("Unexpected error enabling history for %s", project_dir)
                 self._record(project_dir, f"Enabling history failed: {exc}")
@@ -1591,7 +1671,7 @@ class GitHistory:
                 head = self._head(info)
                 if head is None:
                     raise GitError("the repository has no commit to baseline")
-                date = datetime.now(timezone.utc).isoformat(timespec="seconds")
+                date = datetime.now(UTC).isoformat(timespec="seconds")
                 parts = [f"Baseline {name}"]
                 if description.strip():
                     parts.append(description.strip())
@@ -1629,7 +1709,7 @@ class GitHistory:
                     raise
             except RepoConflict:
                 raise
-            except Exception as exc:  # noqa: BLE001 - reported as a 400 with the recorded error
+            except Exception as exc:
                 if not isinstance(exc, (GitError, OSError)):
                     logger.exception("Unexpected error creating a baseline for %s", project_dir)
                 self._record(project_dir, f"Creating baseline '{name}' failed: {exc}")
@@ -2396,7 +2476,7 @@ class GitHistory:
             if url is None or not self._auto_push_enabled(info):
                 return
             self._push_refs(info, url, timeout=_AUTO_PUSH_TIMEOUT_SECONDS)
-        except Exception as exc:  # noqa: BLE001 - the commit succeeded; pushing can be retried
+        except Exception as exc:
             if not isinstance(exc, (GitError, OSError, ValueError)):
                 logger.exception("Unexpected auto-push error for %s", project_dir)
             self._record(
@@ -2616,6 +2696,79 @@ class GitHistory:
                 raise GitError(f"git push failed: {error}")
             self._record(project_dir, None)
             return {"url": url, "branch": branch, "head": head, "base": base, "commits": commits}
+
+    def push_for_review(self, project_dir: Path) -> dict[str, Any]:
+        """Push ``current`` to ``refs/for/current`` on the remote (Gerrit push-for-review).
+
+        Fetches the remote's ``current`` first (into its remote-tracking ref,
+        like Pull) so the review base is known. Refused (``ValueError``)
+        without a remote, when the remote has no ``current`` branch yet (Push
+        first) or when it already has every local commit (nothing to review).
+        Never forced: a remote change with other commits is a ``RepoConflict``.
+        Returns the URL, the target ref (``refs/for/current``), head, review base
+        (merge base) and the number of commits under review.
+        """
+        self._require_enabled()
+        with self._lock(project_dir):
+            info = self._usable_repo(project_dir)
+            url = self._remote_url(info)
+            if url is None:
+                raise ValueError("No remote is configured for this project; set or publish a remote first")
+            head = self._rev(info, WORKING_REF)
+            if head is None:
+                raise RepoConflict("The project has no commit yet; nothing to review")
+            listing = self._remote_run(
+                self._repo, info, ["ls-remote", "--", url, WORKING_REF], read_only=True, url=url
+            )
+            if not listing.stdout.strip():
+                raise ValueError(
+                    f"The remote has no '{WORKING_BRANCH}' branch yet: Push the project first; "
+                    "later changes can then be reviewed"
+                )
+            self._remote_run(
+                self._repo,
+                info,
+                ["fetch", "--quiet", REMOTE_NAME, f"+{WORKING_REF}:{REMOTE_WORKING_REF}"],
+                url=url,
+            )
+            remote = self._rev(info, REMOTE_WORKING_REF)
+            if remote is not None and (remote == head or self._is_ancestor(info, head, remote)):
+                raise ValueError(
+                    f"Nothing to review: the remote's '{WORKING_BRANCH}' branch already has every local change"
+                )
+            base_result = self._repo(
+                info, ["merge-base", WORKING_REF, REMOTE_WORKING_REF], check=False, read_only=True
+            )
+            base = base_result.stdout.decode("utf-8", "replace").strip() or None if base_result.returncode == 0 else None
+            count_range = f"{base}..{head}" if base else head
+            counted = self._repo(info, ["rev-list", "--count", "--first-parent", count_range], read_only=True)
+            commits = int(counted.stdout.strip() or b"0")
+            result = self._remote_run(
+                self._repo,
+                info,
+                [
+                    "push",
+                    "--quiet",
+                    *self._receive_pack_options(info),
+                    REMOTE_NAME,
+                    f"{WORKING_REF}:refs/for/current",
+                ],
+                check=False,
+                url=url,
+            )
+            if result.returncode != 0:
+                error = _stderr(result)
+                transport = _transport_error(error)
+                if transport is not None:
+                    raise GitError(transport)
+                if self._is_non_fast_forward(error):
+                    raise RepoConflict(
+                        "The remote has new changes; the push-for-review was rejected. Pull first, resolve "
+                        f"any sync conflict, then push for review again. (git: {error})"
+                    )
+                raise GitError(f"git push for review failed: {error}")
+            self._record(project_dir, None)
+            return {"url": url, "target": "refs/for/current", "head": head, "base": base, "commits": commits}
 
     def _review_info(self, info: RepoInfo) -> dict[str, Any] | None:
         """The tracked review (``reqman.review.*`` in ``.git/config``), or ``None``."""

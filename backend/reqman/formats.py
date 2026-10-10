@@ -41,8 +41,8 @@ Rules:
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 FORMAT_VERSION_KEY = "format_version"
 

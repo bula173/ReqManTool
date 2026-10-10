@@ -63,11 +63,13 @@ import logging
 import os
 import re
 import threading
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
+from . import module_tree, richtext
 from .csv_import import ID_COLUMN, LINK_COLUMN_PREFIX, PARENT_COLUMN, RESERVED_COLUMNS
 from .extensions import (
     ACTION_CONNECTIONS_MANAGE,
@@ -83,8 +85,8 @@ from .extensions import (
     AUDIT_PROJECT_CREATE,
     AUDIT_PROJECT_LOCK,
     AUDIT_PROJECT_PURGE,
-    AUDIT_PROJECT_RENAME,
     AUDIT_PROJECT_REMOVE,
+    AUDIT_PROJECT_RENAME,
     AUDIT_PROJECT_UNLOCK,
     HOOKS,
     AccessDeniedError,
@@ -108,15 +110,6 @@ from .git_repo import (
     validate_baseline_name,
 )
 from .history import FileChange, build_snapshot, compare_snapshots, describe_changes
-from .providers import (
-    GITHUB,
-    LOGIN_CONNECTION_ID,
-    PROJECT_TOPIC,
-    PROVIDER_LABELS,
-    ProviderError,
-    ProviderService,
-)
-from . import module_tree, richtext
 from .models import (
     DEFAULT_MODULE_TYPE,
     MODULE_TYPES,
@@ -148,6 +141,14 @@ from .prompts import (
 )
 from .prompts import BUILTIN_SOURCE as PROMPT_BUILTIN_SOURCE
 from .prompts import USER_SOURCE as PROMPT_USER_SOURCE
+from .providers import (
+    GITHUB,
+    LOGIN_CONNECTION_ID,
+    PROJECT_TOPIC,
+    PROVIDER_LABELS,
+    ProviderError,
+    ProviderService,
+)
 from .store import PROJECT_SLUG_PATTERN, ProjectStore, validate_prefix
 from .templates import (
     BUILTIN_SOURCE,
@@ -445,7 +446,7 @@ def _records_history(method: Callable) -> Callable:
     )
 
     @functools.wraps(method)
-    def wrapper(self: "ProjectService", *args: Any, **kwargs: Any) -> Any:
+    def wrapper(self: ProjectService, *args: Any, **kwargs: Any) -> Any:
         if self.store.is_recording():
             return method(self, *args, **kwargs)
         self._last_touched.ids = set()
@@ -489,7 +490,7 @@ def _install_permission_checks(cls: type) -> type:
 
         def make(method: Callable, action: str) -> Callable:
             @functools.wraps(method)
-            def checked(self: "ProjectService", *args: Any, **kwargs: Any) -> Any:
+            def checked(self: ProjectService, *args: Any, **kwargs: Any) -> Any:
                 if guard_active():
                     project_id = args[0] if args else kwargs.get("project_id")
                     check_permission(action, project_id if isinstance(project_id, str) else None)
@@ -1111,14 +1112,14 @@ class ProjectService:
         """
         try:
             HOOKS.project_events.project_created(current_identity(), project_id)
-        except Exception:  # noqa: BLE001 - the project was created; report it, keep it
+        except Exception:
             logger.exception("Project %s was created, but the edition could not record it", project_id)
         audit(AUDIT_PROJECT_CREATE, project_id)
 
     def _project_removed(self, project_id: str) -> None:
         try:
             HOOKS.project_events.project_removed(current_identity(), project_id)
-        except Exception:  # noqa: BLE001 - the project is gone already
+        except Exception:
             logger.exception("Project %s was removed, but the edition could not record it", project_id)
 
     def data_dir_token(self) -> str:
@@ -1301,7 +1302,7 @@ class ProjectService:
         match = self.providers.connection_for_remote(url)
         if match is None:
             raise ValueError(
-                f"The project's remote ({url}) does not belong to any GitLab / GitHub connection; "
+                f"The project's remote ({url}) does not belong to any GitLab / GitHub / Gerrit connection; "
                 "add a connection for its server first"
             )
         connection, repo_path = match
@@ -1408,7 +1409,7 @@ class ProjectService:
         project_dir = self.store.project_path(project_id)
         provider, repo_path, _url = self._review_target(project_dir)
         if branch is None or (isinstance(branch, str) and not branch.strip()):
-            branch = f"review/{datetime.now(timezone.utc):%Y%m%d-%H%M%S}"
+            branch = f"review/{datetime.now(UTC):%Y%m%d-%H%M%S}"
         if not isinstance(branch, str):
             raise ValueError("The review branch must be a string")
         if title is not None and not isinstance(title, str):
@@ -1444,9 +1445,23 @@ class ProjectService:
             raise failure from exc
         return {"review": review, "pushed": pushed, "status": self.history.status(project_dir)}
 
-    @staticmethod
-    def _review_noun(provider: Any) -> str:
-        return "merge request" if provider.kind == "gitlab" else "pull request"
+    @_requires(ACTION_PROJECT_WRITE)
+    def git_push_for_review(self, project_id: str) -> dict[str, Any]:
+        """Push ``current`` to ``refs/for/current`` on the remote (Gerrit push-for-review).
+
+        The project's remote must be a Gerrit remote. This pushes the current
+        branch to ``refs/for/current`` on the Gerrit server, creating a change
+        for review. The change number and URL are returned.
+        """
+        project = self.store.load_project(project_id)
+        project_dir = self.store.project_path(project_id)
+        provider, repo_path, _url = self._review_target(project_dir)
+        if provider.kind != "gerrit":
+            raise ValueError("Push-for-review is only supported for Gerrit providers")
+        pushed = self._git_remote_call(lambda: self.history.push_for_review(project_dir))
+        # Try to find the created change
+        review = provider.change_request(repo_path, pushed.get("change_number", ""))
+        return {"pushed": pushed, "review": review, "status": self.history.status(project_dir)}
 
     def review_status(self, project_id: str) -> dict[str, Any]:
         """The tracked merge/pull request, live from the provider: state, approvals (read-only)."""
@@ -1546,7 +1561,7 @@ class ProjectService:
             if locking:
                 try:
                     self.unlock_project(project_id)
-                except Exception:  # noqa: BLE001 - report the baseline failure, not this one
+                except Exception:
                     logger.exception("Could not undo the lock of %s after a failed baseline", project_id)
             raise
         return {**result, "locked": project.locked.to_dict() if project.locked is not None else None}
@@ -2042,7 +2057,7 @@ class ProjectService:
         project.locked = ProjectLock(
             by=name,
             email=email,
-            at=datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            at=datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             reason=text,
             baseline=baseline,
         )
@@ -3812,7 +3827,12 @@ class ProjectService:
         source_module_id, target_module_id = source.id, target.id
 
         taken_ids = {c.id for c in project.link_configurations} | {a.id for a in project.attributes}
-        config_id = _unique_slug(name, lambda c: c in taken_ids, fallback="link")
+        # The id names the link-pair file (``links/<id>.json``), so it follows
+        # the file-system name rule like a project or module id. It is checked
+        # here, before the caller writes the project with its mirror attribute.
+        config_id = _unique_slug(
+            name, lambda c: c in taken_ids, fallback="link", max_length=self.store.max_name_length()
+        )
 
         config = LinkConfiguration(
             id=config_id,
@@ -4484,7 +4504,11 @@ class ProjectService:
             except ValueError as exc:
                 raise ValueError(f"{where}: {exc}") from exc
             taken = set(module_ids.values())
-            module_id = _unique_slug(module_name, lambda c: c in taken, fallback="module")
+            # The id is the module's folder name, so a template's over-long
+            # module name is refused while building (nothing is staged).
+            module_id = _unique_slug(
+                module_name, lambda c: c in taken, fallback="module", max_length=self.store.max_name_length()
+            )
             module_ids[tmodule.key] = module_id
             try:
                 module_type = self._checked_module_type(tmodule.type if tmodule.type is not None else (
@@ -4822,7 +4846,9 @@ class ProjectService:
             if entry["name"].casefold() == name.casefold():
                 raise ConflictError(f"A template named '{entry['name']}' already exists ({entry['id']})")
 
-        local_id = _unique_slug(name, self.store.user_template_path_exists, fallback="template")
+        local_id = _unique_slug(
+            name, self.store.user_template_path_exists, fallback="template", max_length=self.store.max_name_length()
+        )
         template_id = make_template_id(USER_SOURCE, local_id)
         modules = self.list_modules(project_id)
         try:
@@ -4885,7 +4911,12 @@ class ProjectService:
             if entry["name"].casefold() == template.name.casefold():
                 raise ConflictError(f"A template named '{entry['name']}' already exists ({entry['id']})")
 
-        local_id = _unique_slug(template.name, self.store.user_template_path_exists, fallback="template")
+        local_id = _unique_slug(
+            template.name,
+            self.store.user_template_path_exists,
+            fallback="template",
+            max_length=self.store.max_name_length(),
+        )
         template.id = make_template_id(USER_SOURCE, local_id)
         self.store.save_user_template(local_id, template.to_dict())
         return self._template_summary(template, built)
@@ -5658,7 +5689,12 @@ class ProjectService:
             if view is not None
             else None
         )
-        local_id = _unique_slug(name, self.store.user_module_template_path_exists, fallback="template")
+        local_id = _unique_slug(
+            name,
+            self.store.user_module_template_path_exists,
+            fallback="template",
+            max_length=self.store.max_name_length(),
+        )
         template_id = make_template_id(USER_SOURCE, local_id)
         template = ModuleTemplate(
             id=template_id,
@@ -6677,7 +6713,10 @@ class ProjectService:
         import writes exactly what the preview showed, or nothing when the
         plan has ``errors``.
         """
-        from .test_results_import import MAX_TEST_RESULTS_IMPORT_BYTES, parse_test_results
+        from .test_results_import import (
+            MAX_TEST_RESULTS_IMPORT_BYTES,
+            parse_test_results,
+        )
 
         if not isinstance(content, (str, bytes)):
             raise ValueError("The result file content must be a string")
@@ -7083,14 +7122,18 @@ class ProjectService:
     # change it (only its non-empty cells), every other row is created.
     def _csv_import_plan(
         self, project_id: str, module_id: str, csv_text: Any, mode: Any = None
-    ) -> "_CsvImportPlan":
+    ) -> _CsvImportPlan:
         """Validate a CSV import completely and work out what it would write (nothing is written).
 
         Shared by ``preview_csv_import`` (read-only diff) and ``import_csv``.
         Every problem is collected and raised together as one
         ``CsvImportError`` (all-or-nothing). See ``import_csv`` for the rules.
         """
-        from .csv_import import MAX_CSV_IMPORT_BYTES, CsvImportError, parse_requirements_csv
+        from .csv_import import (
+            MAX_CSV_IMPORT_BYTES,
+            CsvImportError,
+            parse_requirements_csv,
+        )
 
         if mode is None:
             mode = "create"

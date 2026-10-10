@@ -7,14 +7,17 @@ import {
   type UseQueryResult,
 } from '@tanstack/react-query';
 import { API_BASE_URL, ApiError, api, enableServerSession, setCsrfToken } from './client';
+import { notifications } from '@mantine/notifications';
 import type {
   AccessSyncResult,
   AdminUser,
   AuditPage,
   AuthSession,
   EditionInfo,
+  GroupRole,
   ProjectMembers,
   ProjectRole,
+  ProviderInfo,
 } from './types';
 
 /**
@@ -163,6 +166,88 @@ export function useSyncAccess() {
     mutationFn: (projectId: string | null) =>
       api.post<AccessSyncResult>('/admin/access/sync', projectId ? { project_id: projectId } : {}),
     onSuccess: () => invalidatePermissions(qc),
+  });
+}
+
+/** POST /admin/providers/test: test a provider connection (server admins). */
+export function useTestProvider() {
+  return useMutation({
+    mutationFn: (providerId: string) =>
+      api.post<{ ok: boolean; message: string; issuer?: string; authorization_endpoint?: string }>('/admin/providers/test', { provider_id: providerId }),
+    onSuccess: (result) => {
+      const message = result.ok ? 'Connection successful' : `Connection failed: ${result.message}`;
+      const color = result.ok ? 'green' : 'red';
+      notifications.show({ title: 'Provider test', message, color });
+    },
+    onError: (error) => {
+      notifications.show({ color: 'red', title: 'Test failed', message: error instanceof ApiError ? error.message : 'Unknown error' });
+    },
+  });
+}
+
+/** GET /admin/providers: list all configured providers (server admins). */
+export function useAdminProviders(enabled: boolean): UseQueryResult<{ providers: ProviderInfo[] }> {
+  return useQuery({
+    queryKey: ['admin', 'providers'] as const,
+    queryFn: () => api.get<{ providers: ProviderInfo[] }>('/admin/providers'),
+    enabled,
+  });
+}
+
+/** GET /admin/group-roles: list all configured group role mappings (server admins). */
+export function useAdminGroupRoles(enabled: boolean): UseQueryResult<{ group_roles: GroupRole[] }> {
+  return useQuery({
+    queryKey: ['admin', 'group_roles'] as const,
+    queryFn: () => api.get<{ group_roles: GroupRole[] }>('/admin/group-roles'),
+    enabled,
+  });
+}
+
+/** POST /admin/group-roles: create a new group role mapping (server admins). */
+export function useCreateGroupRole() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { group: string; role: string; projects: string[] }) =>
+      api.post<{ group: string; role: string; projects: string[] }>('/admin/group-roles', body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'group_roles'] });
+      notifications.show({ message: 'Group role created', color: 'green' });
+    },
+    onError: (error) => {
+      notifications.show({ color: 'red', title: 'Create failed', message: error instanceof ApiError ? error.message : 'Unknown error' });
+    },
+  });
+}
+
+/** PUT /admin/group-roles/{group}: update a group role mapping (server admins). */
+export function useUpdateGroupRole() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ group, role, projects }: { group: string; role?: string; projects?: string[] }) =>
+      api.put<{ group: string; role: string; projects: string[] }>(`/admin/group-roles/${encodeURIComponent(group)}`, { role, projects }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'group_roles'] });
+      notifications.show({ message: 'Group role updated', color: 'green' });
+    },
+    onError: (error) => {
+      notifications.show({ color: 'red', title: 'Update failed', message: error instanceof ApiError ? error.message : 'Unknown error' });
+    },
+  });
+}
+
+/** DELETE /admin/group-roles/{group}: delete a group role mapping (server admins). */
+export function useDeleteGroupRole() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (group: string) =>
+      api.delete<{ deleted: string }>(`/admin/group-roles/${encodeURIComponent(group)}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'group_roles'] });
+      notifications.show({ message: 'Group role deleted', color: 'green' });
+    },
+    onError: (error) => {
+      notifications.show({ color: 'red', title: 'Delete failed', message: error instanceof ApiError ? error.message : 'Unknown error' });
+    },
   });
 }
 

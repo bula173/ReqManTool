@@ -16,14 +16,15 @@ from __future__ import annotations
 
 import csv
 import io
-from typing import Any, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Any
 
 from .ordering import tree_order
 
 
 def export_project_to_csv(
     project: Any,
-    modules: Sequence[Tuple[Any, Sequence[Any]]],
+    modules: Sequence[tuple[Any, Sequence[Any]]],
 ) -> str:
     """Export a project's requirements (across all its modules) to CSV.
 

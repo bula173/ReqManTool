@@ -57,7 +57,7 @@ reqman init                          # create the per-user config file and data 
 reqman                               # same as `reqman serve`; open http://localhost:8899
 ```
 
-`reqman init [--data-dir PATH] [--host H] [--port N] [--cors-origins A,B]`
+`reqman init [--data-dir PATH] [--host H] [--port N] [--cors-origins A,B] [--tls-cert-file PATH] [--tls-key-file PATH] [--tls-ca-file PATH]`
 writes the config file (an existing one keeps its values; flags replace
 them) and creates the data directory. Default locations:
 
@@ -67,10 +67,12 @@ them) and creates the data directory. Default locations:
 | macOS | `~/Library/Application Support/ReqManTool/config.json` | `~/Library/Application Support/ReqManTool/data` |
 | Windows | `%APPDATA%\ReqManTool\config.json` | `%APPDATA%\ReqManTool\data` |
 
-The config file holds `data_dir`, `host`, `port`, `cors_origins` and
-`source_url`. Each setting is resolved as CLI flag > environment variable
-(`REQMAN_DATA_DIR`, `REQMAN_HOST`, `REQMAN_PORT`, `REQMAN_CORS_ORIGINS`,
-`REQMAN_SOURCE_URL`) > config file > default (`localhost:8899`).
+The config file holds `data_dir`, `host`, `port`, `cors_origins`, `source_url`,
+`tls_cert_file`, `tls_key_file`, `tls_ca_file`. Each setting is resolved as
+CLI flag > environment variable (`REQMAN_DATA_DIR`, `REQMAN_HOST`,
+`REQMAN_PORT`, `REQMAN_CORS_ORIGINS`, `REQMAN_SOURCE_URL`,
+`REQMAN_TLS_CERT_FILE`, `REQMAN_TLS_KEY_FILE`, `REQMAN_TLS_CA_FILE`) >
+config file > default (`localhost:8899`).
 `source_url` is the repository linked as "Source code" in the footer and
 Help ▸ About (default: this repository); if you run a modified version for
 other people, publish your changes and point `source_url` at them (see
@@ -112,6 +114,14 @@ See `etc/start-backend.sh` / `etc/start-frontend.sh` to run either half on
 its own (e.g. two terminals). `etc/start-backend.sh` accepts the
 `reqman serve` flags (`--dir`, `--host`, `--port`, `--cors-origins`,
 `--config`).
+
+The native desktop app (Tauri, `desktop/`) has its own entry point:
+`./etc/start-desktop.sh` bundles the Python backend for it and opens
+`tauri dev` in a native window, starting the backend and the Vite dev server
+first if they are not already running (it stops only what it started itself,
+and reuses anything already up). `./etc/start-desktop.sh --build` produces
+the installers under `desktop/src-tauri/target/release/bundle/`; extra
+arguments go to `tauri dev` / `tauri build`. See `desktop/README.md`.
 
 By default, data is stored in `example_database/` at the repo root; change
 it any time from the folder icon in the app header (or `--dir <path>` /
@@ -179,6 +189,79 @@ cd frontend && npm run build && npm run lint
 Test-only dependencies are in `backend/requirements-dev.txt` (or the `test`
 extra of `backend/pyproject.toml`). GitHub Actions runs the same checks on
 every push and pull request (`.github/workflows/ci.yml`).
+
+## Security Considerations
+
+### Data Protection
+- **At-rest encryption**: The local edition stores data as plain JSON files. For production deployments, **the data directory must reside on an encrypted filesystem** (LUKS on Linux, FileVault on macOS, BitLocker on Windows) to protect requirements data at rest.
+- **In-transit encryption**: The server edition enforces HTTPS for all authentication providers (`cookie_secure: true` by default). Configure a valid TLS certificate for production.
+- **Secrets management**: OAuth client secrets are read from environment variables (`REQMAN_AUTH_<ID>_CLIENT_SECRET`) or the OS keychain (`keyring` package). They are never written to config files, logs, or sent to the browser.
+
+### TLS / HTTPS Configuration
+
+ReqManTool's backend can serve HTTPS directly when configured with TLS certificates. This is useful for production deployments without a reverse proxy, or for development with self-signed certificates.
+
+**Configuration options:**
+
+| Setting | Environment Variable | Config Key | Description |
+|---------|---------------------|------------|-------------|
+| TLS certificate file | `REQMAN_TLS_CERT_FILE` | `tls_cert_file` | Path to PEM-encoded certificate file |
+| TLS private key file | `REQMAN_TLS_KEY_FILE` | `tls_key_file` | Path to PEM-encoded private key file |
+| TLS CA certificate file | `REQMAN_TLS_CA_FILE` | `tls_ca_file` | Optional: CA certificate for mTLS (client certificate verification) |
+
+**CLI flags for `reqman serve` and `reqman init`:**
+
+```sh
+reqman serve --tls-cert-file /path/to/cert.pem --tls-key-file /path/to/key.pem [--tls-ca-file /path/to/ca.pem]
+reqman init --tls-cert-file /path/to/cert.pem --tls-key-file /path/to/key.pem [--tls-ca-file /path/to/ca.pem]
+```
+
+**Example config file (`config.json`):**
+
+```json
+{
+  "format_version": 1,
+  "data_dir": "/var/lib/reqman/data",
+  "host": "0.0.0.0",
+  "port": 8443,
+  "cors_origins": ["https://reqman.example.com"],
+  "tls_cert_file": "/etc/ssl/certs/reqman.pem",
+  "tls_key_file": "/etc/ssl/private/reqman.key",
+  "tls_ca_file": "/etc/ssl/certs/ca.pem"
+}
+```
+
+**Generating a self-signed certificate for development:**
+
+```sh
+openssl req -x509 -newkey rsa:2048 -keyout server.key -out server.pem -days 365 -nodes -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost"
+```
+
+Then run:
+
+```sh
+reqman serve --tls-cert-file server.pem --tls-key-file server.key
+```
+
+The backend will serve HTTPS on the configured port. The frontend (when built and served from the same origin) will automatically use `wss://` for WebSocket connections.
+
+**mTLS (mutual TLS):** When `tls_ca_file` is configured, the backend requires clients to present a valid client certificate signed by that CA. This is useful for zero-trust network architectures.
+
+### Server Edition Hardening
+When running the server edition (`mode: server`), the following security controls are active:
+- **Rate limiting**: 10 requests/minute on `/auth/login/` and `/auth/callback/` endpoints (configurable via `RateLimitMiddleware`).
+- **Security headers**: HSTS (1 year), CSP, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `Permissions-Policy`.
+- **Session limits**: Maximum 5 concurrent sessions per user (configurable via `server.max_sessions_per_user`).
+- **Audit logging**: All administrative actions and logins recorded to `audit.jsonl` with automatic rotation (100 MiB / 10 files).
+- **CSRF protection**: Synchronizer token pattern (`X-CSRF-Token` header) on all state-changing requests.
+- **SAML metadata**: Metadata URLs validated at config time (HTTPS required); no runtime fetch to prevent SSRF.
+
+### Configuration Best Practices
+- Set `server.cookie_secure: true` in production (default).
+- Restrict `cors_origins` to your frontend domain(s).
+- Use `server.admins` and `server.admin_groups` to limit server administrator access.
+- Enable `server.require_module_checkout: true` for exclusive editing workflows.
+- Monitor `audit.jsonl` for suspicious activity.
 
 ## Status
 

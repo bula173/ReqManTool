@@ -73,12 +73,18 @@ from .memberships import MembershipRegistry
 from .module_locks import ModuleLockRegistry, ModuleLocks, build_lock_router, build_lock_rpc_methods
 from .middleware import AuthMiddleware
 from .oidc import OidcClient
+from .ldap_auth import LdapClient
+from .saml_auth import SamlClient
+from .proxy_header_auth import ProxyHeaderClient
 from .permissions import MembershipEvents, MembershipGuard, Permissions
 from .repo_access import RepoAccess
 from .routes import build_router
+from .scim.storage import ScimStorage
+from .scim.router import router as scim_router
 from .sessions import PendingLogins, SessionStore
 from .settings import ServerSettings, load_server_settings
 from .users import UserRegistry
+from reqman.providers import GerritCredentialStore
 
 __all__ = ["ServerEditionImpl", "edition"]
 
@@ -104,6 +110,7 @@ class ServerEditionImpl:
         self.repo: RepoAccess | None = None
         self.discovery: DiscoveryService | None = None
         self.login_account: LoginAccountSource | None = None
+        self.gerrit_credentials: GerritCredentialStore | None = None
 
     def install(self, app, context: EditionContext) -> None:
         settings = load_server_settings(
@@ -111,16 +118,33 @@ class ServerEditionImpl:
         )
         settings.state_dir.mkdir(parents=True, exist_ok=True)
         users = UserRegistry(settings.state_dir / USERS_FILE, admins=settings.admins, admin_groups=settings.admin_groups)
-        audit = AuditLog(settings.state_dir / AUDIT_FILE, users)
+        audit = AuditLog(
+            settings.state_dir / AUDIT_FILE,
+            users,
+            max_size=100 * 1024 * 1024,  # 100 MiB
+            max_files=10,
+        )
         memberships = MembershipRegistry(settings.state_dir / MEMBERSHIPS_FILE)
+        scim_storage = ScimStorage(settings.state_dir)
         sessions = SessionStore(
             settings.state_dir / SESSIONS_FILE if settings.persist_sessions else None,
             max_age=settings.session_max_age_seconds,
             idle=settings.session_idle_seconds,
+            max_sessions_per_user=settings.max_sessions_per_user,
         )
-        clients = {
-            p.id: GitHubOAuthClient(p) if p.type == "github" else OidcClient(p) for p in settings.providers
-        }
+        self.gerrit_credentials = GerritCredentialStore(settings.state_dir)
+        clients = {}
+        for p in settings.providers:
+            if p.type == "github":
+                clients[p.id] = GitHubOAuthClient(p)
+            elif p.type == "ldap":
+                clients[p.id] = LdapClient(p)
+            elif p.type == "saml":
+                clients[p.id] = SamlClient(p)
+            elif p.type == "proxy_header":
+                clients[p.id] = ProxyHeaderClient(p)
+            else:
+                clients[p.id] = OidcClient(p)
         repo = RepoAccess(settings, clients, sessions, context.project_remote_url, context.project_ids)
         permissions = Permissions(settings, users, memberships, repo=repo if repo.enabled else None)
         guard = MembershipGuard(permissions)
@@ -155,6 +179,7 @@ class ServerEditionImpl:
         app.include_router(build_admin_router(admin, context.broadcast))
         app.include_router(build_audit_router(audit_service))
         app.include_router(build_lock_router(locks, context.broadcast))
+        app.include_router(scim_router)
         discovery = DiscoveryService(
             settings, sessions, permissions, repo, context.project_ids, context.project_remote_url,
             context.open_repository,
@@ -172,6 +197,7 @@ class ServerEditionImpl:
         app.add_middleware(
             AuthMiddleware, settings=settings, sessions=sessions, users=users, frontend_dir=context.frontend_dir
         )
+        app.state.scim_storage = scim_storage
         self.settings, self.sessions, self.users, self.memberships = settings, sessions, users, memberships
         self.locks = locks
         self.audit = audit

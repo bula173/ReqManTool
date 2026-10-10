@@ -132,7 +132,7 @@ def source_ref(build: str, from_git_checkout: bool) -> str | None:
 def normalize_source_url(url: str) -> str:
     """``url`` without surrounding blanks, trailing slashes and a ``.git`` suffix."""
     url = url.strip().rstrip("/")
-    return url[: -len(".git")] if url.endswith(".git") else url
+    return url.removesuffix(".git")
 
 
 def source_link(source_url: str, ref: str | None) -> str:

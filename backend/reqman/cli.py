@@ -31,7 +31,6 @@ from . import __version__
 from . import config as cfg
 from .formats import NewerFormatError
 
-
 _COMMANDS = ("serve", "init", "config", "service")
 
 
@@ -59,6 +58,9 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default=None, help=f"bind address (default {cfg.DEFAULT_HOST})")
     serve.add_argument("--port", type=int, default=None, help=f"port (default {cfg.DEFAULT_PORT})")
     serve.add_argument("--cors-origins", default=None, help="comma-separated allowed browser origins")
+    serve.add_argument("--tls-cert-file", default=None, help="TLS certificate file (PEM) for HTTPS")
+    serve.add_argument("--tls-key-file", default=None, help="TLS private key file (PEM) for HTTPS")
+    serve.add_argument("--tls-ca-file", default=None, help="TLS CA certificate file (PEM) for mTLS")
 
     init = commands.add_parser("init", help="create the per-user config file and data directory")
     _add_config_flag(init)
@@ -66,6 +68,9 @@ def _build_parser() -> argparse.ArgumentParser:
     init.add_argument("--host", default=None)
     init.add_argument("--port", type=int, default=None)
     init.add_argument("--cors-origins", default=None, help="comma-separated allowed browser origins")
+    init.add_argument("--tls-cert-file", default=None, help="TLS certificate file (PEM) for HTTPS")
+    init.add_argument("--tls-key-file", default=None, help="TLS private key file (PEM) for HTTPS")
+    init.add_argument("--tls-ca-file", default=None, help="TLS CA certificate file (PEM) for mTLS")
 
     show = commands.add_parser("config", help="print the effective settings and their sources")
     _add_config_flag(show)
@@ -99,6 +104,12 @@ def _serve(args: argparse.Namespace) -> int:
         os.environ[cfg.ENV_PORT] = str(args.port)
     if args.cors_origins is not None:
         os.environ[cfg.ENV_CORS_ORIGINS] = args.cors_origins
+    if args.tls_cert_file:
+        os.environ[cfg.ENV_TLS_CERT_FILE] = str(Path(args.tls_cert_file).expanduser().resolve())
+    if args.tls_key_file:
+        os.environ[cfg.ENV_TLS_KEY_FILE] = str(Path(args.tls_key_file).expanduser().resolve())
+    if args.tls_ca_file:
+        os.environ[cfg.ENV_TLS_CA_FILE] = str(Path(args.tls_ca_file).expanduser().resolve())
     settings = cfg.load_settings()
     if settings.mode == "server":
         # Fail with a clear message before uvicorn starts when the server edition is missing.
@@ -113,7 +124,22 @@ def _serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     logging.basicConfig(level=logging.INFO)
-    uvicorn.run("reqman.app:app", host=settings.host, port=settings.port)
+
+    # TLS configuration for HTTPS
+    ssl_kwargs = {}
+    if settings.tls_enabled:
+        ssl_kwargs = {
+            "ssl_certfile": str(settings.tls_cert_file),
+            "ssl_keyfile": str(settings.tls_key_file),
+        }
+        if settings.tls_ca_file:
+            ssl_kwargs["ssl_ca_certs"] = str(settings.tls_ca_file)
+            ssl_kwargs["ssl_cert_reqs"] = 2  # ssl.CERT_REQUIRED for mTLS
+        logging.info("TLS enabled: serving HTTPS on %s:%d", settings.host, settings.port)
+    else:
+        logging.info("TLS not configured: serving HTTP on %s:%d", settings.host, settings.port)
+
+    uvicorn.run("reqman.app:app", host=settings.host, port=settings.port, **ssl_kwargs)
     return 0
 
 
@@ -141,6 +167,12 @@ def _init(args: argparse.Namespace) -> int:
         values["cors_origins"] = cfg._parse_origins(args.cors_origins, "--cors-origins")
     else:
         values.setdefault("cors_origins", list(cfg.DEFAULT_CORS_ORIGINS))
+    if args.tls_cert_file:
+        values["tls_cert_file"] = str(Path(args.tls_cert_file).expanduser().resolve())
+    if args.tls_key_file:
+        values["tls_key_file"] = str(Path(args.tls_key_file).expanduser().resolve())
+    if args.tls_ca_file:
+        values["tls_ca_file"] = str(Path(args.tls_ca_file).expanduser().resolve())
 
     cfg.write_config_values(path, values)
     data_dir = cfg._resolve_dir(values["data_dir"], path.parent.resolve())

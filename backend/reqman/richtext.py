@@ -59,7 +59,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
-from typing import Any, Union
+from typing import Any
 
 RICH_TEXT_PREFIX = '<div xmlns="http://www.w3.org/1999/xhtml">'
 RICH_TEXT_SUFFIX = "</div>"
@@ -81,6 +81,11 @@ DROPPED = frozenset(
 VOID = frozenset(
     {"br", "img", "hr", "input", "meta", "link", "wbr", "area", "base", "col", "embed", "param", "source", "track"}
 )
+
+# Allowed attributes for <img> (void element, so handled specially in handle_startendtag).
+# Only data: URLs are accepted (offline/local images). Max ~2 MB decoded (~2.6 MB base64).
+IMG_ALLOWED_ATTRS = frozenset({"src", "alt", "width", "height"})
+MAX_IMG_DATA_URL_LENGTH = 2_800_000  # ~2 MB decoded
 
 # Parsed elements nested deeper than this are ignored (their text is kept),
 # so hostile input cannot exhaust the normaliser's recursion. The output
@@ -132,7 +137,7 @@ def is_rich(value: Any) -> bool:
 class _Element:
     tag: str
     attrs: dict[str, str] = field(default_factory=dict)
-    children: list[Union["_Element", str]] = field(default_factory=list)
+    children: list[_Element | str] = field(default_factory=list)
 
 
 # The HTML parsing rules the browser applies (and so the frontend's DOMParser
@@ -358,6 +363,14 @@ class _Br:
 
 
 @dataclass
+class _Img:
+    src: str  # data: URL
+    alt: str = ""
+    width: str | None = None
+    height: str | None = None
+
+
+@dataclass
 class _Mark:
     tag: str  # strong, em, u, s or span
     style: str  # canonical style declarations (span only), else ""
@@ -411,7 +424,7 @@ def _style(raw: str) -> str:
 def _is_kept(node: _Element | str) -> bool:
     """True for nodes the normaliser handles itself; others are replaced by their children."""
     return isinstance(node, str) or node.tag in DROPPED or node.tag in MARKS or node.tag in (
-        "br", "span", "p", "ul", "ol"
+        "br", "img", "span", "p", "ul", "ol"
     )
 
 
@@ -431,7 +444,7 @@ def _clean_text(text: str) -> str:
 
 
 def _inline(nodes: list, depth: int = 0) -> list:
-    """Inline content: text, line breaks and marks. Blocks inside inline content are unwrapped.
+    """Inline content: text, line breaks, images and marks. Blocks inside inline content are unwrapped.
 
     ``depth`` is the number of enclosing marks; deeper marks are unwrapped.
     """
@@ -453,6 +466,17 @@ def _inline(nodes: list, depth: int = 0) -> list:
             continue
         if node.tag == "br":
             result.append(_Br())
+            continue
+        if node.tag == "img":
+            src = node.attrs.get("src", "")
+            # Only allow data: URLs (offline/local images), max size enforced.
+            if src.startswith("data:") and len(src) <= MAX_IMG_DATA_URL_LENGTH:
+                result.append(_Img(
+                    src=src,
+                    alt=node.attrs.get("alt", ""),
+                    width=node.attrs.get("width") or None,
+                    height=node.attrs.get("height") or None,
+                ))
             continue
         style = _style(node.attrs.get("style", "")) if node.tag == "span" else ""
         if (node.tag in MARKS or style) and depth < MAX_MARK_DEPTH:
@@ -565,6 +589,15 @@ def _render_inline(nodes: list, count: list[int]) -> str:
             out.append(_escape(node))
         elif isinstance(node, _Br):
             out.append("<br/>")
+        elif isinstance(node, _Img):
+            attrs = f'src="{_escape(node.src)}"'
+            if node.alt:
+                attrs += f' alt="{_escape(node.alt)}"'
+            if node.width:
+                attrs += f' width="{_escape(node.width)}"'
+            if node.height:
+                attrs += f' height="{_escape(node.height)}"'
+            out.append(f"<img {attrs}/>")
         elif node.tag == "span":
             out.append(f'<span style="{node.style}">{_render_inline(node.children, count)}</span>')
         else:
@@ -640,6 +673,8 @@ def _inline_text(nodes: list) -> str:
             out.append(node)
         elif isinstance(node, _Br):
             out.append("\n")
+        elif isinstance(node, _Img):
+            out.append(f"[image: {node.alt}]" if node.alt else "[image]")
         else:
             out.append(_inline_text(node.children))
     return "".join(out)
@@ -677,14 +712,15 @@ def to_plain(value: Any) -> Any:
 # The DOCX and ReqIF exports walk the canonical tree of a rich value instead of
 # re-parsing its markup. Blocks are ``Paragraph`` (``.children``: inline nodes)
 # and ``ListBlock`` (``.tag``: ``ul``/``ol``; ``.items``: each item's blocks,
-# starting with a ``Paragraph``). Inline nodes are ``str``, ``LineBreak`` and
+# starting with a ``Paragraph``). Inline nodes are ``str``, ``LineBreak``,
 # ``Mark`` (``.tag``: strong, em, u, s or span; ``.style``: the canonical span
-# style, see ``span_style``; ``.children``: inline nodes).
+# style, see ``span_style``; ``.children``: inline nodes) and ``Image``.
 
 Paragraph = _Para
 ListBlock = _List
 Mark = _Mark
 LineBreak = _Br
+Image = _Img
 
 
 def blocks(value: Any) -> list:

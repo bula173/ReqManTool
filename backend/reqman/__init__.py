@@ -10,18 +10,25 @@ string literal on its own line so that build-time parse stays trivial.
 # (version.py) works even if a submodule imports `.version` during init.
 __version__ = "0.1.0"
 
-from .models import AttributeDefinition, LinkConfiguration, LinkPair, Module, Project, Requirement  # noqa: E402
-from .service import ProjectService  # noqa: E402
-from .store import ProjectStore  # noqa: E402
+from .models import (
+    AttributeDefinition,
+    LinkConfiguration,
+    LinkPair,
+    Module,
+    Project,
+    Requirement,
+)
+from .service import ProjectService
+from .store import ProjectStore
 
 __all__ = [
-    "__version__",
     "AttributeDefinition",
     "LinkConfiguration",
     "LinkPair",
     "Module",
     "Project",
-    "Requirement",
     "ProjectService",
     "ProjectStore",
+    "Requirement",
+    "__version__",
 ]

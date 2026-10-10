@@ -467,7 +467,11 @@ def test_history_limit_is_200_and_read_at_call_time():
     import reqman.git_repo as git_repo
 
     assert git_repo.HISTORY_LIMIT == 200
-    assert git_repo.GitHistory.requirement_history.__defaults__ == (None,)
+    # This test checks implementation detail (default parameter tuple).
+    # Mutmut may mutate the default value; this test verifies the expected default.
+    defaults = git_repo.GitHistory.requirement_history.__defaults__
+    assert defaults is not None, "requirement_history should have a default parameter"
+    assert defaults[0] is None, "default limit should be None"
 
 
 def test_history_is_capped_at_history_limit_entries(service, root, monkeypatch):

@@ -1,0 +1,80 @@
+# ReqManTool Server Edition - Azure Container Apps Deployment
+# Usage: az containerapp up --config-file deploy/azure/containerapp.yaml
+# Or deploy via Azure CLI / Bicep / ARM template
+
+properties:
+  configuration:
+    ingress:
+      external: true
+      targetPort: 8899
+      transport: auto
+      allowInsecure: false
+      traffic:
+        - weight: 100
+          latestRevision: true
+    registries:
+      - server: ghcr.io
+        # Use managed identity or service principal for authentication
+    secrets:
+      - name: github-client-secret
+        keyVaultReference:
+          vaultName: reqman-kv
+          secretName: github-client-secret
+      - name: gitlab-client-secret
+        keyVaultReference:
+          vaultName: reqman-kv
+          secretName: gitlab-client-secret
+      - name: oidc-client-secret
+        keyVaultReference:
+          vaultName: reqman-kv
+          secretName: oidc-client-secret
+    env:
+      - name: REQMAN_DATA_DIR
+        value: /data
+      - name: REQMAN_HOST
+        value: 0.0.0.0
+      - name: REQMAN_PORT
+        value: "8899"
+      - name: REQMAN_MODE
+        value: server
+      - name: REQMAN_CONFIG_FILE
+        value: /config.json
+      - name: REQMAN_AUTH_GITHUB_CLIENT_SECRET
+        secretRef: github-client-secret
+      - name: REQMAN_AUTH_GITLAB_CLIENT_SECRET
+        secretRef: gitlab-client-secret
+      - name: REQMAN_AUTH_OIDC_CLIENT_SECRET
+        secretRef: oidc-client-secret
+    scale:
+      minReplicas: 1
+      maxReplicas: 3
+      rules:
+        - name: http-rule
+          http:
+            metadata:
+              concurrentRequests: "50"
+  template:
+    containers:
+      - name: reqman-server
+        image: ghcr.io/bula173/reqmantool/server:latest
+        resources:
+          cpu: 0.5
+          memory: 1Gi
+        volumeMounts:
+          - mountPath: /data
+            volumeName: reqman-data
+    volumes:
+      - name: reqman-data
+        storageType: AzureFile
+        storageName: reqmanstorage
+        shareName: reqman-data
+        accessMode: ReadWrite
+
+# Azure File Share for persistence (create separately)
+# az storage share create --name reqman-data --account-name reqmanstorage --quota 10
+
+# Key Vault for secrets (create separately)
+# az keyvault create --name reqman-kv --resource-group reqman-rg
+# az keyvault secret set --vault-name reqman-kv --name github-client-secret --value "your-secret"
+# az keyvault secret set --vault-name reqman-kv --name gitlab-client-secret --value "your-secret"
+# az keyvault secret set --vault-name reqman-kv --name oidc-client-secret --value "your-secret"

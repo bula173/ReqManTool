@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import io
 import re
+from collections.abc import Sequence
 from datetime import date
-from typing import Any, Sequence, Tuple
+from typing import Any
 
 from openpyxl import Workbook
 
@@ -22,7 +23,7 @@ DATE_NUMBER_FORMAT = "yyyy-mm-dd"
 
 def export_project_to_xlsx(
     project: Any,
-    modules: Sequence[Tuple[Any, Sequence[Any]]],
+    modules: Sequence[tuple[Any, Sequence[Any]]],
 ) -> bytes:
     """Export a project's requirements (across all its modules) to XLSX.
 

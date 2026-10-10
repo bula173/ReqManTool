@@ -127,7 +127,7 @@ def _safe_tree(data: bytes | str) -> ET.Element:
         raise TestResultsFormatError(f"The file is not well-formed XML: {exc}") from exc
     try:
         return builder.close()
-    except Exception as exc:  # noqa: BLE001 - an empty document
+    except Exception as exc:
         raise TestResultsFormatError("The file is not well-formed XML: it has no root element") from exc
 
 

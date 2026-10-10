@@ -73,8 +73,9 @@ from __future__ import annotations
 import csv
 import io
 import re
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Collection, Sequence
+from typing import Any
 
 ID_COLUMN = "Id"
 MODULE_COLUMN = "Module"
@@ -216,8 +217,7 @@ def parse_requirements_csv(
         CsvImportError: if anything in the file is invalid. Nothing is
             returned in that case.
     """
-    if csv_text.startswith("﻿"):
-        csv_text = csv_text[1:]
+    csv_text = csv_text.removeprefix("﻿")
     csv_text = strip_code_fence(csv_text)
     existing_ids = existing_ids or ()
     update_ids = update_ids or ()

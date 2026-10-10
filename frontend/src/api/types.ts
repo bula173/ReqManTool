@@ -1208,6 +1208,27 @@ export interface AuthProviderInfo {
   login_url: string;
 }
 
+/** A login provider with additional admin details (GET /admin/providers). */
+export interface ProviderInfo extends AuthProviderInfo {
+  /** The provider's issuer URL (OIDC, SAML, Gerrit) or base URL (GitLab, GitHub, LDAP, proxy_header). */
+  issuer: string;
+  /** Whether this provider hosts git repositories (GitLab, GitHub, Gerrit). */
+  is_git_provider: boolean;
+  /** Human-readable provider type label. */
+  type_label: string;
+  /** OIDC preset name (e.g. "keycloak", "entra_id", "okta", "google_workspace", "authentik"). */
+  oidc_preset?: string;
+  /** OIDC group claim name (e.g. "groups", "roles"). */
+  oidc_group_claim?: string;
+}
+
+/** A group role mapping (GET /admin/group-roles). */
+export interface GroupRole {
+  group: string;
+  role: string;
+  projects: string[];
+}
+
 /**
  * GET /edition (WS `edition.get`), public: `local` (no login) or `server`
  * (every request needs a session; `providers` are the login buttons).

@@ -61,10 +61,11 @@ from __future__ import annotations
 
 import importlib
 import logging
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterator, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from fastapi import FastAPI
@@ -292,7 +293,7 @@ def audit(action: str, project_id: str | None = None, **details: Any) -> None:
         return
     try:
         trail.record(_current_identity.get(), action, project_id, {k: v for k, v in details.items() if v is not None})
-    except Exception:  # noqa: BLE001 - the action itself succeeded; report, never fail it
+    except Exception:
         _logger.exception("Could not record %s of %s in the audit log", action, project_id)
 
 
@@ -319,7 +320,7 @@ def is_permitted(action: str, project_id: str | None = None) -> bool:
 class EditionContext:
     """What the core hands to an edition when installing it."""
 
-    settings: "Settings"
+    settings: Settings
     # The config file's raw values (the edition reads its own section, e.g. ``server``).
     config_values: dict[str, Any]
     hooks: Hooks
@@ -348,7 +349,7 @@ class ServerEdition(Protocol):
 
     name: str
 
-    def install(self, app: "FastAPI", context: EditionContext) -> None: ...
+    def install(self, app: FastAPI, context: EditionContext) -> None: ...
 
     def public_info(self) -> dict[str, Any]: ...
 

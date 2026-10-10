@@ -1,0 +1,438 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="./">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Configuration &mdash; ReqManTool @REQMAN_VERSION@ documentation</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="_static/graphviz.css?v=4ae1632d" />
+      <link rel="stylesheet" type="text/css" href="_static/copybutton.css?v=76b2166b" />
+
+  
+    <link rel="shortcut icon" href="_static/favicon.svg"/>
+      <script src="_static/jquery.js?v=5d32c60e"></script>
+      <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="_static/documentation_options.js?v=5d8b2bad"></script>
+      <script src="_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="_static/copybutton.js?v=30646c52"></script>
+    <script src="_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="next" title="Contributing" href="contributing.html" />
+    <link rel="prev" title="Installation" href="installation.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="index.html">
+            
+              <img src="_static/favicon.svg" class="logo" alt="Logo"/>
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="installation.html">Installation</a></li>
+<li class="toctree-l1 current"><a class="current reference internal" href="#">Configuration</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#configuration-file">Configuration File</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#settings-reference">Settings Reference</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#server-edition-settings-server-section">Server Edition Settings (<code class="docutils literal notranslate"><span class="pre">server</span></code> section)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#provider-configuration">Provider Configuration</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#secrets-management">Secrets Management</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#cli-overrides">CLI Overrides</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#config-command">Config Command</a></li>
+</ul>
+</li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Development</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="architecture.html">Architecture</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Compliance</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="compliance/t2_qualification.html">T2 Tool Qualification (EN 50128)</a></li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="index.html">ReqManTool</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content style-external-links">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">Configuration</li>
+      <li class="wy-breadcrumbs-aside">
+              <a href="https://github.com/bula173/ReqManTool/blob/main/docs/sphinx/configuration.rst" class="fa fa-github"> Edit on GitHub</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="configuration">
+<h1>Configuration<a class="headerlink" href="#configuration" title="Link to this heading"></a></h1>
+<section id="configuration-file">
+<h2>Configuration File<a class="headerlink" href="#configuration-file" title="Link to this heading"></a></h2>
+<p>The configuration file is JSON with schema validation. Location:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span># Linux
+~/.config/reqman/config.json
+# macOS
+~/Library/Application Support/ReqManTool/config.json
+# Windows
+%APPDATA%\ReqManTool\config.json
+</pre></div>
+</div>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;$schema&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://opencode.ai/config.json&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;data_dir&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/var/lib/reqman/data&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;host&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;0.0.0.0&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;port&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">8899</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;cors_origins&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;https://reqman.example.com&quot;</span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;source_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://github.com/bula173/ReqManTool&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;tls_cert_file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/etc/ssl/certs/reqman.pem&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;tls_key_file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/etc/ssl/private/reqman.key&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;tls_ca_file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/etc/ssl/certs/ca.pem&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;mode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;server&quot;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</section>
+<section id="settings-reference">
+<h2>Settings Reference<a class="headerlink" href="#settings-reference" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 20.0%" />
+<col style="width: 15.0%" />
+<col style="width: 15.0%" />
+<col style="width: 50.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Key</p></th>
+<th class="head"><p>Env Var</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">data_dir</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">REQMAN_DATA_DIR</span></code></p></td>
+<td><p>Platform default</p></td>
+<td><p>Data directory (git repositories, templates)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">host</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">REQMAN_HOST</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">localhost</span></code></p></td>
+<td><p>Bind address</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">port</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">REQMAN_PORT</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">8899</span></code></p></td>
+<td><p>TCP port</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cors_origins</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">REQMAN_CORS_ORIGINS</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">[&quot;http://localhost:5173&quot;]</span></code></p></td>
+<td><p>Allowed browser origins (comma-separated)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">source_url</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">REQMAN_SOURCE_URL</span></code></p></td>
+<td><p>GitHub repo</p></td>
+<td><p>Source code link (AGPL §13)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">tls_cert_file</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">REQMAN_TLS_CERT_FILE</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>TLS certificate (PEM) for HTTPS</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">tls_key_file</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">REQMAN_TLS_KEY_FILE</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>TLS private key (PEM)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">tls_ca_file</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">REQMAN_TLS_CA_FILE</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>CA cert for mTLS client verification</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mode</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">REQMAN_MODE</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">local</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">local</span></code> or <code class="docutils literal notranslate"><span class="pre">server</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="server-edition-settings-server-section">
+<h2>Server Edition Settings (<code class="docutils literal notranslate"><span class="pre">server</span></code> section)<a class="headerlink" href="#server-edition-settings-server-section" title="Link to this heading"></a></h2>
+<div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;server&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;auth_providers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">      </span><span class="p">{</span>
+<span class="w">        </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;gitlab&quot;</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;gitlab&quot;</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">&quot;name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;GitLab&quot;</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">&quot;url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://gitlab.example.com&quot;</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">&quot;client_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;xxx&quot;</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">&quot;client_secret_env&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;REQMAN_AUTH_GITLAB_CLIENT_SECRET&quot;</span><span class="p">,</span>
+<span class="w">        </span><span class="nt">&quot;scopes&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;openid&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;profile&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;email&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;read_api&quot;</span><span class="p">],</span>
+<span class="w">        </span><span class="nt">&quot;git_hosts&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;ssh.gitlab.example.com&quot;</span><span class="p">]</span>
+<span class="w">      </span><span class="p">}</span>
+<span class="w">    </span><span class="p">],</span>
+<span class="w">    </span><span class="nt">&quot;base_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://reqman.example.com&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;frontend_url&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://reqman.example.com&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;cookie_secure&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;session_max_age_hours&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">12</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;session_idle_minutes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">120</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;persist_sessions&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;state_dir&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;/var/lib/reqman/state&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;admins&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;admin@example.com&quot;</span><span class="p">],</span>
+<span class="w">    </span><span class="nt">&quot;admin_groups&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;reqman-admins&quot;</span><span class="p">],</span>
+<span class="w">    </span><span class="nt">&quot;group_roles&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">      </span><span class="p">{</span><span class="nt">&quot;group&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;engineers&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;editor&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;projects&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;*&quot;</span><span class="p">]}</span>
+<span class="w">    </span><span class="p">],</span>
+<span class="w">    </span><span class="nt">&quot;project_creation&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;everyone&quot;</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;module_lock_idle_minutes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">60</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;require_module_checkout&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">&quot;repo_roles&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cache_minutes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;grace_minutes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">60</span><span class="p">},</span>
+<span class="w">    </span><span class="nt">&quot;discovery&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;cache_minutes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">15</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;max_repos&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">200</span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 20.0%" />
+<col style="width: 15.0%" />
+<col style="width: 15.0%" />
+<col style="width: 50.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Key</p></th>
+<th class="head"><p>Env Var</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">auth_providers</span></code></p></td>
+<td><p>—</p></td>
+<td><p><strong>required</strong></p></td>
+<td><p>List of OIDC/GitHub/Gerrit/SAML/LDAP/proxy providers</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">base_url</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">REQMAN_SERVER_BASE_URL</span></code></p></td>
+<td><p>Request origin</p></td>
+<td><p>Public backend URL (OAuth redirect_uri)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">frontend_url</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">REQMAN_SERVER_FRONTEND_URL</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">base_url</span></code></p></td>
+<td><p>Frontend URL (post-login redirect)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cookie_secure</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">REQMAN_SERVER_COOKIE_SECURE</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>Secure cookie (false for <a class="reference external" href="http://localhost">http://localhost</a>)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">session_max_age_hours</span></code></p></td>
+<td><p>—</p></td>
+<td><p>12</p></td>
+<td><p>Absolute session lifetime</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">session_idle_minutes</span></code></p></td>
+<td><p>—</p></td>
+<td><p>120</p></td>
+<td><p>Idle timeout</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">persist_sessions</span></code></p></td>
+<td><p>—</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>Survive server restart</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">state_dir</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">REQMAN_SERVER_STATE_DIR</span></code></p></td>
+<td><p>Config dir</p></td>
+<td><p>Sessions, audit, memberships, locks</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">admins</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">REQMAN_SERVER_ADMINS</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">[]</span></code></p></td>
+<td><p>Server admin emails/usernames</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">admin_groups</span></code></p></td>
+<td><p>—</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">[]</span></code></p></td>
+<td><p>IdP groups → server admin</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">group_roles</span></code></p></td>
+<td><p>—</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">[]</span></code></p></td>
+<td><p>IdP group → role per project</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">project_creation</span></code></p></td>
+<td><p>—</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">everyone</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">everyone</span></code> or <code class="docutils literal notranslate"><span class="pre">admins</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">module_lock_idle_minutes</span></code></p></td>
+<td><p>—</p></td>
+<td><p>60</p></td>
+<td><p>Auto-release lock after idle</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">require_module_checkout</span></code></p></td>
+<td><p>—</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p>Require checkout before edit</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repo_roles</span></code></p></td>
+<td><p>—</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>GitLab/GitHub repo permissions → roles</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">discovery</span></code></p></td>
+<td><p>—</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+<td><p>Auto-discover projects from repos</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="provider-configuration">
+<h2>Provider Configuration<a class="headerlink" href="#provider-configuration" title="Link to this heading"></a></h2>
+<p>Each provider in <code class="docutils literal notranslate"><span class="pre">auth_providers</span></code>:</p>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>Field</p></th>
+<th class="head"><p>Required</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">id</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>Unique identifier (lowercase, alphanumeric, hyphen)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">type</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">gitlab</span></code>, <code class="docutils literal notranslate"><span class="pre">github</span></code>, <code class="docutils literal notranslate"><span class="pre">oidc</span></code>, <code class="docutils literal notranslate"><span class="pre">ldap</span></code>, <code class="docutils literal notranslate"><span class="pre">saml</span></code>, <code class="docutils literal notranslate"><span class="pre">proxy_header</span></code>, <code class="docutils literal notranslate"><span class="pre">gerrit</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">name</span></code></p></td>
+<td><p>No</p></td>
+<td><p>Display name (defaults to type)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">url</span></code> / <code class="docutils literal notranslate"><span class="pre">issuer</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>GitLab/GitHub URL or OIDC issuer</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">client_id</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>OAuth client ID (or <code class="docutils literal notranslate"><span class="pre">REQMAN_AUTH_&lt;ID&gt;_CLIENT_ID</span></code> env)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">client_secret</span></code> / <code class="docutils literal notranslate"><span class="pre">client_secret_env</span></code></p></td>
+<td><p>Yes</p></td>
+<td><p>Secret (or env var name)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">scopes</span></code></p></td>
+<td><p>No</p></td>
+<td><p>OAuth scopes (default: openid profile email)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">allow_http</span></code></p></td>
+<td><p>No</p></td>
+<td><p>Allow <a class="reference external" href="http://">http://</a> for local dev</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">git_hosts</span></code></p></td>
+<td><p>No</p></td>
+<td><p>Additional git SSH hosts for repo roles</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="secrets-management">
+<h2>Secrets Management<a class="headerlink" href="#secrets-management" title="Link to this heading"></a></h2>
+<p>Never put secrets in config file. Use environment variables:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Server edition</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">REQMAN_AUTH_GITLAB_CLIENT_SECRET</span><span class="o">=</span><span class="s2">&quot;xxx&quot;</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">REQMAN_AUTH_GITHUB_CLIENT_SECRET</span><span class="o">=</span><span class="s2">&quot;xxx&quot;</span>
+
+<span class="c1"># Or in config file</span>
+<span class="s2">&quot;client_secret_env&quot;</span>:<span class="w"> </span><span class="s2">&quot;REQMAN_AUTH_GITLAB_CLIENT_SECRET&quot;</span>
+</pre></div>
+</div>
+<p>The secret is never logged, returned by API, or sent to browser.</p>
+</section>
+<section id="cli-overrides">
+<h2>CLI Overrides<a class="headerlink" href="#cli-overrides" title="Link to this heading"></a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>reqman<span class="w"> </span>serve<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8443</span><span class="w"> </span>--tls-cert-file<span class="w"> </span>/etc/ssl/certs/server.pem<span class="w"> </span>--tls-key-file<span class="w"> </span>/etc/ssl/private/server.key
+</pre></div>
+</div>
+<p>CLI flags &gt; environment variables &gt; config file &gt; defaults.</p>
+</section>
+<section id="config-command">
+<h2>Config Command<a class="headerlink" href="#config-command" title="Link to this heading"></a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>reqman<span class="w"> </span>config<span class="w">          </span><span class="c1"># Print effective settings with sources</span>
+reqman<span class="w"> </span>config<span class="w"> </span>--data-dir<span class="w"> </span>/new/path<span class="w">   </span><span class="c1"># Update data directory</span>
+</pre></div>
+</div>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="installation.html" class="btn btn-neutral float-left" title="Installation" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+        <a href="contributing.html" class="btn btn-neutral float-right" title="Contributing" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Marcin Kwiatkowski.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

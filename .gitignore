@@ -42,3 +42,9 @@ venv/
 /backend/reqman/static/
 /backend/reqman/BUILD
 /backend/LICENSE
+
+# Desktop app (Tauri): generated backend bundle, logs and cargo output
+# (etc/start-desktop.sh and .github/workflows/desktop.yml produce these)
+/desktop/src-tauri/backend/
+/desktop/src-tauri/target/
+/desktop/.logs/

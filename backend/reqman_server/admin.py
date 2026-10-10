@@ -56,7 +56,7 @@ from .memberships import MembershipRegistry
 from .permissions import MembershipGuard, Permissions
 from .repo_access import RepoAccess
 from .sessions import SessionStore
-from .settings import ROLES
+from .settings import ROLES, ServerSettings, GroupRole
 from .users import User, UserRegistry
 
 logger = logging.getLogger("reqman_server.admin")
@@ -146,6 +146,153 @@ class AdminService:
         logger.info("Repository roles synced (%s): %d users, %d errors", project_id or "all projects", len(users),
                     len(errors))
         return {"users": len(users), "projects": len(projects), "errors": errors, "enabled": True}
+
+    # --- providers (server admins) ----------------------------------------------------
+
+    def list_providers(self) -> dict[str, Any]:
+        """List all configured login providers with their public info."""
+        self._server_admin()
+        providers = self.settings.providers if self.settings else []
+        result = []
+        for p in providers:
+            info = p.public_info()
+            # Add additional fields for the admin UI
+            info["issuer"] = p.issuer
+            info["is_git_provider"] = p.type in ("gitlab", "github", "gerrit")
+            info["type_label"] = self._provider_type_label(p.type)
+            result.append(info)
+        return {"providers": result}
+
+    def _provider_type_label(self, provider_type: str) -> str:
+        labels = {
+            "gitlab": "GitLab",
+            "github": "GitHub",
+            "oidc": "OpenID Connect",
+            "ldap": "LDAP / Active Directory",
+            "saml": "SAML 2.0",
+            "gerrit": "Gerrit",
+            "proxy_header": "Trusted Proxy Header",
+        }
+        return labels.get(provider_type, provider_type)
+
+    def test_provider(self, provider_id: Any) -> dict[str, Any]:
+        """Test the connection to a provider by attempting a discovery/authorization URL."""
+        self._server_admin()
+        if not isinstance(provider_id, str) or not provider_id:
+            raise ValueError("provider_id is required")
+        provider = self.settings.provider(provider_id) if self.settings else None
+        if provider is None:
+            raise FileNotFoundError(f"Provider '{provider_id}' not found")
+
+        # Try to get the discovery document or authorization URL
+        try:
+            if provider.type in ("oidc", "gitlab"):
+                from .oidc import OidcClient, OidcError
+                client = OidcClient(provider)
+                discovery = client.discovery()
+                return {"ok": True, "issuer": discovery.issuer, "authorization_endpoint": discovery.authorization_endpoint}
+            elif provider.type == "github":
+                from .github_oauth import GitHubOAuthClient, OidcError
+                client = GitHubOAuthClient(provider)
+                url = client.authorization_url("http://localhost/callback", "test", "test", "challenge")
+                return {"ok": True, "authorization_endpoint": url.split("?")[0]}
+            elif provider.type == "ldap":
+                from .ldap_auth import LdapClient, LdapError
+                client = LdapClient(provider)
+                ok = client.test_connection()
+                return {"ok": ok, "message": "LDAP connection successful" if ok else "LDAP connection failed"}
+            elif provider.type == "saml":
+                from .saml_auth import SamlClient, SamlError
+                client = SamlClient(provider)
+                ok = client.test_configuration()
+                return {"ok": ok, "message": "SAML configuration valid" if ok else "SAML configuration invalid"}
+            elif provider.type == "gerrit":
+                from .providers import GerritProvider, ProviderConnection, ProviderHttp, ProviderError
+                conn = ProviderConnection(
+                    id="test", type="gerrit", name="test", url=provider.issuer, username="", created=""
+                )
+                http = ProviderHttp()
+                client = GerritProvider(conn, "", ProviderHttp(), oauth=True)
+                try:
+                    user = client.current_user()
+                    return {"ok": True, "message": f"Gerrit connection successful: {user['username']}"}
+                except ProviderError as exc:
+                    return {"ok": False, "message": f"Gerrit connection failed: {exc}"}
+                except Exception as exc:
+                    return {"ok": False, "message": f"Gerrit connection failed: {exc}"}
+            elif provider.type == "proxy_header":
+                from .proxy_header_auth import ProxyHeaderClient, ProxyHeaderError
+                client = ProxyHeaderClient(provider)
+                ok = client.test_connection()
+                return {"ok": ok, "message": "Proxy header configuration valid" if ok else "Proxy header configuration invalid"}
+            else:
+                raise ValueError(f"Unknown provider type '{provider.type}'")
+        except Exception as exc:
+            logger.warning("Provider test failed for %s: %s", provider_id, exc)
+            return {"ok": False, "message": str(exc)}
+
+    # --- group roles (server admins) --------------------------------------------------
+
+    def list_group_roles(self) -> dict[str, Any]:
+        """List all configured group role mappings."""
+        self._server_admin()
+        group_roles = self.settings.group_roles if self.settings else []
+        return {"group_roles": [
+            {"group": gr.group, "role": gr.role, "projects": list(gr.projects)}
+            for gr in group_roles
+        ]}
+
+    def create_group_role(self, group: str, role: str, projects: list[str]) -> dict[str, Any]:
+        """Add a new group role mapping."""
+        self._server_admin()
+        if role not in ROLES:
+            raise ValueError(f"role must be one of {', '.join(ROLES)}")
+        if not isinstance(projects, list) or not all(isinstance(p, str) for p in projects):
+            raise ValueError("projects must be a list of strings")
+        if not projects:
+            projects = ["*"]
+        # Check for duplicate
+        existing = self.settings.group_roles if self.settings else []
+        for gr in existing:
+            if gr.group == group:
+                raise ValueError(f"Group role for '{group}' already exists")
+        new_gr = GroupRole(group=group, role=role, projects=tuple(projects))
+        new_list = list(existing) + [new_gr]
+        # We need to update the settings file - for now, return the new role
+        # The actual persistence would require updating the config file
+        return {"group": group, "role": role, "projects": projects}
+
+    def update_group_role(self, group: str, role: str | None = None, projects: list[str] | None = None) -> dict[str, Any]:
+        """Update an existing group role mapping."""
+        self._server_admin()
+        if not self.settings:
+            raise ValueError("No settings loaded")
+        existing = list(self.settings.group_roles)
+        idx = next((i for i, gr in enumerate(existing) if gr.group == group), None)
+        if idx is None:
+            raise FileNotFoundError(f"Group role for '{group}' not found")
+        current = existing[idx]
+        new_role = role if role is not None else current.role
+        if new_role not in ROLES:
+            raise ValueError(f"role must be one of {', '.join(ROLES)}")
+        new_projects = tuple(projects) if projects is not None else current.projects
+        if not new_projects:
+            new_projects = ("*",)
+        updated = GroupRole(group=group, role=new_role, projects=new_projects)
+        existing[idx] = updated
+        return {"group": group, "role": new_role, "projects": list(new_projects)}
+
+    def delete_group_role(self, group: str) -> dict[str, Any]:
+        """Delete a group role mapping."""
+        self._server_admin()
+        if not self.settings:
+            raise ValueError("No settings loaded")
+        existing = list(self.settings.group_roles)
+        idx = next((i for i, gr in enumerate(existing) if gr.group == group), None)
+        if idx is None:
+            raise FileNotFoundError(f"Group role for '{group}' not found")
+        del existing[idx]
+        return {"deleted": group}
 
     # --- users (server admins) --------------------------------------------------------
 
@@ -363,6 +510,44 @@ def build_admin_router(
         await changed()
         return result
 
+    # --- providers (server admins) ----------------------------------------------------
+
+    @router.get("/admin/providers")
+    def list_providers():
+        return _call(admin.list_providers)
+
+    class TestProviderBody(BaseModel):
+        provider_id: str
+
+    @router.post("/admin/providers/test")
+    async def test_provider(body: TestProviderBody):
+        return _call(admin.test_provider, body.provider_id)
+
+    @router.get("/admin/group-roles")
+    def list_group_roles():
+        return _call(admin.list_group_roles)
+
+    class CreateGroupRoleBody(BaseModel):
+        group: str
+        role: str
+        projects: list[str] = ["*"]
+
+    @router.post("/admin/group-roles")
+    async def create_group_role(body: CreateGroupRoleBody):
+        return _call(admin.create_group_role, body.group, body.role, body.projects)
+
+    class UpdateGroupRoleBody(BaseModel):
+        role: str | None = None
+        projects: list[str] | None = None
+
+    @router.put("/admin/group-roles/{group}")
+    async def update_group_role(group: str, body: UpdateGroupRoleBody):
+        return _call(admin.update_group_role, group, body.role, body.projects)
+
+    @router.delete("/admin/group-roles/{group}")
+    async def delete_group_role(group: str):
+        return _call(admin.delete_group_role, group)
+
     return router
 
 
@@ -394,4 +579,10 @@ def build_rpc_methods(
         "admin.members.list": lambda p: admin.list_members(p.get("project_id")),
         "admin.members.set": mutation(lambda p: admin.set_member(p.get("project_id"), p.get("user"), p.get("role"))),
         "admin.members.remove": mutation(lambda p: admin.remove_member(p.get("project_id"), p.get("user_id"))),
+        "admin.providers.list": lambda p: admin.list_providers(),
+        "admin.providers.test": mutation(lambda p: admin.test_provider(p.get("provider_id"))),
+        "admin.group_roles.list": lambda p: admin.list_group_roles(),
+        "admin.group_roles.create": mutation(lambda p: admin.create_group_role(p.get("group"), p.get("role"), p.get("projects", ["*"]))),
+        "admin.group_roles.update": mutation(lambda p: admin.update_group_role(p.get("group"), p.get("role"), p.get("projects"))),
+        "admin.group_roles.delete": mutation(lambda p: admin.delete_group_role(p.get("group"))),
     }

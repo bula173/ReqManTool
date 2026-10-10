@@ -22,8 +22,11 @@ and side-effect free.
 
 from __future__ import annotations
 
+import base64
 import io
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+import re
+from collections.abc import Sequence
+from typing import Any
 
 from docx import Document
 from docx.oxml import OxmlElement
@@ -49,7 +52,7 @@ _PPR_AFTER_SHD = (
 )
 
 
-def _row_style(requirement: Any, row_styles: Sequence[Any]) -> Optional[Any]:
+def _row_style(requirement: Any, row_styles: Sequence[Any]) -> Any | None:
     """The first rule whose attribute value the requirement has, or None."""
     for style in row_styles:
         if requirement.attributes.get(style.attribute_id) == style.value:
@@ -57,7 +60,7 @@ def _row_style(requirement: Any, row_styles: Sequence[Any]) -> Optional[Any]:
     return None
 
 
-def _apply_style(paragraph: Any, style: Optional[Any]) -> None:
+def _apply_style(paragraph: Any, style: Any | None) -> None:
     """Color, shade and embolden a paragraph's runs as ``style`` says (None: unchanged)."""
     if style is None:
         return
@@ -99,6 +102,29 @@ def _add_inline(paragraph: Any, nodes: Sequence[Any], marks: frozenset = frozens
                 run.font.size = Pt(float(size.removesuffix("px")) * 0.75)
         elif isinstance(node, richtext.LineBreak):
             paragraph.add_run().add_break()
+        elif isinstance(node, richtext.Image):
+            # Data URL format: data:image/png;base64,...
+            match = re.match(r"^data:image/([a-z+]+);base64,(.+)$", node.src)
+            if match:
+                mime_type, b64_data = match.groups()
+                try:
+                    image_data = base64.b64decode(b64_data)
+                    image_stream = io.BytesIO(image_data)
+                    run = paragraph.add_run()
+                    run.add_picture(image_stream)
+                except Exception:  # noqa: BLE001 - invalid image data, skip silently
+                    run = paragraph.add_run(f"[image: {node.alt}]" if node.alt else "[image]")
+            else:
+                run = paragraph.add_run(f"[image: {node.alt}]" if node.alt else "[image]")
+            # Apply enclosing marks to the placeholder text if image failed
+            if "strong" in marks:
+                run.bold = True
+            if "em" in marks:
+                run.italic = True
+            if "u" in marks:
+                run.underline = True
+            if "s" in marks:
+                run.font.strike = True
         elif node.tag == "span":
             color, size = richtext.span_style(node.style)
             _add_inline(paragraph, node.children, marks, (color or span[0], size or span[1]))
@@ -129,7 +155,7 @@ def _restarted_numbering(document: Document, style_name: str) -> str:
     return str(num.numId)
 
 
-def _add_blocks(document: Document, blocks: Sequence[Any], level: int, out: List[Any]) -> None:
+def _add_blocks(document: Document, blocks: Sequence[Any], level: int, out: list[Any]) -> None:
     """Add rich ``blocks`` nested ``level`` lists deep as paragraphs, appending each to ``out``."""
     for block in blocks:
         if isinstance(block, richtext.Paragraph):
@@ -155,7 +181,7 @@ def _add_blocks(document: Document, blocks: Sequence[Any], level: int, out: List
             _add_blocks(document, item[1:], item_level, out)
 
 
-def _add_rich_value(document: Document, label: str, value: str) -> List[Any]:
+def _add_rich_value(document: Document, label: str, value: str) -> list[Any]:
     """The paragraphs of a rich value: its first paragraph follows the bold label."""
     blocks = richtext.blocks(value)
     paragraph = document.add_paragraph()
@@ -192,7 +218,7 @@ def _add_requirement(
 
 def export_project_to_docx(
     project: Any,
-    modules: Sequence[Tuple[Any, Sequence[Any]]],
+    modules: Sequence[tuple[Any, Sequence[Any]]],
     row_styles: Sequence[Any] = (),
 ) -> bytes:
     """Export a project's modules/requirements to a Word document.
@@ -229,13 +255,13 @@ def export_project_to_docx(
     for module, requirements in modules:
         document.add_heading(module.name, level=1)
 
-        children_of: Dict[Optional[str], List[Any]] = {}
+        children_of: dict[str | None, list[Any]] = {}
         for requirement in requirements:
             children_of.setdefault(requirement.parent_id, []).append(requirement)
         for children in children_of.values():
             children.sort(key=lambda r: r.order)
 
-        def walk(parent_id: Optional[str], depth: int) -> None:
+        def walk(parent_id: str | None, depth: int) -> None:
             for requirement in children_of.get(parent_id, []):
                 _add_requirement(document, requirement, project, depth + 2, row_styles)
                 walk(requirement.id, depth + 1)

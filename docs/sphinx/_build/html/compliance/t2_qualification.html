@@ -1,0 +1,235 @@
+
+
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" data-content_root="../">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>T2 Tool Qualification (EN 50128) &mdash; ReqManTool @REQMAN_VERSION@ documentation</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=80d5e7a1" />
+      <link rel="stylesheet" type="text/css" href="../_static/css/theme.css?v=9edc463e" />
+      <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+      <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+
+  
+    <link rel="shortcut icon" href="../_static/favicon.svg"/>
+      <script src="../_static/jquery.js?v=5d32c60e"></script>
+      <script src="../_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
+      <script src="../_static/documentation_options.js?v=5d8b2bad"></script>
+      <script src="../_static/doctools.js?v=fd6eb6e6"></script>
+      <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
+      <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+      <script src="../_static/copybutton.js?v=30646c52"></script>
+    <script src="../_static/js/theme.js"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="prev" title="Architecture" href="../architecture.html" /> 
+</head>
+
+<body class="wy-body-for-nav"> 
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side">
+      <div class="wy-side-scroll">
+        <div class="wy-side-nav-search" >
+
+          
+          
+          <a href="../index.html">
+            
+              <img src="../_static/favicon.svg" class="logo" alt="Logo"/>
+          </a>
+<div role="search">
+  <form id="rtd-search-form" class="wy-form" action="../search.html" method="get">
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
+    <input type="hidden" name="check_keywords" value="yes" />
+    <input type="hidden" name="area" value="default" />
+  </form>
+</div>
+        </div><div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../quickstart.html">Quickstart</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../configuration.html">Configuration</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Development</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="../contributing.html">Contributing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../architecture.html">Architecture</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Compliance</span></p>
+<ul class="current">
+<li class="toctree-l1 current"><a class="current reference internal" href="#">T2 Tool Qualification (EN 50128)</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="#overview">Overview</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#tool-qualification-kit">Tool Qualification Kit</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#tool-classification-justification">Tool Classification Justification</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#qualification-scope">Qualification Scope</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#operating-constraints">Operating Constraints</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#known-limitations-deviations">Known Limitations (Deviations)</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#traceability-to-en-50128">Traceability to EN 50128</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#qualification-evidence">Qualification Evidence</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#qualification-process">Qualification Process</a></li>
+<li class="toctree-l2"><a class="reference internal" href="#maintenance">Maintenance</a></li>
+</ul>
+</li>
+</ul>
+
+        </div>
+      </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap"><nav class="wy-nav-top" aria-label="Mobile navigation menu" >
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../index.html">ReqManTool</a>
+      </nav>
+
+      <div class="wy-nav-content">
+        <div class="rst-content style-external-links">
+          <div role="navigation" aria-label="Page navigation">
+  <ul class="wy-breadcrumbs">
+      <li><a href="../index.html" class="icon icon-home" aria-label="Home"></a></li>
+      <li class="breadcrumb-item active">T2 Tool Qualification (EN 50128)</li>
+      <li class="wy-breadcrumbs-aside">
+              <a href="https://github.com/bula173/ReqManTool/blob/main/docs/sphinx/compliance/t2_qualification.rst" class="fa fa-github"> Edit on GitHub</a>
+      </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+           <div itemprop="articleBody">
+             
+  <section id="t2-tool-qualification-en-50128">
+<h1>T2 Tool Qualification (EN 50128)<a class="headerlink" href="#t2-tool-qualification-en-50128" title="Link to this heading"></a></h1>
+<section id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading"></a></h2>
+<p>ReqManTool is qualified as a <strong>T2 tool</strong> per EN 50128 §6.7.2 for use in safety-related
+development up to SIL4.</p>
+</section>
+<section id="tool-qualification-kit">
+<h2>Tool Qualification Kit<a class="headerlink" href="#tool-qualification-kit" title="Link to this heading"></a></h2>
+<p>The following documents constitute the Tool Qualification Kit per EN 50128 §6.7:</p>
+</section>
+<section id="tool-classification-justification">
+<h2>Tool Classification Justification<a class="headerlink" href="#tool-classification-justification" title="Link to this heading"></a></h2>
+<p><strong>T2 Classification</strong> is appropriate because:</p>
+<ol class="arabic simple">
+<li><p><strong>All tool outputs are independently verified</strong> — Users must review traceability matrices, verification reports, and exported documents before including them in the safety case.</p></li>
+<li><p><strong>Tool failures are detectable</strong> — Traceability matrices highlight coverage gaps; verification reports flag unverified requirements; impact analysis results are deterministic and can be independently recalculated.</p></li>
+<li><p><strong>No automatic code generation</strong> — ReqManTool does not generate source code; it manages requirements, traceability, and documentation.</p></li>
+<li><p><strong>Data integrity guarantees</strong> — Atomic writes, git-backed history, deterministic exports, and format versioning ensure data consistency.</p></li>
+</ol>
+</section>
+<section id="qualification-scope">
+<h2>Qualification Scope<a class="headerlink" href="#qualification-scope" title="Link to this heading"></a></h2>
+<div class="line-block">
+<div class="line">Aspect | Coverage |</div>
+</div>
+<p><a href="#id1"><span class="problematic" id="id2">|--------|</span></a>———-|
+| <strong>Supported SIL</strong> | Up to SIL4 (tool supports SIL4 projects; tool itself not SIL-rated) |
+| <strong>Lifecycle Phases</strong> | Requirements specification (§6.2), Architecture (§6.3), Verification (§6.5), Configuration Management (§6.6), Change Management (§6.6) |
+| <strong>Tool Functions</strong> | Requirements capture, traceability, verification reporting, baseline management, impact analysis, test result import |</p>
+</section>
+<section id="operating-constraints">
+<h2>Operating Constraints<a class="headerlink" href="#operating-constraints" title="Link to this heading"></a></h2>
+<div class="line-block">
+<div class="line">Constraint | Mitigation |</div>
+</div>
+<p><a href="#id3"><span class="problematic" id="id4">|------------|</span></a>————|
+| Single active writer per data directory | Documented; server edition adds module edit locks |
+| No ReqIF import | Export verified by independent tool |
+| Local edition: no authentication | Server edition required for multi-user |
+| No full-text search | Not safety-critical |
+| Rich text: images not in ReqIF | Documented; export omits images |
+| Data directory on local filesystem | Not NFS/SMB (git atomicity) |</p>
+</section>
+<section id="known-limitations-deviations">
+<h2>Known Limitations (Deviations)<a class="headerlink" href="#known-limitations-deviations" title="Link to this heading"></a></h2>
+</section>
+<section id="traceability-to-en-50128">
+<h2>Traceability to EN 50128<a class="headerlink" href="#traceability-to-en-50128" title="Link to this heading"></a></h2>
+<table class="docutils align-default">
+<thead>
+<tr class="row-odd"><th class="head"><p>EN 50128 Clause</p></th>
+<th class="head"><p>Tool Function</p></th>
+<th class="head"><p>Verification Method</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>§6.2.2 Requirements specification</p></td>
+<td><p>Requirement create/edit, attributes, templates</p></td>
+<td><p>Manual review of exported ReqIF</p></td>
+</tr>
+<tr class="row-odd"><td><p>§6.2.4 Traceability</p></td>
+<td><p>Link configurations, traceability matrix</p></td>
+<td><p>Matrix coverage % + unverified items</p></td>
+</tr>
+<tr class="row-even"><td><p>§6.5 Verification</p></td>
+<td><p>Verification/execution reports</p></td>
+<td><p>Independent review</p></td>
+</tr>
+<tr class="row-odd"><td><p>§6.6 Configuration management</p></td>
+<td><p>Baselines, git history, impact analysis</p></td>
+<td><p><cite>git verify-tag</cite>; compare baseline vs current</p></td>
+</tr>
+<tr class="row-even"><td><p>§6.6 Change management</p></td>
+<td><p>Impact analysis, git history</p></td>
+<td><p>Independent rerun</p></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="qualification-evidence">
+<h2>Qualification Evidence<a class="headerlink" href="#qualification-evidence" title="Link to this heading"></a></h2>
+</section>
+<section id="qualification-process">
+<h2>Qualification Process<a class="headerlink" href="#qualification-process" title="Link to this heading"></a></h2>
+<ol class="arabic simple">
+<li><p><strong>Prepare Tool Qualification Kit</strong> — Assemble all documents above</p></li>
+<li><p><strong>Independent Review</strong> — Qualified assessor reviews kit</p></li>
+<li><p><strong>Address Findings</strong> — Remediate assessor findings</p></li>
+<li><p><strong>Qualification Sign-off</strong> — Formal acceptance for target SIL</p></li>
+</ol>
+</section>
+<section id="maintenance">
+<h2>Maintenance<a class="headerlink" href="#maintenance" title="Link to this heading"></a></h2>
+<ul class="simple">
+<li><p>Re-qualification required on major version changes</p></li>
+<li><p>Regression test suite run on every commit (CI)</p></li>
+<li><p>Mutation testing run nightly</p></li>
+<li><p>Dependency scanning on every PR</p></li>
+</ul>
+</section>
+</section>
+
+
+           </div>
+          </div>
+          <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
+        <a href="../architecture.html" class="btn btn-neutral float-left" title="Architecture" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <p>&#169; Copyright 2026, Marcin Kwiatkowski.</p>
+  </div>
+
+  Built with <a href="https://www.sphinx-doc.org/">Sphinx</a> using a
+    <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a>
+    provided by <a href="https://readthedocs.org">Read the Docs</a>.
+   
+
+</footer>
+        </div>
+      </div>
+    </section>
+  </div>
+  <script>
+      jQuery(function () {
+          SphinxRtdTheme.Navigation.enable(true);
+      });
+  </script> 
+
+</body>
+</html>

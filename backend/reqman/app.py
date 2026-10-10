@@ -24,11 +24,22 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import (
     check_config_writable,
@@ -38,6 +49,7 @@ from .config import (
     read_config_values,
     save_data_dir,
 )
+from .csv_import import MAX_CSV_IMPORT_BYTES
 from .extensions import (
     ACTION_PROJECT_READ,
     ACTION_SERVER_CONFIG,
@@ -52,16 +64,21 @@ from .extensions import (
     is_permitted,
     load_server_edition,
 )
-from .csv_import import MAX_CSV_IMPORT_BYTES
-from .test_results_import import MAX_TEST_RESULTS_IMPORT_BYTES
 from .formats import NewerFormatError
 from .git_repo import GitHistory, GitSettings
+from .licenses import python_third_party
+from .middleware import RateLimitMiddleware, SecurityHeadersMiddleware
+from .prompts import MAX_PROMPT_IMPORT_BYTES
 from .providers import ProviderService
-from .service import RESULT_IMPORT_OPTIONS, ConflictError, ProjectLockedError, ProjectService
+from .service import (
+    RESULT_IMPORT_OPTIONS,
+    ConflictError,
+    ProjectLockedError,
+    ProjectService,
+)
 from .store import ProjectStore
 from .templates import MAX_TEMPLATE_IMPORT_BYTES
-from .prompts import MAX_PROMPT_IMPORT_BYTES
-from .licenses import python_third_party
+from .test_results_import import MAX_TEST_RESULTS_IMPORT_BYTES
 from .version import about_info, build_id, version_info
 
 logger = logging.getLogger("reqman.app")
@@ -141,6 +158,24 @@ else:
     )
     logger.info("Server edition: %s", SERVER_EDITION.name)
 
+# --- Security Headers & Rate Limiting (server edition only) -------------------
+# Security headers: HSTS, CSP, X-Frame-Options, etc. Only on HTTPS.
+# Rate limiting: 10 req/min on /auth/login/ and /auth/callback/ endpoints.
+if SERVER_EDITION is not None:
+    # Rate limiting first (applies to auth endpoints before auth middleware)
+    app.add_middleware(
+        RateLimitMiddleware,
+        enabled=True,
+        max_requests=10,
+        window_seconds=60.0,
+        paths=("/auth/login/", "/auth/callback/"),
+    )
+    # Security headers last (wraps all responses)
+    app.add_middleware(
+        SecurityHeadersMiddleware,
+        enabled=SETTINGS.cookie_secure,  # Only add HSTS on HTTPS
+        hsts_max_age=31536000,  # 1 year
+    )
 
 # --- bundled frontend (single origin) ----------------------------------------
 #
@@ -2042,7 +2077,7 @@ async def _dispatch(request: dict, sender: WebSocket | None = None) -> dict:
             if project_id:
                 await manager.broadcast(project_id, exclude=sender)
         return _error_response(request_id, -32602, str(exc))
-    except Exception as exc:  # noqa: BLE001 - surfaced to the RPC caller
+    except Exception as exc:
         logger.exception("Unhandled error in RPC method %s", method_name)
         return _error_response(request_id, -32000, str(exc))
 

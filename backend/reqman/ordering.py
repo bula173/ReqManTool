@@ -6,7 +6,8 @@ Like the exporters, this module has no dependency on ``reqman.models`` /
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 
 def tree_order(requirements: Sequence[Any]) -> list[Any]:

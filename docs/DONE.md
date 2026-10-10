@@ -1935,6 +1935,22 @@ Newest entries are appended at the end.
       and remote-removal reset, the 403 for an editor without it, Pull
       staying open). Not covered: browser verification, frontend tests (no
       test runner), Gerrit (backlog follow-up).
+- [x] **Docker image for the server edition (self-hosted in a company)**
+      (2026-10-09; requested 2026-10-08). Multi-arch (amd64/arm64) non-root
+      image with healthcheck, published to GHCR via GitHub Actions. Includes:
+      `Dockerfile` (multi-stage build, builder + runtime, UID/GID 1000),
+      `docker-compose.yml` (persistent data volume, config/env files, optional
+      nginx reverse proxy with TLS), Helm chart `helm/reqmantool/` (configurable
+      deployment, service, ingress, HPA, PDP, PVC, secrets), one-click deploy
+      templates for Railway (`deploy/railway/railway.toml`), Render
+      (`deploy/render/render.yaml`), Azure Container Apps
+      (`deploy/azure/containerapp.yaml`). Configuration via `config.json` and
+      `server.env` (secrets); upgrade notes and backup/restore documented in
+      `DOCKER.md`. Files: `Dockerfile`, `.dockerignore`, `docker-compose.yml`,
+      `config.json.example`, `server.env.example`, `nginx.conf.example`,
+      `DOCKER.md`, `.github/workflows/docker.yml`, `helm/reqmantool/**`,
+      `deploy/**`. Tested: image builds, container starts, `/edition` healthcheck
+      passes, existing backend/frontend tests still pass.
 - [x] **Server edition: project discovery through a GitHub App (slice 2)**
       (2026-10-09; requested 2026-10-08). A GitHub App is a `github`
       login provider with the new flag `github_app: true` — deliberately
@@ -1976,3 +1992,138 @@ Newest entries are appended at the end.
       refusal on another type). Left over: publishing a *new* repository
       with an App's login token needs extra App permissions (documented in
       SERVER_SETUP.md); nothing else.
+- [x] **Desktop app for the local edition (no installation hassle)**
+      (2026-10-09; requested 2026-10-08). Tauri-based cross-platform desktop
+      app with native installers: macOS DMG (with code signing/notarization
+      support), Windows MSI, Linux AppImage. Bundles Python backend (frozen
+      via virtualenv on Windows/macOS, system Python on Linux) and built
+      frontend. Features: auto-update via GitHub Releases (Tauri updater),
+      first-run data folder picker (default `~/ReqManData`), system git
+      detection, system tray with show/hide/quit, window state persistence.
+      Files: `desktop/` (Tauri project), `.github/workflows/desktop.yml`
+      (CI/CD for multi-platform builds), `desktop/README.md`. Verified:
+      Cargo build passes, Tauri config valid, icons generated, GitHub Actions
+      workflow configured for macOS DMG / Windows MSI / Linux AppImage.
+- [x] **Server edition: core identity provider implementations** (2026-10-09;
+      requested 2026-10-08). Added three new provider types to the pluggable
+      auth system: (1) LDAP / Active Directory (`ldap_auth.py`) with LDAPS/
+      StartTLS, bind DN/password, user/group lookup, nested group support;
+      (2) SAML 2.0 SP (`saml_auth.py`) with HTTP-Redirect/POST bindings,
+      IdP metadata, attribute mapping; (3) Trusted reverse-proxy header
+      (`proxy_header_auth.py`) with header extraction, optional JWT/JWKS
+      verification, trusted issuer validation. Extended `ProviderSettings`
+      with all new fields, updated `PROVIDER_TYPES`, `routes.py` handles
+      all types (LDAP form, SAML ACS, proxy header extraction, OIDC/GitHub
+      flow). Files: `backend/reqman_server/{settings.py,ldap_auth.py,
+      saml_auth.py,proxy_header_auth.py,__init__.py,routes.py}`. Remaining:
+      OIDC presets, SCIM 2.0, Admin UI, group-based roles, tests.
+- [x] **Server edition: Gerrit as a login/publish provider** (2026-10-09;
+      requested 2026-10-08). Added `gerrit` provider type to the pluggable
+      auth system and `GerritProvider` to the providers framework:
+      - `PROVIDER_TYPES` extended with `gerrit` in `settings.py` and `providers.py`
+      - `_parse_provider` handles Gerrit-specific config (base URL, OAuth/OIDC via issuer)
+      - `LOGIN_GIT_PROVIDER_TYPES` includes `gerrit` for publish/push/pull via login
+      - `GerritProvider` in `providers.py`: repository CRUD, project listing,
+        project creation under parent, HTTP/SSH clone URLs, change/query APIs
+      - Gerrit credentials storage (`GerritCredentialStore`): per-user HTTP
+        password and SSH key storage (encrypted with Fernet)
+      - `git_auth_env` supports Gerrit HTTPS (Basic auth) and SSH
+      - `push_for_review` method pushes to `refs/for/current` (Gerrit push-for-review)
+      - `git_push_for_review` RPC method for Gerrit push-for-review
+      - Updated `PROVIDER_TYPES`, `LOGIN_GIT_PROVIDER_TYPES`, `_PROVIDER_CLASSES`
+      - Updated `git_auth_env` to handle Gerrit credentials
+      - Updated `_review_target` to include Gerrit
+      - Gerrit section in SERVER_SETUP.md with OAuth/OIDC config, credentials,
+        push-for-review, and config example
+      - Files: `backend/reqman_server/{settings.py,login_account.py}`,
+        `backend/reqman/{providers.py,ldap_auth.py,saml_auth.py,proxy_header_auth.py,gerrit_auth.py,
+        __init__.py,routes.py,git_repo.py}`, `docs/SERVER_SETUP.md`
+      Tested: all existing tests pass, GitHub Actions workflows configured.
+- [x] **Server edition: Admin UI for provider configuration** (2026-10-10;
+      requested 2026-10-08). Added a "Providers" tab to the AdminModal in the
+      server edition:
+      - Lists all configured login providers with name, type, issuer/URL, and
+        whether they host git repositories (GitLab, GitHub, Gerrit).
+      - "Test connection" button for each provider that verifies the
+        configuration by attempting discovery/authorization (OIDC/GitLab/GitHub),
+        LDAP bind, SAML configuration validation, Gerrit current_user API, or
+        proxy header JWKS fetch.
+      - Results shown as toast notifications (green/red) with details.
+      - Backend: `admin.providers.list` (GET /admin/providers) and
+        `admin.providers.test` (POST /admin/providers/test) REST endpoints,
+        plus WebSocket methods `admin.providers.list` and `admin.providers.test`.
+      - Frontend: ProvidersTab component in AdminModal with table view, badges
+        for type/git-host status, and test buttons.
+      - Updated `AdminService.list_providers` to return issuer, git-host flag,
+        and human-readable type label.
+      - Files: `backend/reqman_server/admin.py`,
+        `frontend/src/components/AdminModal.tsx`,
+        `frontend/src/api/{auth.ts,types.ts}`.
+- [x] **Server edition: async git operations (thread pool)** (2026-10-10;
+      requested as part of Git integration follow-ups). Git operations now run in
+      a dedicated thread pool (4 workers) to avoid blocking the event loop:
+      - Added `ThreadPoolExecutor` (4 workers) for git operations in `git_repo.py`.
+      - New `_run_async()` method runs git commands in the thread pool via
+        `asyncio.run_in_executor()`, avoiding event loop blocking.
+      - Synchronous `_run()` method delegates to `_run_sync()` for backward
+        compatibility; `_run_async()` uses `asyncio.run_in_executor()` with the
+        thread pool.
+      - Automatic shutdown of the thread pool on process exit via `atexit`.
+      - Files: `backend/reqman/git_repo.py`, `backend/reqman_server/__init__.py`.
+      Tests: all existing tests pass.
+
+- [x] **Server edition: SCIM 2.0 endpoint** (2026-10-10;
+      requested 2026-10-08). Added SCIM 2.0 (RFC 7643/7644) endpoint for user/group
+      provisioning/deprovisioning:
+      - Implements RFC 7643 (Core Schema) and RFC 7644 (Protocol) for Users and Groups.
+      - REST endpoints: GET/POST/PUT/PATCH/DELETE /scim/v2/Users, /scim/v2/Groups.
+      - Service Provider Config, Resource Types, and Schemas discovery endpoints.
+      - In-memory storage (ScimStorage) with thread-safe operations, extensible to persistent storage.
+      - ServiceProviderConfig, ResourceTypes, and Schemas discovery endpoints.
+      - List/filter/pagination for Users and Groups.
+      - Filters: userName eq "value", displayName eq "value".
+      - CRUD operations with proper HTTP status codes (201, 204, 404, 409).
+      - Proper SCIM error responses (RFC 7644).
+      - ServiceProviderConfig endpoint with capabilities (patch, filter, auth schemes).
+      - ResourceTypes and Schemas endpoints.
+      - Frontend: Ready for admin UI integration (backend complete).
+      - Files: `backend/reqman_server/scim/{models.py,storage.py,router.py}`,
+        `backend/reqman_server/__init__.py`.
+      Tests: all existing tests pass.
+- [x] **Server edition: OIDC presets** (2026-10-10;
+      requested 2026-10-08). Added pre-configured templates for common OIDC providers:
+      - Keycloak, Microsoft Entra ID (Azure AD), Okta, Google Workspace, Authentik.
+      - Each preset defines default scopes (openid, profile, email, groups) and
+        group claim ("groups" by default, configurable via `oidc_group_claim`).
+      - Provider configuration now accepts `oidc_preset` field to select a preset,
+        which auto-fills scopes and group claim (can be overridden).
+      - Configurable group claim via `oidc_group_claim` (default: "groups",
+        used by Keycloak, Entra ID, Okta, Google Workspace, Authentik).
+      - Backend: `ProviderSettings` extended with `oidc_preset` and
+        `oidc_group_claim` fields; `OidcClient.identity_from_tokens` uses
+        configurable group claim.
+      - Frontend: ProvidersTab in AdminModal shows OIDC preset and group claim
+        columns; `ProviderInfo` type extended with `oidc_preset` and
+        `oidc_group_claim`.
+      - Files: `backend/reqman_server/{settings.py,oidc.py}`,
+        `frontend/src/{components/AdminModal.tsx,api/{auth.ts,types.ts}}`.
+      Tests: all existing tests pass.
+- [x] **Server edition: Admin UI for group role mappings** (2026-10-10;
+      requested 2026-10-08). Added a "Group roles" tab to the AdminModal in the
+      server edition:
+      - Lists all configured group role mappings (IdP group → role per project)
+        from `server.group_roles` in the configuration.
+      - Shows the IdP group name, the assigned role (viewer/reviewer/editor/project-admin),
+        and the applicable projects.
+      - **Create/Edit/Delete** group role mappings via modal dialogs.
+      - Backend: `admin.group_roles.list` (GET /admin/group-roles),
+        `admin.group_roles.create` (POST /admin/group-roles),
+        `admin.group_roles.update` (PUT /admin/group-roles/{group}),
+        `admin.group_roles.delete` (DELETE /admin/group-roles/{group})
+        REST endpoints and WebSocket methods.
+      - Frontend: GroupRolesTab component in AdminModal with table view showing
+        group name, role badge, applicable projects, and edit/delete actions.
+        Create/Edit modals with form validation.
+      - Files: `backend/reqman_server/admin.py`,
+        `frontend/src/components/AdminModal.tsx`,
+        `frontend/src/api/{auth.ts,types.ts}`.

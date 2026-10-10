@@ -1,0 +1,35 @@
+{
+  "format_version": 1,
+  "data_dir": "/data",
+  "mode": "server",
+  "host": "0.0.0.0",
+  "port": 8899,
+  "cors_origins": ["http://localhost:5173"],
+  "server": {
+    "base_url": "https://reqman.example.com",
+    "cookie_secure": true,
+    "admins": ["admin@example.com"],
+    "auth_providers": [
+      {
+        "id": "github",
+        "type": "github",
+        "name": "GitHub",
+        "url": "https://github.com",
+        "client_id": "your-github-client-id"
+      },
+      {
+        "id": "gitlab",
+        "type": "gitlab",
+        "name": "GitLab",
+        "url": "https://gitlab.example.com",
+        "client_id": "your-gitlab-application-id",
+        "git_hosts": ["ssh.gitlab.example.com"]
+      }
+    ],
+    "discovery": {
+      "enabled": true,
+      "cache_minutes": 15,
+      "max_repos": 200
+    }
+  }
+}

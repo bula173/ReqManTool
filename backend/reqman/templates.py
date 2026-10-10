@@ -559,8 +559,7 @@ def parse_template_text(text: str, template_id: str) -> Template:
     surrogate escape such as ``"\\ud800"``), are rejected so that such a
     template is never written, listed or used.
     """
-    if text.startswith("\ufeff"):
-        text = text[1:]
+    text = text.removeprefix("\ufeff")
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -935,8 +934,7 @@ def read_builtin_module_template_text(local_id: str, directory: Path = BUILTIN_T
 
 def parse_module_template_text(text: str, template_id: str) -> ModuleTemplate:
     """Parse JSON text into a ``ModuleTemplate`` (same JSON checks as ``parse_template_text``)."""
-    if text.startswith("\ufeff"):
-        text = text[1:]
+    text = text.removeprefix("\ufeff")
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:

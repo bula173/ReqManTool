@@ -38,7 +38,7 @@ from .users import User, UserRegistry
 logger = logging.getLogger("reqman_server.login_account")
 
 # Login provider types whose host is a git host (publish, push, pull, review).
-LOGIN_GIT_PROVIDER_TYPES = ("gitlab", "github")
+LOGIN_GIT_PROVIDER_TYPES = ("gitlab", "github", "gerrit")
 # Refresh an access token this long before it expires (same margin as repo_access).
 TOKEN_EXPIRY_MARGIN = 60.0
 

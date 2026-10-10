@@ -65,8 +65,9 @@ Mapping decisions (see also the docstring of ``export_project_to_reqif``):
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Iterator, Sequence
 from datetime import date as _date
-from typing import Any, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Any
 
 from reqif.models.reqif_core_content import ReqIFCoreContent
 from reqif.models.reqif_data_type import (
@@ -118,7 +119,7 @@ _ATTRIBUTE_TYPE_MAP = {
 }
 
 
-def _date_value(value: Any) -> Optional[str]:
+def _date_value(value: Any) -> str | None:
     """A ``YYYY-MM-DD`` value as an ``xsd:dateTime`` THE-VALUE, or None if it is not a valid date."""
     if not isinstance(value, str) or not _ISO_DATE.match(value):
         return None
@@ -149,6 +150,15 @@ def _xhtml_inline(nodes: Iterable[Any], texts: Iterator[str]) -> str:
             out.append(next(texts))
         elif isinstance(node, richtext.LineBreak):
             out.append("<xhtml:br/>")
+        elif isinstance(node, richtext.Image):
+            attrs = f'src="{richtext.xml_text(node.src)}"'
+            if node.alt:
+                attrs += f' alt="{richtext.xml_text(node.alt)}"'
+            if node.width:
+                attrs += f' width="{richtext.xml_text(node.width)}"'
+            if node.height:
+                attrs += f' height="{richtext.xml_text(node.height)}"'
+            out.append(f"<xhtml:img {attrs}/>")
         elif node.tag in ("strong", "em"):
             out.append(f"<xhtml:{node.tag}>{_xhtml_inline(node.children, texts)}</xhtml:{node.tag}>")
         else:
@@ -157,13 +167,14 @@ def _xhtml_inline(nodes: Iterable[Any], texts: Iterator[str]) -> str:
     return "".join(out)
 
 
-def _paragraph_texts(children: Iterable[Any]) -> List[str]:
+def _paragraph_texts(children: Iterable[Any]) -> list[str]:
     """Each text node of a paragraph (document order), escaped, its spacing kept visible.
 
     Spacing is decided per line (split at ``br``) over the line's whole text,
     so a run of spaces split across inline marks is handled like in a plain line.
+    Images are skipped (no text content).
     """
-    lines: List[List[str]] = [[]]
+    lines: list[list[str]] = [[]]
 
     def walk(nodes: Iterable[Any]) -> None:
         for node in nodes:
@@ -171,6 +182,8 @@ def _paragraph_texts(children: Iterable[Any]) -> List[str]:
                 lines[-1].append(richtext.xml_text(node))
             elif isinstance(node, richtext.LineBreak):
                 lines.append([])
+            elif isinstance(node, richtext.Image):
+                continue  # Images have no text content for spacing calculations
             else:
                 walk(node.children)
 
@@ -202,7 +215,7 @@ _SPACE_RUNS = re.compile(r"^ +| +$| {2,}")
 _ESCAPES = {"&": "&amp;", "<": "&lt;", ">": "&gt;", "\t": _NBSP * 4}
 
 
-def _visible_chars(line: str) -> List[str]:
+def _visible_chars(line: str) -> list[str]:
     """Each character of one line (already ``xml_text``-filtered) as XHTML, its spacing kept visible.
 
     See the module docstring: edge spaces and every second space of a run
@@ -247,9 +260,9 @@ def _format_attribute_value(attr_type: str, value: Any) -> str:
 
 def export_project_to_reqif(
     project: Any,
-    modules: Sequence[Tuple[Any, Sequence[Any]]],
+    modules: Sequence[tuple[Any, Sequence[Any]]],
     link_configurations: Sequence[Any] = (),
-    link_pairs: Optional[dict] = None,
+    link_pairs: dict | None = None,
 ) -> str:
     """Export a project + its modules/requirements to a ReqIF XML string.
 
@@ -294,13 +307,13 @@ def export_project_to_reqif(
           requirements become nested SPEC-HIERARCHY children, in the given
           order.
     """
-    all_requirements: List[Any] = []
+    all_requirements: list[Any] = []
     for _module, requirements in modules:
         all_requirements.extend(requirements)
     link_pairs = link_pairs or {}
 
     # --- DATATYPES -----------------------------------------------------
-    data_types: List[Any] = [
+    data_types: list[Any] = [
         ReqIFDataTypeDefinitionString.create(DATATYPE_STRING_ID),
         ReqIFDataTypeDefinitionInteger(identifier=DATATYPE_INTEGER_ID),
         ReqIFDataTypeDefinitionBoolean.create(DATATYPE_BOOLEAN_ID),
@@ -339,7 +352,7 @@ def export_project_to_reqif(
         for config in link_configurations
     ]
 
-    spec_types: List[Any] = [spec_object_type, *spec_relation_types]
+    spec_types: list[Any] = [spec_object_type, *spec_relation_types]
 
     # --- SPEC-OBJECTS: one per requirement, across all modules ----------
     spec_objects = []
@@ -376,11 +389,11 @@ def export_project_to_reqif(
     # --- SPECIFICATIONS: one per module, nested hierarchy via parent_id ----
     specifications = []
     for module, requirements in modules:
-        children_of: dict[Optional[str], List[Any]] = {}
+        children_of: dict[str | None, list[Any]] = {}
         for requirement in requirements:
             children_of.setdefault(getattr(requirement, "parent_id", None), []).append(requirement)
 
-        def build_level(parent_id: Optional[str], level: int) -> List[ReqIFSpecHierarchy]:
+        def build_level(parent_id: str | None, level: int) -> list[ReqIFSpecHierarchy]:
             return [
                 ReqIFSpecHierarchy(
                     identifier=_spec_hierarchy_id(module.id, requirement.id),

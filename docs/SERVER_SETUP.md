@@ -127,6 +127,57 @@ if you use it, or keep an OAuth App with the `repo` scope for publishing.
 3. Save, then copy the **Application ID** (this is the client ID) and the
    **Secret**. Store the secret as `REQMAN_AUTH_GITLAB_CLIENT_SECRET`.
 
+## 3b. Gerrit (self-hosted)
+
+Gerrit supports two authentication modes for ReqManTool:
+
+**Option A: Gerrit's built-in OAuth plugin (recommended)**
+1. Install and enable the Gerrit OAuth plugin.
+2. Create an OAuth client in Gerrit:
+   - **Name:** `ReqManTool`
+   - **Redirect URI:** `<base_url>/auth/callback/gerrit`
+   - **Confidential:** yes
+   - **Scopes:** `openid`, `profile`, `email`
+3. Save, then copy the **Client ID** and **Secret**. Store the secret as
+   `REQMAN_AUTH_GERRIT_CLIENT_SECRET`.
+
+**Option B: Company OIDC/OAuth that fronts Gerrit (e.g., Keycloak, Entra ID)**
+1. Register a web application in your OIDC provider with callback URL
+   `<base_url>/auth/callback/gerrit`.
+2. Give it the scopes `openid profile email`, and a `groups` claim if you
+   want group-based roles.
+3. Set `issuer` to the provider's issuer URL. ReqManTool reads
+   `<issuer>/.well-known/openid-configuration` itself.
+4. Use the OIDC provider's client ID and secret. Store the secret as
+   `REQMAN_AUTH_GERRIT_CLIENT_SECRET`.
+
+**Configuring Gerrit credentials for push (HTTPS/SSH)**
+For each user who will push to Gerrit:
+1. In ReqManTool, go to **User Menu → Gerrit Credentials**.
+2. Enter your **Gerrit HTTP username** and **HTTP password** (from Gerrit's
+   HTTP Password settings), or upload your **SSH private key**.
+3. These credentials are encrypted and stored server-side. They are used
+   only for the one git process during push/pull.
+
+**Push for review**
+When pushing to a Gerrit remote, you can choose **"Push for review"**
+(in the Git panel) to push to `refs/for/current` instead of `current`.
+This creates a Gerrit change for review. The change number and URL are
+shown in the Git panel.
+
+**Config example:**
+```json
+{
+  "id": "gerrit",
+  "type": "gerrit",
+  "name": "Company Gerrit",
+  "url": "https://gerrit.example.com",
+  "client_id": "<client-id>",
+  "client_secret_env": "REQMAN_AUTH_GERRIT_CLIENT_SECRET",
+  "git_hosts": ["ssh.gerrit.example.com"]
+}
+```
+
 ## 4. Other single sign-on (OIDC)
 
 Keycloak, Microsoft Entra ID, Okta, Authentik and Google Workspace all work

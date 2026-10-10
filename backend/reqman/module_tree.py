@@ -8,7 +8,7 @@ may move where) and decides when the tree is stored.
 
 from __future__ import annotations
 
-from typing import Iterable, Iterator
+from collections.abc import Iterable, Iterator
 
 from .models import ModuleFolder
 

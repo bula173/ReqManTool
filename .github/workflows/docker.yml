@@ -1,0 +1,119 @@
+# ReqManTool Server Edition - Docker Image Build and Publish
+# Builds multi-arch (amd64/arm64) image and publishes to GitHub Container Registry
+# Triggers on: tag push (v*), main branch push, PR, manual dispatch
+
+name: Docker Image
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v1.2.3)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/server
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=ReqManTool Server
+            org.opencontainers.image.description=Requirements management server edition
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_DATE=${{ github.event.workflow_run.created_at || github.event.head_commit.timestamp }}
+
+  # Test the built image
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Pull built image
+        run: |
+          echo "${{ needs.build.outputs.tags }}" | tr ',' '\n' | head -1 | xargs docker pull
+
+      - name: Test healthcheck endpoint
+        run: |
+          IMAGE="${{ needs.build.outputs.tags }}" && IMAGE="${IMAGE%%,*}"
+          docker run -d --name reqman-test -p 8899:8899 \
+            -v reqman-test-data:/data \
+            -e REQMAN_MODE=local \
+            "$IMAGE"
+          sleep 5
+          curl -f http://localhost:8899/edition
+          docker stop reqman-test
+          docker rm reqman-test
+          docker volume rm reqman-test-data
+
+  # Deploy to staging (optional)
+  deploy-staging:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Deploy to staging
+        run: |
+          echo "Deploy to staging environment (configure as needed)"
+          # Example: kubectl set image deployment/reqman reqman=${{ needs.build.outputs.tags }}

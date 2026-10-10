@@ -17,7 +17,7 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { IconRefresh, IconRefreshDot, IconTrash, IconUserPlus } from '@tabler/icons-react';
+import { IconRefresh, IconRefreshDot, IconTrash, IconUserPlus, IconEdit, IconPlus } from '@tabler/icons-react';
 import { useMemo, useState } from 'react';
 import {
   useAdminUsers,
@@ -27,9 +27,15 @@ import {
   useSetProjectMember,
   useSyncAccess,
   useUpdateUser,
+  useTestProvider,
+  useAdminProviders,
+  useAdminGroupRoles,
+  useCreateGroupRole,
+  useUpdateGroupRole,
+  useDeleteGroupRole,
 } from '../api/auth';
 import { useProjects } from '../api/queries';
-import { PROJECT_ROLES, PROJECT_ROLE_LABELS, isProjectStub, type AuditEntry, type ProjectRole } from '../api/types';
+import { PROJECT_ROLES, PROJECT_ROLE_LABELS, isProjectStub, type AuditEntry, type ProjectRole, type ProviderInfo, type GroupRole } from '../api/types';
 import { useAuth } from '../auth/context';
 
 const ROLE_OPTIONS = PROJECT_ROLES.map((role) => ({ value: role, label: PROJECT_ROLE_LABELS[role] }));
@@ -543,6 +549,296 @@ function AuditTab() {
   );
 }
 
+/** Server admins: configure login providers (list and test connection). */
+function ProvidersTab() {
+  const providersQuery = useAdminProviders(true);
+  const testProvider = useTestProvider();
+
+  if (providersQuery.isLoading) {
+    return (
+      <Center p="md">
+        <Loader size="sm" aria-label="Loading providers" />
+      </Center>
+    );
+  }
+  if (providersQuery.isError) {
+    return <Alert color="red">Failed to load the providers: {errorText(providersQuery.error)}</Alert>;
+  }
+  const providers = providersQuery.data?.providers ?? [];
+  if (providers.length === 0) {
+    return <Text c="dimmed">No login providers configured. Add providers in the server configuration file.</Text>;
+  }
+
+  return (
+    <Stack gap="md">
+      <Text size="sm" c="dimmed">
+        Configured login providers. Use "Test connection" to verify the configuration.
+      </Text>
+      <Table striped withTableBorder>
+        <Table.Thead>
+          <Table.Tr>
+            <Table.Th>Name</Table.Th>
+            <Table.Th>Type</Table.Th>
+            <Table.Th>Issuer / URL</Table.Th>
+            <Table.Th>OIDC Preset</Table.Th>
+            <Table.Th>Group Claim</Table.Th>
+            <Table.Th>Git host</Table.Th>
+            <Table.Th />
+          </Table.Tr>
+        </Table.Thead>
+        <Table.Tbody>
+          {providers.map((provider: ProviderInfo) => (
+            <Table.Tr key={provider.id}>
+              <Table.Td>
+                <Text size="sm">{provider.name}</Text>
+              </Table.Td>
+              <Table.Td>
+                <Badge size="xs" variant="light" color={provider.is_git_provider ? 'blue' : 'gray'}>
+                  {provider.type_label}
+                </Badge>
+              </Table.Td>
+              <Table.Td>
+                <Text size="sm" style={{ wordBreak: 'break-word' }}>{provider.issuer}</Text>
+              </Table.Td>
+              <Table.Td>
+                <Text size="sm">{provider.oidc_preset || '—'}</Text>
+              </Table.Td>
+              <Table.Td>
+                <Text size="sm">{provider.oidc_group_claim || '—'}</Text>
+              </Table.Td>
+              <Table.Td>
+                {provider.is_git_provider ? (
+                  <Badge size="xs" variant="light" color="green">Yes</Badge>
+                ) : (
+                  <Badge size="xs" variant="light" color="gray">No</Badge>
+                )}
+              </Table.Td>
+              <Table.Td>
+                <Button
+                  variant="subtle"
+                  leftSection={<IconRefreshDot size={14} />}
+                  onClick={() => testProvider.mutate(provider.id)}
+                  loading={testProvider.isPending}
+                  disabled={testProvider.isPending}
+                  aria-label={`Test connection for ${provider.name}`}
+                >
+                  Test connection
+                </Button>
+              </Table.Td>
+            </Table.Tr>
+          ))}
+        </Table.Tbody>
+      </Table>
+    </Stack>
+  );
+}
+
+
+/** Server admins: view group role mappings (IdP group → role per project). */
+function GroupRolesTab() {
+  const groupRolesQuery = useAdminGroupRoles(true);
+  const createGroupRole = useCreateGroupRole();
+  const updateGroupRole = useUpdateGroupRole();
+  const deleteGroupRole = useDeleteGroupRole();
+  const [createModalOpened, setCreateModalOpened] = useState(false);
+  const [editModalOpened, setEditModalOpened] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<GroupRole | null>(null);
+  const [formGroup, setFormGroup] = useState('');
+  const [formRole, setFormRole] = useState<ProjectRole>('viewer');
+  const [formProjects, setFormProjects] = useState<string>('*');
+
+  const handleCreateOpen = () => {
+    setFormGroup('');
+    setFormRole('viewer');
+    setFormProjects('*');
+    setCreateModalOpened(true);
+  };
+
+  const handleEditOpen = (gr: GroupRole) => {
+    setEditingGroup(gr);
+    setFormGroup(gr.group);
+    setFormRole(gr.role as ProjectRole);
+    setFormProjects(gr.projects.join(', '));
+    setEditModalOpened(true);
+  };
+
+  const handleDelete = (group: string) => {
+    if (window.confirm(`Delete group role mapping for "${group}"?`)) {
+      deleteGroupRole.mutate(group);
+    }
+  };
+
+  const handleCreateSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const projects = formProjects.split(',').map(p => p.trim()).filter(Boolean);
+    createGroupRole.mutate({ group: formGroup, role: formRole, projects: projects.length ? projects : ['*'] }, {
+      onSuccess: () => setCreateModalOpened(false),
+    });
+  };
+
+  const handleUpdateSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingGroup) return;
+    const projects = formProjects.split(',').map(p => p.trim()).filter(Boolean);
+    updateGroupRole.mutate({ group: editingGroup.group, role: formRole, projects: projects.length ? projects : ['*'] }, {
+      onSuccess: () => setEditModalOpened(false),
+    });
+  };
+
+  if (groupRolesQuery.isLoading) {
+    return (
+      <Center p="md">
+        <Loader size="sm" aria-label="Loading group roles" />
+      </Center>
+    );
+  }
+  if (groupRolesQuery.isError) {
+    return <Alert color="red">Failed to load the group roles: {errorText(groupRolesQuery.error)}</Alert>;
+  }
+  const groupRoles = groupRolesQuery.data?.group_roles ?? [];
+  if (groupRoles.length === 0) {
+    return (
+      <Stack gap="md">
+        <Text c="dimmed">No group role mappings configured.</Text>
+        <Button leftSection={<IconPlus size={14} />} onClick={handleCreateOpen}>
+          Add group role mapping
+        </Button>
+      </Stack>
+    );
+  }
+
+  return (
+    <Stack gap="md">
+      <Group justify="space-between" mb="sm">
+        <Text size="sm" c="dimmed">
+          Configured group role mappings. Members of the listed IdP groups will receive the specified role in the listed projects.
+        </Text>
+        <Button leftSection={<IconPlus size={14} />} onClick={handleCreateOpen}>
+          Add mapping
+        </Button>
+      </Group>
+      <Table striped withTableBorder>
+        <Table.Thead>
+          <Table.Tr>
+            <Table.Th>IdP Group</Table.Th>
+            <Table.Th>Role</Table.Th>
+            <Table.Th>Projects</Table.Th>
+            <Table.Th style={{ width: 100 }}>Actions</Table.Th>
+          </Table.Tr>
+        </Table.Thead>
+        <Table.Tbody>
+          {groupRoles.map((gr: GroupRole) => (
+            <Table.Tr key={gr.group}>
+              <Table.Td>
+                <Text size="sm">{gr.group}</Text>
+              </Table.Td>
+              <Table.Td>
+                <Badge size="xs" variant="light" color={PROJECT_ROLE_LABELS[gr.role as import('../api/types').ProjectRole] ? 'blue' : 'gray'}>
+                  {PROJECT_ROLE_LABELS[gr.role as import('../api/types').ProjectRole] || gr.role}
+                </Badge>
+              </Table.Td>
+              <Table.Td>
+                <Text size="sm">{gr.projects.join(', ')}</Text>
+              </Table.Td>
+              <Table.Td>
+                <Group gap={4}>
+                  <ActionIcon
+                    variant="subtle"
+                    color="blue"
+                    onClick={() => handleEditOpen(gr)}
+                    aria-label={`Edit ${gr.group}`}
+                  >
+                    <IconEdit size={14} />
+                  </ActionIcon>
+                  <ActionIcon
+                    variant="subtle"
+                    color="red"
+                    onClick={() => handleDelete(gr.group)}
+                    aria-label={`Delete ${gr.group}`}
+                  >
+                    <IconTrash size={14} />
+                  </ActionIcon>
+                </Group>
+              </Table.Td>
+            </Table.Tr>
+          ))}
+        </Table.Tbody>
+      </Table>
+
+      {/* Create Modal */}
+      <Modal opened={createModalOpened} onClose={() => setCreateModalOpened(false)} title="Add group role mapping" size="md">
+        <form onSubmit={handleCreateSubmit}>
+          <Stack gap="md">
+            <TextInput
+              label="IdP Group"
+              placeholder="e.g. engineers, administrators"
+              value={formGroup}
+              onChange={(e) => setFormGroup(e.currentTarget.value)}
+              required
+              error={createGroupRole.isPending && !formGroup ? 'Required' : undefined}
+            />
+            <Select
+              label="Role"
+              data={ROLE_OPTIONS}
+              value={formRole}
+              onChange={(v) => v && setFormRole(v as ProjectRole)}
+              required
+            />
+            <TextInput
+              label="Projects (comma-separated)"
+              placeholder="* or project1, project2"
+              value={formProjects}
+              onChange={(e) => setFormProjects(e.currentTarget.value)}
+              description="Use * for all projects, or list specific project IDs"
+            />
+          </Stack>
+          <Group justify="flex-end" mt="md">
+            <Button variant="subtle" onClick={() => setCreateModalOpened(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleCreateSubmit} loading={createGroupRole.isPending}>
+              Add
+            </Button>
+          </Group>
+        </form>
+      </Modal>
+
+      {/* Edit Modal */}
+      <Modal opened={editModalOpened} onClose={() => { setEditModalOpened(false); setEditingGroup(null); }} title="Edit group role mapping" size="md">
+        <form onSubmit={handleUpdateSubmit}>
+          <Stack gap="md">
+            <Text size="sm" c="dimmed">
+              Editing group: <b>{editingGroup?.group}</b>
+            </Text>
+            <Select
+              label="Role"
+              data={ROLE_OPTIONS}
+              value={formRole}
+              onChange={(v) => v && setFormRole(v as ProjectRole)}
+              required
+            />
+            <TextInput
+              label="Projects (comma-separated)"
+              placeholder="* or project1, project2"
+              value={formProjects}
+              onChange={(e) => setFormProjects(e.currentTarget.value)}
+              description="Use * for all projects, or list specific project IDs"
+            />
+          </Stack>
+          <Group justify="flex-end" mt="md">
+            <Button variant="subtle" onClick={() => { setEditModalOpened(false); setEditingGroup(null); }}>
+              Cancel
+            </Button>
+            <Button onClick={handleUpdateSubmit} loading={updateGroupRole.isPending}>
+              Save
+            </Button>
+          </Group>
+        </form>
+      </Modal>
+    </Stack>
+  );
+}
+
 /** Server edition administration: users and the audit log (server admins), project members (project admins). */
 export function AdminModal({
   opened,
@@ -563,6 +859,8 @@ export function AdminModal({
             {access.serverAdmin && <Tabs.Tab value="users">Users</Tabs.Tab>}
             <Tabs.Tab value="members">Project members</Tabs.Tab>
             {access.serverAdmin && <Tabs.Tab value="audit">Audit log</Tabs.Tab>}
+            {access.serverAdmin && <Tabs.Tab value="providers">Providers</Tabs.Tab>}
+            {access.serverAdmin && <Tabs.Tab value="groupRoles">Group roles</Tabs.Tab>}
           </Tabs.List>
           {access.serverAdmin && (
             <Tabs.Panel value="users">
@@ -575,6 +873,16 @@ export function AdminModal({
           {access.serverAdmin && (
             <Tabs.Panel value="audit">
               <AuditTab />
+            </Tabs.Panel>
+          )}
+          {access.serverAdmin && (
+            <Tabs.Panel value="providers">
+              <ProvidersTab />
+            </Tabs.Panel>
+          )}
+          {access.serverAdmin && (
+            <Tabs.Panel value="groupRoles">
+              <GroupRolesTab />
             </Tabs.Panel>
           )}
         </Tabs>

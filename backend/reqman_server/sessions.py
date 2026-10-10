@@ -37,6 +37,8 @@ from .jsonfile import read_json_file, write_json_file
 _PERSIST_LAST_SEEN_EVERY = 60.0
 PENDING_LOGIN_TTL = 600.0
 _MAX_PENDING_LOGINS = 1000
+# Default maximum concurrent sessions per user (can be overridden in constructor).
+DEFAULT_MAX_SESSIONS_PER_USER = 5
 
 
 def _hash(token: str) -> str:
@@ -65,11 +67,13 @@ class SessionStore:
         max_age: int,
         idle: int,
         clock: Callable[[], float] = time.time,
+        max_sessions_per_user: int = DEFAULT_MAX_SESSIONS_PER_USER,
     ) -> None:
         self.path = path
         self.max_age = max_age
         self.idle = idle
         self.clock = clock
+        self.max_sessions_per_user = max_sessions_per_user
         self._lock = threading.Lock()
         self._sessions: dict[str, Session] = {}
         self._last_persist = 0.0
@@ -97,7 +101,24 @@ class SessionStore:
     def create(
         self, user_id: str, provider: str = "", oauth_tokens: dict | None = None
     ) -> tuple[str, Session]:
-        """A new session: ``(cookie token, session)``; ``oauth_tokens``: the token endpoint's response."""
+        """A new session: ``(cookie token, session)``; ``oauth_tokens``: the token endpoint's response.
+
+        Enforces ``max_sessions_per_user`` by removing the oldest session(s) if the limit is exceeded.
+        """
+        # Enforce max sessions per user: remove oldest session(s) if at limit.
+        with self._lock:
+            user_sessions = [
+                (key, s)
+                for key, s in self._sessions.items()
+                if s.user_id == user_id and self._alive(s, self.clock())
+            ]
+            if len(user_sessions) >= self.max_sessions_per_user:
+                # Sort by creation time (oldest first) and remove excess.
+                user_sessions.sort(key=lambda x: x[1].created)
+                to_remove = len(user_sessions) - self.max_sessions_per_user + 1
+                for key, _ in user_sessions[:to_remove]:
+                    del self._sessions[key]
+
         token = secrets.token_urlsafe(32)
         now = self.clock()
         session = Session(

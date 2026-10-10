@@ -101,7 +101,7 @@ DEFAULT_MODE = "local"
 MODES = ("local", "server")
 
 # Known keys, in the order they are written.
-CONFIG_KEYS = ("data_dir", "host", "port", "cors_origins", "source_url", "mode")
+CONFIG_KEYS = ("data_dir", "host", "port", "cors_origins", "source_url", "mode", "tls_cert_file", "tls_key_file", "tls_ca_file")
 
 ENV_CONFIG_FILE = "REQMAN_CONFIG_FILE"
 ENV_DATA_DIR = "REQMAN_DATA_DIR"
@@ -111,6 +111,9 @@ ENV_CORS_ORIGINS = "REQMAN_CORS_ORIGINS"
 ENV_SOURCE_URL = "REQMAN_SOURCE_URL"
 ENV_MODE = "REQMAN_MODE"
 ENV_FRONTEND_DIR = "REQMAN_FRONTEND_DIR"
+ENV_TLS_CERT_FILE = "REQMAN_TLS_CERT_FILE"
+ENV_TLS_KEY_FILE = "REQMAN_TLS_KEY_FILE"
+ENV_TLS_CA_FILE = "REQMAN_TLS_CA_FILE"
 
 # Built frontend bundled into the package (copied from frontend/dist at release build time).
 PACKAGED_FRONTEND_DIR = PACKAGE_DIR / "static"
@@ -307,6 +310,10 @@ class Settings:
     sources: dict[str, str] = field(default_factory=dict)
     source_url: str = DEFAULT_SOURCE_URL
     mode: str = DEFAULT_MODE
+    # TLS settings (None = disabled). When set, the backend serves HTTPS.
+    tls_cert_file: Path | None = None
+    tls_key_file: Path | None = None
+    tls_ca_file: Path | None = None  # optional, for mTLS
 
     def to_dict(self) -> dict:
         return {
@@ -317,8 +324,16 @@ class Settings:
             "cors_origins": list(self.cors_origins),
             "source_url": self.source_url,
             "mode": self.mode,
+            "tls_cert_file": str(self.tls_cert_file) if self.tls_cert_file else None,
+            "tls_key_file": str(self.tls_key_file) if self.tls_key_file else None,
+            "tls_ca_file": str(self.tls_ca_file) if self.tls_ca_file else None,
             "sources": dict(self.sources),
         }
+
+    @property
+    def tls_enabled(self) -> bool:
+        """True when TLS is configured (both cert and key files exist)."""
+        return self.tls_cert_file is not None and self.tls_key_file is not None
 
 
 def _resolve_dir(value: str, base: Path | None = None) -> Path:
@@ -348,6 +363,15 @@ def _parse_origins(value: object, what: str) -> list[str]:
     else:
         raise ValueError(f"{what}: cors_origins must be a list of strings, got {value!r}")
     return [item.strip() for item in items if item.strip()]
+
+
+def _parse_path(value: object, what: str) -> Path | None:
+    """Parse an optional path value. Empty string or None returns None."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{what}: must be a string, got {value!r}")
+    return Path(value).expanduser().resolve()
 
 
 def _parse_source_url(value: object, what: str) -> str:
@@ -426,6 +450,32 @@ def load_settings() -> Settings:
     else:
         mode, sources["mode"] = DEFAULT_MODE, "default"
 
+    # TLS settings
+    env_tls_cert = os.environ.get(ENV_TLS_CERT_FILE)
+    env_tls_key = os.environ.get(ENV_TLS_KEY_FILE)
+    env_tls_ca = os.environ.get(ENV_TLS_CA_FILE)
+
+    if env_tls_cert is not None and env_tls_cert.strip():
+        tls_cert_file, sources["tls_cert_file"] = _parse_path(env_tls_cert, ENV_TLS_CERT_FILE), "env"
+    elif "tls_cert_file" in values:
+        tls_cert_file, sources["tls_cert_file"] = _parse_path(values["tls_cert_file"], what_file), "config"
+    else:
+        tls_cert_file, sources["tls_cert_file"] = None, "default"
+
+    if env_tls_key is not None and env_tls_key.strip():
+        tls_key_file, sources["tls_key_file"] = _parse_path(env_tls_key, ENV_TLS_KEY_FILE), "env"
+    elif "tls_key_file" in values:
+        tls_key_file, sources["tls_key_file"] = _parse_path(values["tls_key_file"], what_file), "config"
+    else:
+        tls_key_file, sources["tls_key_file"] = None, "default"
+
+    if env_tls_ca is not None and env_tls_ca.strip():
+        tls_ca_file, sources["tls_ca_file"] = _parse_path(env_tls_ca, ENV_TLS_CA_FILE), "env"
+    elif "tls_ca_file" in values:
+        tls_ca_file, sources["tls_ca_file"] = _parse_path(values["tls_ca_file"], what_file), "config"
+    else:
+        tls_ca_file, sources["tls_ca_file"] = None, "default"
+
     return Settings(
         config_file=path,
         data_dir=data_dir,
@@ -435,4 +485,7 @@ def load_settings() -> Settings:
         sources=sources,
         source_url=source_url,
         mode=mode,
+        tls_cert_file=tls_cert_file,
+        tls_key_file=tls_key_file,
+        tls_ca_file=tls_ca_file,
     )

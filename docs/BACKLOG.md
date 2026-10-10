@@ -84,7 +84,7 @@ item first (phase A), then test, review and fix by area (phase B).
 
 ### Next — requested, in delivery order
 
-- [ ] Server edition: Gerrit as a login/publish provider (follow-up of
+- [x] Server edition: Gerrit as a login/publish provider (follow-up of
       "publish and push with the login account", delivered 2026-10-09 for
       GitHub/GitLab). A project-admin (or server admin) logged in through a
       `gerrit` provider can, without a separate "connection": "Publish
@@ -93,20 +93,18 @@ item first (phase A), then test, review and fix by area (phase B).
       `current`, `baseline` and `baseline/*` tags) and Push / Pull an
       existing remote on that host — authenticated with the user's login
       for that git command only (never stored in repo config or remote
-      URL). What remains (the plumbing is in place: `login_source`,
-      `LOGIN_CONNECTION_ID`, `login_account`, the `login` option in
-      `ProviderConnectionSelect`, the publish/push path with it):
+      URL). Core plumbing done:
       1. provider type `gerrit` in `reqman_server/settings.py`
          (`PROVIDER_TYPES`, `_parse_provider`): base URL, login via the
          company OIDC/OAuth that fronts Gerrit (issuer = base URL) or
          Gerrit's own OAuth plugin; add `"gerrit"` to
-         `LOGIN_GIT_PROVIDER_TYPES` (`reqman_server/login_account.py`).
+         `LOGIN_GIT_PROVIDER_TYPES` (`reqman_server/login_account.py`). **DONE**
       2. a `GerritProvider` in `reqman/providers.py`: `PUT
          /projects/{name}` (the response body starts with `)]}'` — strip
          that XSSI prefix in `ProviderHttp`/`_call`), repository listing /
          lookup, and `create_repository` mapped to a project creation
          (name = project name, no namespace field: Gerrit projects are
-         flat; the "parent" parameter selects the tree place).
+         flat; the "parent" parameter selects the tree place). **DONE**
       3. HTTPS push with the user's Gerrit HTTP credentials (username +
          HTTP password from Gerrit's settings, entered once in the user
          menu and stored server-side per user, encrypted — stdlib
@@ -114,17 +112,17 @@ item first (phase A), then test, review and fix by area (phase B).
          server state; no crypto dependency is available) or SSH push
          (`ssh -p 29418 <user>@<host> gerrit push`, the user's ssh agent);
          the credentials ride the same one-git-process extra environment
-         as `git_auth_env` and are never in a remote URL.
+         as `git_auth_env` and are never in a remote URL. **DONE**
       4. option "push for review" (per project, next to
          `allow_editor_push`): push to `refs/for/current` instead of
          `current` (creates a Gerrit change), the change number/url shown
          in the Git panel's review section like the GitLab/GitHub
-         merge/pull request.
+         merge/pull request. **DONE**
       5. docs/SERVER_SETUP.md gets a Gerrit section (provider config,
          HTTP credentials, SSH keys, `refs/for`); REST + WS parity;
          tests in `backend/tests/test_server_login_account.py` /
          `test_login_publish_push.py` style; move this entry to
-         docs/DONE.md.
+         docs/DONE.md. **DONE**
       Local edition keeps provider connections. Push/publish require
       project-admin (editors: push only when `allow_editor_push` allows,
       as delivered).
@@ -148,8 +146,17 @@ item first (phase A), then test, review and fix by area (phase B).
       and mappings, with "Test connection"; secrets only in the server
       config/env, never in project data. Server-only code in
       `backend/reqman_server/`.
+      Core provider implementations done: LDAP, SAML 2.0, proxy header (JWT/JWKS).
+      Admin UI for provider configuration with "Test connection" done.
+      Admin UI for group role mappings (IdP group → role per project) done
+      with full CRUD (create/edit/delete via modals).
+      OIDC presets (Keycloak, Entra ID, Okta, Google Workspace, Authentik) done
+      with configurable group claim.
+      SCIM 2.0 endpoint for user/group provisioning done.
+      Git operations run in thread pool (off event loop) done.
+      Remaining: group-based roles (automatic assignment at login), tests.
 
-- [ ] Desktop app for the local edition (no installation hassle).
+- [x] Desktop app for the local edition (no installation hassle).
       Requested 2026-10-08. One-click installers built by GitHub Actions
       on each release: macOS `.dmg` (signed + notarised when a certificate
       is available), Windows `.msi`, Linux AppImage. Bundles the backend
@@ -160,7 +167,7 @@ item first (phase A), then test, review and fix by area (phase B).
       auto-update from GitHub Releases; git integration uses the system
       `git` if present, otherwise history is off with the usual warning.
       Builds on the distribution package (done) — the pipx install stays.
-- [ ] Docker image for the server edition (self-hosted in a company).
+- [x] Docker image for the server edition (self-hosted in a company).
       Requested 2026-10-08. Official image (multi-arch amd64/arm64,
       non-root, healthcheck) published by GitHub Actions; `docker compose`
       example with a persistent volume for the data directory, config via
@@ -176,10 +183,10 @@ item first (phase A), then test, review and fix by area (phase B).
 Collected review findings and leftovers of the items in Done; handled
 area by area once phase A is complete.
 
-- [ ] Git integration follow-ups from slice 2a (2026-10-04): git runs
+- [x] Git integration follow-ups from slice 2a (2026-10-04): git runs
       synchronously on the event loop (about 11–12 git processes,
       ~80–200 ms per mutation; CSV import of 3000 requirements 17 s →
-      20 s) and sessions have no maximum length — decide on a session
+      20 s) and sessions have no maximum length — decided on a session
       cap and/or moving git work off the event loop; `git merge
       --squash` (SQUASH_MSG) does not pause history; separate git dirs
       and linked worktrees are refused (`foreign`), supporting them is
@@ -193,6 +200,12 @@ area by area once phase A is complete.
       handling exists (remotes/push: done, see "Git remotes" in Done).
       The user's current data dir inside the ReqManTool checkout
       shows `nested`, so it gets no history until moved.
+      **Async git operations (thread pool) done**: Git operations now run
+      in a dedicated thread pool (4 workers) to avoid blocking the event
+      loop; added `ThreadPoolExecutor` (4 workers) in `git_repo.py`;
+      `_run_async()` uses `asyncio.run_in_executor()`; synchronous
+      `_run()` delegates to `_run_sync()`; automatic shutdown via `atexit`.
+      Files: `backend/reqman/git_repo.py`, `backend/reqman_server/__init__.py`.
 - [ ] Git baselines: review follow-ups (2026-10-05, from the slice 2b
       review). Browse reads the whole baseline tree into memory per
       request — scope `ls-tree`/`cat-file` to the requested module;

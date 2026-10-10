@@ -13,7 +13,7 @@ invariants, attribute validation) live in ``service.py``, not here.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 AttributeType = Literal["string", "text", "integer", "boolean", "enum", "date"]
@@ -64,7 +64,7 @@ class AttributeDefinition:
         return data
 
     @staticmethod
-    def from_dict(data: dict) -> "AttributeDefinition":
+    def from_dict(data: dict) -> AttributeDefinition:
         return AttributeDefinition(
             id=data["id"],
             name=data["name"],
@@ -99,7 +99,7 @@ class LinkConfiguration:
         return data
 
     @staticmethod
-    def from_dict(data: dict) -> "LinkConfiguration":
+    def from_dict(data: dict) -> LinkConfiguration:
         target_project_id = data.get("target_project_id")
         return LinkConfiguration(
             id=data["id"],
@@ -119,7 +119,7 @@ class LinkPair:
         return asdict(self)
 
     @staticmethod
-    def from_dict(data: dict) -> "LinkPair":
+    def from_dict(data: dict) -> LinkPair:
         return LinkPair(source_id=data["source_id"], target_id=data["target_id"])
 
 
@@ -181,7 +181,7 @@ class View:
         return data
 
     @staticmethod
-    def from_dict(data: dict) -> "View":
+    def from_dict(data: dict) -> View:
         return View(
             id=data["id"],
             name=data["name"],
@@ -219,7 +219,7 @@ class RowStyle:
         return asdict(self)
 
     @staticmethod
-    def from_dict(data: dict) -> "RowStyle":
+    def from_dict(data: dict) -> RowStyle:
         return RowStyle(
             attribute_id=data["attribute_id"],
             value=data["value"],
@@ -255,7 +255,7 @@ class Requirement:
         return asdict(self)
 
     @staticmethod
-    def from_dict(data: dict) -> "Requirement":
+    def from_dict(data: dict) -> Requirement:
         return Requirement(
             id=data["id"],
             attributes=data.get("attributes", {}),
@@ -284,7 +284,7 @@ class Module:
         return data
 
     @staticmethod
-    def from_dict(data: dict) -> "Module":
+    def from_dict(data: dict) -> Module:
         module_type = data.get("type", DEFAULT_MODULE_TYPE)
         return Module(
             id=data["id"],
@@ -387,7 +387,7 @@ class ProjectLock:
         return data
 
     @staticmethod
-    def from_dict(data: Any) -> "ProjectLock | None":
+    def from_dict(data: Any) -> ProjectLock | None:
         """A lock from its stored value; ``None`` for no lock.
 
         Tolerant of hand edits: any other truthy value (e.g. ``true``) still
@@ -485,7 +485,7 @@ class Project:
         }
 
     @staticmethod
-    def from_dict(data: dict) -> "Project":
+    def from_dict(data: dict) -> Project:
         project = Project(
             id=data["id"],
             name=data["name"],

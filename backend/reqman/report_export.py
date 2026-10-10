@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import csv
 import io
+from collections.abc import Iterable, Sequence
 from datetime import date
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from docx import Document
 from openpyxl import Workbook

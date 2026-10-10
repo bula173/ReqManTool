@@ -39,9 +39,10 @@ import shutil
 import sys
 import threading
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from .formats import PROJECT_FORMAT, stored_format_version, upgrade, with_format_version
 from .models import LinkPair, Module, Project, Requirement
@@ -418,7 +419,7 @@ class ProjectStore:
         return sorted(ids)
 
     @contextmanager
-    def staging_store(self) -> Iterator["ProjectStore"]:
+    def staging_store(self) -> Iterator[ProjectStore]:
         """Yield a store rooted in a fresh staging directory inside the data directory.
 
         A multi-file write (a project created from a template) goes there
@@ -440,7 +441,7 @@ class ProjectStore:
             except OSError:
                 pass  # not empty (another staging in progress) or already gone
 
-    def publish_staged_project(self, staging: "ProjectStore", project_id: str) -> None:
+    def publish_staged_project(self, staging: ProjectStore, project_id: str) -> None:
         """Move a project written into ``staging`` to its final place, atomically.
 
         Raises ``FileExistsError`` if the target path is taken; nothing is

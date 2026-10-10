@@ -307,7 +307,9 @@ class OidcClient:
         claims = self.validate_id_token(tokens["id_token"], nonce)
         info: dict[str, Any] = dict(claims)
         access_token = tokens.get("access_token")
-        missing_groups = want_groups and not any(key in claims for key in GROUP_CLAIMS)
+        # Determine the group claim to use (default: "groups", configurable via provider.oidc_group_claim)
+        group_claim = getattr(self.provider, "oidc_group_claim", "groups")
+        missing_groups = want_groups and group_claim not in claims
         missing_profile = not (claims.get("email") and (claims.get("name") or claims.get("nickname")))
         if (missing_profile or missing_groups) and isinstance(access_token, str):
             extra = self.userinfo(access_token)
@@ -332,19 +334,20 @@ class OidcClient:
             email=text("email"),
             username=username,
             email_verified=verified if isinstance(verified, bool) else None,
-            groups=groups_of(info),
+            groups=groups_of(info, group_claim),
         )
 
 
 # Claims naming the user's groups: ``groups`` (Keycloak, Entra ID, GitLab userinfo), ``groups_direct`` (GitLab ID token).
+# Can be overridden by provider.oidc_group_claim.
 GROUP_CLAIMS = ("groups", "groups_direct")
 MAX_GROUPS = 1000
 
 
-def groups_of(info: dict[str, Any]) -> tuple[str, ...]:
-    """The group names of the claims (``GROUP_CLAIMS``), de-duplicated, at most ``MAX_GROUPS``."""
+def groups_of(info: dict[str, Any], group_claim: str = "groups") -> tuple[str, ...]:
+    """The group names of the claims, de-duplicated, at most ``MAX_GROUPS``."""
     groups: list[str] = []
-    for key in GROUP_CLAIMS:
+    for key in (group_claim, "groups_direct"):
         value = info.get(key)
         if isinstance(value, str):
             value = [value]

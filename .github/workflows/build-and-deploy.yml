@@ -1,0 +1,235 @@
+# GitHub Actions Workflow: Build Distros, Documentation, and Deploy
+
+name: Build & Deploy
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  security-events: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ─── Backend Tests & Coverage ──────────────────────────────────────────────
+  backend-test:
+    name: Backend Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      REQMAN_TOKEN_STORE: memory
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run mypy
+        run: python -m mypy --ignore-missing-imports reqman/ || true
+      - name: Run ruff
+        run: python -m ruff check reqman/ || true
+      - name: Run pytest with coverage
+        run: python -m pytest -q --cov=reqman --cov-fail-under=70 --cov-report=xml --cov-report=term-missing
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: ./backend/coverage.xml
+          fail_ci_if_error: false
+
+  # ─── Frontend Build & Lint ────────────────────────────────────────────────
+  frontend-build:
+    name: Frontend Build & Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Run npm audit
+        run: npm audit --audit-level=high --json > npm-audit.json || true
+      - name: Upload npm audit results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: npm-audit.json
+          category: npm-audit
+      - name: Build
+        run: npm run build
+      - name: Lint
+        run: npm run lint
+
+  # ─── Build Distro (Wheel + SDist) ────────────────────────────────────────
+  build-distro:
+    name: Build Distribution (Wheel + SDist)
+    needs: [backend-test, frontend-build]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install build dependencies
+        run: python -m pip install build
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+      - name: Copy frontend to backend
+        run: |
+          cp -r frontend/dist backend/reqman/static
+          echo "$(cd backend && git log -1 --format='%h (%ci)')" > backend/reqman/BUILD
+      - name: Build wheel and sdist
+        run: |
+          cd backend
+          python -m build
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: backend/dist/
+          retention-days: 30
+
+  # ─── Build Documentation ─────────────────────────────────────────────────
+  build-docs:
+    name: Build Documentation (Doxygen + Sphinx)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y doxygen graphviz python3-sphinx python3-sphinx-rtd-theme
+          pip install sphinx-copybutton sphinx-tabs myst-parser
+      - name: Configure Doxygen
+        run: |
+          cd quality/docs
+          sed -i "s/@REQMAN_VERSION@/${{ github.ref_name }}/g" Doxyfile
+      - name: Run Doxygen
+        run: |
+          cd quality/docs
+          doxygen Doxyfile
+      - name: Build Sphinx docs (if exists)
+        run: |
+          if [ -d docs/sphinx ]; then
+            cd docs/sphinx
+            make html
+          fi
+      - name: Upload documentation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation
+          path: |
+            quality/docs/html/
+            docs/sphinx/_build/html/
+          retention-days: 30
+
+  # ─── Deploy Documentation to GitHub Pages ────────────────────────────────
+  deploy-docs:
+    name: Deploy Documentation to GitHub Pages
+    needs: [build-docs, build-distro]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download documentation artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: documentation
+          path: ./docs
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./docs/html
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  # ─── Create GitHub Release ──────────────────────────────────────────────
+  release:
+    name: Create GitHub Release
+    needs: [build-distro, build-docs]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: ./dist
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+
+  # ─── Mutation Testing (Nightly) ──────────────────────────────────────────
+  mutation-testing:
+    name: Mutation Testing (Nightly)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          cd backend
+          python -m pip install -r requirements-dev.txt
+      - name: Run mutation testing (service.py)
+        run: |
+          cd backend
+          python -m mutmut run --source-dirs=reqman/service.py --runner="python -m pytest -x -q --ignore=tests/test_server_discovery.py --ignore=tests/test_server_login_account.py --ignore=tests/test_git_remotes.py --ignore=tests/test_login_publish_push.py --ignore=tests/test_git_baselines.py --ignore=tests/test_git_baselines_edge_cases.py --ignore=tests/test_git_remotes_edge_cases.py --ignore=tests/test_git_history_conflicts_and_isolation.py --ignore=tests/test_git_history_safety.py" --max-runtime=300 || true
+      - name: Upload mutation results
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutmut-results
+          path: backend/.mutmut-cache
+          retention-days: 7

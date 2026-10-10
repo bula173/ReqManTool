@@ -23,7 +23,9 @@ const DROPPED = new Set([
   'script', 'style', 'template', 'iframe', 'object', 'embed', 'noscript', 'noembed', 'noframes',
   'textarea', 'title', 'head', 'svg', 'math', 'select', 'xmp', 'plaintext', 'frame', 'frameset',
 ]);
-const KEPT = new Set(['br', 'span', 'p', 'ul', 'ol']);
+const KEPT = new Set(['br', 'img', 'span', 'p', 'ul', 'ol']);
+// Max length of a data: URL for an image (~2 MB decoded = ~2.6 MB base64)
+const MAX_IMG_DATA_URL_LENGTH = 2_800_000;
 const MAX_DEPTH = 200;
 const MAX_LIST_DEPTH = 16;
 const MAX_MARK_DEPTH = 16;
@@ -41,6 +43,10 @@ export function isRichText(value: unknown): value is string {
 interface El {
   tag: string;
   style: string;
+  src?: string;
+  alt?: string;
+  width?: string;
+  height?: string;
   children: Node_[];
 }
 type Node_ = El | string;
@@ -51,13 +57,23 @@ function toTree(node: Node, depth: number): Node_[] {
     if (child.nodeType === 3) result.push(child.textContent ?? '');
     else if (child.nodeType === 1) {
       const el = child as Element;
-      // Template contents live in a separate fragment; they are dropped anyway.
       const tag = el.localName.toLowerCase();
       if (depth >= MAX_DEPTH) {
         result.push(...toTree(el, depth));
         return;
       }
-      result.push({ tag, style: el.getAttribute('style') ?? '', children: toTree(el, depth + 1) });
+      const element: El = {
+        tag,
+        style: el.getAttribute('style') ?? '',
+        children: toTree(el, depth + 1),
+      };
+      if (tag === 'img') {
+        element.src = el.getAttribute('src') ?? '';
+        element.alt = el.getAttribute('alt') ?? '';
+        element.width = el.getAttribute('width') ?? undefined;
+        element.height = el.getAttribute('height') ?? undefined;
+      }
+      result.push(element);
     }
   });
   return result;
@@ -80,7 +96,14 @@ interface Mark {
   style: string;
   children: Inline[];
 }
-type Inline = string | Br | Mark;
+interface Img {
+  kind: 'img';
+  src: string;
+  alt: string;
+  width: string | null;
+  height: string | null;
+}
+type Inline = string | Br | Mark | Img;
 interface Para {
   kind: 'p';
   children: Inline[];
@@ -144,6 +167,20 @@ function inline(nodes: Node_[], depth = 0): Inline[] {
     if (DROPPED.has(node.tag)) continue;
     if (node.tag === 'br') {
       result.push({ kind: 'br' });
+      continue;
+    }
+    if (node.tag === 'img') {
+      const src = node.src ?? '';
+      // Only allow data: URLs (offline/local images), max size enforced.
+      if (src.startsWith('data:') && src.length <= MAX_IMG_DATA_URL_LENGTH) {
+        result.push({
+          kind: 'img',
+          src,
+          alt: node.alt ?? '',
+          width: node.width ?? null,
+          height: node.height ?? null,
+        });
+      }
       continue;
     }
     const style = node.tag === 'span' ? canonicalStyle(node.style) : '';
@@ -216,6 +253,7 @@ function listItems(nodes: Node_[], depth: number): Block[][] {
 function hasText(nodes: (Inline | Block)[]): boolean {
   return nodes.some((node) => {
     if (typeof node === 'string') return node.trim() !== '';
+    if (node.kind === 'img') return true; // Images count as content
     if (node.kind === 'mark' || node.kind === 'p') return hasText(node.children);
     if (node.kind === 'list') return node.items.some((i) => hasText(i));
     return false;
@@ -244,6 +282,13 @@ function renderInline(nodes: Inline[]): string {
     .map((node) => {
       if (typeof node === 'string') return escapeHtml(node);
       if (node.kind === 'br') return '<br/>';
+      if (node.kind === 'img') {
+        let attrs = `src="${escapeHtml(node.src)}"`;
+        if (node.alt) attrs += ` alt="${escapeHtml(node.alt)}"`;
+        if (node.width) attrs += ` width="${escapeHtml(node.width)}"`;
+        if (node.height) attrs += ` height="${escapeHtml(node.height)}"`;
+        return `<img ${attrs}/>`;
+      }
       if (node.tag === 'span') return `<span style="${node.style}">${renderInline(node.children)}</span>`;
       return `<${node.tag}>${renderInline(node.children)}</${node.tag}>`;
     })
@@ -305,7 +350,12 @@ export function editorHtmlToValue(html: string): string {
 
 function inlineText(nodes: Inline[]): string {
   return nodes
-    .map((node) => (typeof node === 'string' ? node : node.kind === 'br' ? '\n' : inlineText(node.children)))
+    .map((node) => {
+      if (typeof node === 'string') return node;
+      if (node.kind === 'br') return '\n';
+      if (node.kind === 'img') return node.alt ? `[image: ${node.alt}]` : '[image]';
+      return inlineText(node.children);
+    })
     .join('');
 }
 
