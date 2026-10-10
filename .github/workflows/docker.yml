@@ -101,8 +101,13 @@ jobs:
             -v reqman-test-data:/data \
             -e REQMAN_MODE=local \
             "$IMAGE"
-          sleep 5
-          curl -f http://localhost:8899/edition
+          # Cold start (imports, git setup) can take a while: poll instead
+          # of a fixed sleep, and dump container logs if it never comes up.
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8899/edition > /dev/null; then break; fi
+            sleep 2
+          done
+          curl -f http://localhost:8899/edition || { docker logs reqman-test; exit 1; }
           docker stop reqman-test
           docker rm reqman-test
           docker volume rm reqman-test-data

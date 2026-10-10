@@ -149,11 +149,11 @@ jobs:
           EOF
 
       - name: Build Tauri app
-        working-directory: ./desktop
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          projectPath: ./desktop
           args: --target ${{ matrix.target }}
 
       - name: Upload artifacts
