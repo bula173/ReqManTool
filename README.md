@@ -5,6 +5,31 @@ projects, modules, hierarchical requirements, custom attributes, directional
 traceability links, and ReqIF/CSV export. Requirements are stored as plain
 JSON files on disk, so history, review, and backup are just... git.
 
+## Deployment Modes
+
+ReqManTool runs in two modes:
+
+### Desktop App (Local Edition)
+- **One-click installers** (`.dmg` macOS, `.msi` Windows, `.AppImage` Linux) via Tauri
+- Bundles Python backend + frontend in a native window (Tauri)
+- **No installation hassle** — runs a local server on a free port, stops on exit
+- First run asks for data folder (default `~/ReqManData`)
+- Auto-updates from GitHub Releases
+- Uses system `git` if present; history works offline
+- Auto-updates from GitHub Releases
+- **Use when**: working offline, single-user, or team sharing a folder on a NAS
+
+### Web App (Server Edition)
+- **Multi-user** with authentication (GitHub, GitLab, OIDC, LDAP, SAML, proxy header)
+- Runs on a server (Linux container, VM, bare metal)
+- Users log in with existing accounts (GitHub, GitLab, OIDC, LDAP, SAML)
+- Projects can be **published/pushed** to GitLab/GitHub/Gerrit from the UI
+- Repository permissions map to roles (Viewer/Reviewer/Editor/Project-Admin)
+- Project discovery via GitHub/GitLab API (topic `reqmantool`)
+- Publish/Push/Pull with login account — no stored credentials
+- Runs as a service (systemd/launchd) or container (Docker, Helm, Railway, Render, Azure)
+- **Use when**: team collaboration, multi-user, centralized server, CI/CD integration
+
 ## Features
 
 - **Projects → Modules → Requirements**, with any requirement able to have
