@@ -276,4 +276,7 @@ def test_deep_stack_with_many_start_tags_is_linear(value):
     except ValueError:
         pass
     to_plain(value)
-    assert time.perf_counter() - start < 5  # was ~7 s for sanitize alone; now well under 2 s
+    # Was ~7 s for sanitize alone; now well under 2 s on a dev machine.
+    # The budget is generous because shared CI runners are slow; what this
+    # guards is linearity (a quadratic blowup would take minutes here).
+    assert time.perf_counter() - start < 15

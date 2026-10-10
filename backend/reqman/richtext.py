@@ -56,6 +56,7 @@ The frontend mirrors these rules in ``frontend/src/components/richText.ts``.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
@@ -700,12 +701,110 @@ def _block_lines(blocks: list, depth: int) -> list[str]:
 def to_plain(value: Any) -> Any:
     """The plain-text projection of a rich value; any other value is returned unchanged.
 
+    A TipTap JSON document string (``{"type": "doc", "content": [...]}``, as the
+    editor writes) projects to its text, like a rich value; anything else that
+    is not XHTML rich text is returned unchanged.
+
     Never raises: of a stored value over the size limits (hand-edited or
     pulled from git), only the part within the limits is projected.
     """
     if not is_rich(value):
+        if isinstance(value, str):
+            tiptap = _tiptap_text(value)
+            if tiptap is not None:
+                return tiptap
         return value
     return "\n".join(_block_lines(_normalised(value, strict=False), 0))
+
+
+# A TipTap JSON document (the editor's format) holds at most this many walked
+# nodes and nesting levels when projected; beyond that the rest is skipped, so
+# hostile input costs bounded time (like ``MAX_NODES``/``MAX_DEPTH`` above).
+_TIPTAP_MAX_NODES = 100_000
+_TIPTAP_MAX_DEPTH = 64
+
+
+def _tiptap_text(value: str) -> str | None:
+    """The plain text of a TipTap JSON document string, or None when ``value`` is not one.
+
+    Only ``{"type": "doc", "content": [...]}`` objects count; any other JSON
+    (or invalid JSON) reads as the literal string. Paragraphs and headings
+    become lines, list items get ``- `` / ``1. `` markers like ``to_plain``,
+    ``hardBreak`` a newline; marks are dropped. Never raises.
+    """
+    stripped = value.strip()
+    if not (stripped.startswith('{"') and stripped.endswith("}")):
+        return None
+    try:
+        doc = json.loads(stripped)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(doc, dict) or doc.get("type") != "doc" or not isinstance(doc.get("content"), list):
+        return None
+    lines: list[str] = []
+    count = [0]
+
+    def inline_text(node: Any, depth: int) -> str:
+        if depth > _TIPTAP_MAX_DEPTH or count[0] > _TIPTAP_MAX_NODES or not isinstance(node, dict):
+            return ""
+        count[0] += 1
+        kind = node.get("type")
+        if kind == "text":
+            text = node.get("text")
+            return text if isinstance(text, str) else ""
+        if kind == "hardBreak":
+            return "\n"
+        content = node.get("content")
+        if isinstance(content, list):
+            return "".join(inline_text(child, depth + 1) for child in content)
+        return ""
+
+    def block_lines(nodes: Any, depth: int) -> None:
+        if not isinstance(nodes, list) or depth > _TIPTAP_MAX_DEPTH:
+            return
+        indent = "  " * depth
+        number = 0
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            count[0] += 1
+            if count[0] > _TIPTAP_MAX_NODES:
+                return
+            kind = node.get("type")
+            content = node.get("content") if isinstance(node.get("content"), list) else []
+            if kind in ("paragraph", "heading"):
+                for line in inline_text(node, depth + 1).split("\n"):
+                    lines.append(indent + line)
+            elif kind in ("bulletList", "orderedList"):
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    number = number + 1 if kind == "orderedList" else 0
+                    marker = "- " if kind == "bulletList" else f"{number}. "
+                    item_content = item.get("content") if isinstance(item.get("content"), list) else []
+                    first = True
+                    for block in item_content:
+                        if not isinstance(block, dict):
+                            continue
+                        block_kind = block.get("type")
+                        if block_kind in ("paragraph", "heading") and first:
+                            first = False
+                            parts = inline_text(block, depth + 1).split("\n")
+                            lines.append(indent + marker + parts[0])
+                            lines.extend(indent + " " * len(marker) + part for part in parts[1:])
+                        elif block_kind in ("paragraph", "heading"):
+                            for line in inline_text(block, depth + 1).split("\n"):
+                                lines.append(indent + " " * len(marker) + line)
+                        else:
+                            block_lines([block], depth + 1)
+            else:
+                # A list item outside a list, a blockquote, or an unknown
+                # block: descend (depth grows, so hostile nesting stops at
+                # _TIPTAP_MAX_DEPTH), so its text is still projected.
+                block_lines(content, depth + 1)
+
+    block_lines(doc["content"], 0)
+    return "\n".join(lines)
 
 
 # --- structured read (formatted exports) ---------------------------------------

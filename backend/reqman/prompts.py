@@ -169,7 +169,9 @@ def used_placeholders(body: str) -> list[str]:
 
 
 def _check_text(value: Any, what: str, limit: int, required: bool = False) -> str:
-    if value is None and not required:
+    if value is None:
+        if required:
+            raise ValueError(f"'{what}' must not be empty")
         return ""
     if not isinstance(value, str):
         raise ValueError(f"'{what}' must be a string")
