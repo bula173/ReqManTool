@@ -1,18 +1,23 @@
-# ReqManTool Desktop App - Build and Release
-# Builds macOS DMG, Windows MSI, and Linux AppImage on each release
+# ReqManTool Desktop App - Build, Test and Release
+#
+# Builds the macOS DMG (universal), Windows MSI + NSIS installer and Linux
+# AppImage on every push to main, every pull request and every release tag,
+# runs a smoke test on each package, and attaches them to the GitHub release
+# when the run is a `v*` tag.
+#
+# The app answers `--version` without starting the GUI, which is what the
+# smoke tests use to prove the bundled binary runs on that platform.
 
-name: Desktop App Release
+name: Desktop App
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
+  pull_request:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version tag (e.g. v1.2.3)'
-        required: false
-        type: string
 
 permissions:
   contents: write
@@ -23,20 +28,34 @@ jobs:
     name: Build ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      # One platform failing must not throw away the packages of the others.
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
             target: universal-apple-darwin
+            # rustup has no `universal-apple-darwin` target: Tauri builds both
+            # architectures and merges them.
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
             artifact: dmg
             upload_name: ReqManTool-macOS
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            rust_targets: x86_64-pc-windows-msvc
             artifact: msi
             upload_name: ReqManTool-Windows
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            rust_targets: x86_64-unknown-linux-gnu
             artifact: appimage
             upload_name: ReqManTool-Linux
+
+    # The "Prepare Python backend" step is POSIX shell script (heredoc, cp -r)
+    # and the runners default to PowerShell on Windows.
+    defaults:
+      run:
+        shell: bash
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -46,14 +65,16 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.rust_targets }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: desktop/package-lock.json
+          cache-dependency-path: |
+            frontend/package-lock.json
+            desktop/package-lock.json
 
       - name: Install system dependencies (Linux)
         if: matrix.os == 'ubuntu-latest'
@@ -91,7 +112,8 @@ jobs:
           path: |
             ~/.npm
             desktop/node_modules
-          key: ${{ matrix.os }}-node-${{ hashFiles('desktop/package-lock.json') }}
+            frontend/node_modules
+          key: ${{ matrix.os }}-node-${{ hashFiles('frontend/package-lock.json', 'desktop/package-lock.json') }}
 
       - name: Install frontend dependencies
         working-directory: ./frontend
@@ -100,32 +122,31 @@ jobs:
       - name: Build frontend
         working-directory: ./frontend
         run: npm run build
-        env:
-          VITE_TAURI: "true"
+
+      - name: Install desktop dependencies (Tauri CLI)
+        working-directory: ./desktop
+        run: npm ci
 
       - name: Prepare Python backend
         run: |
           # Create backend bundle
           mkdir -p desktop/src-tauri/backend
-          
+
           # Copy backend source (reqman_server too: reqman/middleware.py
           # imports reqman_server.settings)
           cp -r backend/reqman desktop/src-tauri/backend/
           cp -r backend/reqman_server desktop/src-tauri/backend/
-          cp -r backend/reqman/templates desktop/src-tauri/backend/
-          cp -r backend/reqman/prompts desktop/src-tauri/backend/
           cp backend/requirements.txt desktop/src-tauri/backend/
           cp backend/pyproject.toml desktop/src-tauri/backend/
-          cp backend/README.md desktop/src-tauri/backend/ 2>/dev/null || true
           cp LICENSE desktop/src-tauri/backend/
-          
+
           # Create a minimal entry point
           cat > desktop/src-tauri/backend/__main__.py << 'EOF'
-"""python -m reqman runs the CLI."""
-import sys
-from reqman.cli import main
-sys.exit(main())
-EOF
+          """python -m reqman runs the CLI."""
+          import sys
+          from reqman.cli import main
+          sys.exit(main())
+          EOF
 
       - name: Build Tauri app
         working-directory: ./desktop
@@ -133,27 +154,6 @@ EOF
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "ReqManTool ${{ github.ref_name }}"
-          releaseBody: |
-            ## ReqManTool Desktop App ${{ github.ref_name }}
-            
-            ### Changes
-            See [CHANGELOG.md](https://github.com/bula173/ReqManTool/blob/main/CHANGELOG.md)
-            
-            ### Installation
-            - **macOS**: Download `.dmg`, open it, and drag ReqManTool to Applications
-            - **Windows**: Download `.msi` and run the installer
-            - **Linux**: Download `.AppImage`, make it executable (`chmod +x`), and run
-            
-            ### Requirements
-            - Python 3.11+ (bundled on Windows/macOS, system on Linux)
-            - Git (for version history features)
-            
-            ### First Run
-            On first launch, you'll be asked to choose a data folder (default: `~/ReqManData`).
-          releaseDraft: false
-          prerelease: false
           args: --target ${{ matrix.target }}
 
       - name: Upload artifacts
@@ -162,52 +162,19 @@ EOF
           name: ${{ matrix.upload_name }}
           path: |
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.${{ matrix.artifact }}
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
           retention-days: 30
 
-  # Create combined release
-  release:
-    name: Create Release
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: false
-
-      - name: Create checksums
-        run: |
-          cd artifacts
-          for file in */*.dmg */*.msi */*.AppImage; do
-            if [ -f "$file" ]; then
-              sha256sum "$file" >> SHA256SUMS.txt
-            fi
-          done
-          cat SHA256SUMS.txt
-
-      - name: Upload checksums
-        uses: actions/upload-artifact@v4
-        with:
-          name: checksums
-          path: artifacts/SHA256SUMS.txt
-
-      - name: Update release with checksums
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/SHA256SUMS.txt
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # Test the built app (smoke test)
+  # Smoke test: the package installs/starts and the binary answers `--version`.
   test:
     name: Test ${{ matrix.os }}
     needs: build
-    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Download artifact
         uses: actions/download-artifact@v4
@@ -225,12 +192,94 @@ EOF
       - name: Test Windows
         if: matrix.os == 'windows-latest'
         run: |
-          msiexec /i artifact/*.msi /qn /norestart
-          "$env:LOCALAPPDATA\ReqManTool\ReqManTool.exe" --version
-          msiexec /x artifact/*.msi /qn
+          $msi = (Get-Item artifact/*.msi).FullName
+          msiexec /i $msi /qn /norestart
+          if ($LASTEXITCODE -ne 0) { throw "msiexec install failed: $LASTEXITCODE" }
+
+          # The install location is wherever the MSI decided to put it; ask
+          # the uninstall registry entries instead of guessing a path.
+          $entry = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -like "ReqManTool*" } | Select-Object -First 1
+          if (-not $entry) {
+            $entry = Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
+              Where-Object { $_.DisplayName -like "ReqManTool*" } | Select-Object -First 1
+          }
+          if (-not $entry -or -not $entry.InstallLocation) { throw "ReqManTool was not registered after install" }
+
+          $exe = Join-Path $entry.InstallLocation "ReqManTool.exe"
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) { throw "$exe --version failed: $LASTEXITCODE" }
+
+          msiexec /x $msi /qn
+          if ($LASTEXITCODE -ne 0) { throw "msiexec uninstall failed: $LASTEXITCODE" }
 
       - name: Test Linux
         if: matrix.os == 'ubuntu-latest'
+        env:
+          # Runners have no usable /dev/fuse for every image.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
           chmod +x artifact/*.AppImage
           ./artifact/*.AppImage --version
+
+  # Attach the packages of a release tag to the GitHub release.
+  release:
+    name: Create Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+
+      - name: Create checksums
+        run: |
+          cd artifacts
+          for file in */*.dmg */*.msi */*.exe */*.AppImage; do
+            if [ -f "$file" ]; then
+              sha256sum "$file" >> SHA256SUMS.txt
+            fi
+          done
+          cat SHA256SUMS.txt
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums
+          path: artifacts/SHA256SUMS.txt
+
+      - name: Create release with packages
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ReqManTool ${{ github.ref_name }}
+          files: |
+            artifacts/**/*.dmg
+            artifacts/**/*.msi
+            artifacts/**/*.exe
+            artifacts/**/*.AppImage
+            artifacts/SHA256SUMS.txt
+          body: |
+            ## ReqManTool Desktop App ${{ github.ref_name }}
+
+            See [CHANGELOG.md](https://github.com/bula173/ReqManTool/blob/main/CHANGELOG.md) for the changes.
+
+            ### Installation
+            - **macOS**: download the `.dmg`, open it, drag ReqManTool to Applications
+            - **Windows**: run the `.msi` (or the `-setup.exe`)
+            - **Linux**: download the `.AppImage`, `chmod +x`, run it
+
+            ### Requirements
+            - Python 3.11+ on the machine (found as `python3`, `python` or the `py` launcher)
+            - Git, for the version history features
+            - WebView2 Runtime on Windows (the installer offers to fetch it)
+
+            ### First run
+            The app asks whether to start a local instance or to connect to an
+            existing ReqManTool server; the choice and the server address are
+            remembered (tray menu: *Local instance* / *Server address…*). For a
+            local instance you are then asked for a data folder.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
