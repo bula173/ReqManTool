@@ -204,8 +204,14 @@ jobs:
           $msi = $msiFiles[0].FullName
           Write-Host "Found MSI: $msi"
 
-          msiexec /i $msi /qn /norestart
-          if ($LASTEXITCODE -ne 0) { throw "msiexec install failed: $LASTEXITCODE" }
+          # Install with verbose logging to capture any errors
+          $logFile = "msi_install.log"
+          $result = msiexec /i $msi /qn /norestart /l*v $logFile
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "msiexec install failed with exit code $LASTEXITCODE"
+            if (Test-Path $logFile) { Get-Content $logFile }
+            exit $LASTEXITCODE
+          }
 
           # The install location is wherever the MSI decided to put it; ask
           # the uninstall registry entries instead of guessing a path.
