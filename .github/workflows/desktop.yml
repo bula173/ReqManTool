@@ -158,10 +158,14 @@ jobs:
           # Ensure we're building release
           cargoArgs: --release
 
-      - name: Verify build artifacts
+      - name: Debug build artifacts
         run: |
           echo "=== Build artifacts ==="
-          find desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f -name "*.${{ matrix.artifact }}" -o -name "*.exe" -o -name "*.AppImage" | head -20
+          echo "Target: ${{ matrix.target }}"
+          echo "Artifact type: ${{ matrix.artifact }}"
+          find desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f \( -name "*.${{ matrix.artifact }}" -o -name "*.exe" -o -name "*.AppImage" -o -name "*.dmg" -o -name "*.msi" \) | head -20
+          echo "=== Full bundle tree ==="
+          find desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f | head -30
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -171,6 +175,8 @@ jobs:
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.${{ matrix.artifact }}
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
           retention-days: 30
 
   # Smoke test: the package installs/starts and the binary answers `--version`.
@@ -193,25 +199,37 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: |
           set -euo pipefail
-          DMG=$(find artifact -name '*.dmg' -type f | head -1)
+          echo "=== Searching for DMG ==="
+          DMG=$(find artifact -type f -name "*.dmg" | head -1)
           if [ -z "$DMG" ]; then
             echo "No DMG found in artifact directory"
-            ls -la artifact/
+            find artifact -type f
             exit 1
           fi
+          echo "Found DMG: $DMG"
           hdiutil attach "$DMG"
           # Find the mounted volume (might not be exactly "ReqManTool")
           VOLUME=$(hdiutil info | grep -E '/Volumes/.*ReqManTool' | head -1 | awk '{print $1}' | xargs -I {} hdiutil info | grep -B1 {} | grep 'image-path' | head -1 | cut -d' ' -f3-)
           if [ -z "$VOLUME" ]; then
             VOLUME="/Volumes/ReqManTool"
           fi
+          echo "Mounted at: $VOLUME"
           "$VOLUME/ReqManTool.app/Contents/MacOS/ReqManTool" --version
           hdiutil detach "$VOLUME"
 
       - name: Test Windows
         if: matrix.os == 'windows-latest'
         run: |
-          $msi = (Get-Item artifact/*.msi).FullName
+          Write-Host "=== Searching for MSI ==="
+          $msiFiles = Get-ChildItem artifact -Recurse -Filter "*.msi" -File
+          if (-not $msiFiles) {
+            Write-Error "No MSI found in artifact directory"
+            Get-ChildItem artifact -Recurse
+            exit 1
+          }
+          $msi = $msiFiles[0].FullName
+          Write-Host "Found MSI: $msi"
+
           msiexec /i $msi /qn /norestart
           if ($LASTEXITCODE -ne 0) { throw "msiexec install failed: $LASTEXITCODE" }
 
@@ -239,12 +257,14 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
           set -euo pipefail
-          APPIMAGE=$(find artifact -name '*.AppImage' -type f | head -1)
+          echo "=== Searching for AppImage ==="
+          APPIMAGE=$(find artifact -type f -name "*.AppImage" | head -1)
           if [ -z "$APPIMAGE" ]; then
             echo "No AppImage found in artifact directory"
-            ls -la artifact/
+            find artifact -type f
             exit 1
           fi
+          echo "Found AppImage: $APPIMAGE"
           chmod +x "$APPIMAGE"
           "$APPIMAGE" --version
 
