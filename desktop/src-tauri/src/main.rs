@@ -42,27 +42,40 @@ impl Default for BackendState {
     }
 }
 
-// Configuration file structure
+/// The app's own settings, kept in `<config dir>/ReqManTool/config.json` —
+/// the same file the backend reads as *its* config (`reqman/config.py`), which
+/// is how the chosen data folder reaches it. So this file must stay a valid
+/// backend config: our own keys are `app_mode`/`server_url` (never `mode`,
+/// that one is the backend's edition) and unset values are left out instead of
+/// being written as `null`, which the backend rejects.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(default)]
 struct DesktopConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     data_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     last_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     window_state: Option<WindowState>,
     auto_update: bool,
     check_updates_on_start: bool,
     /// `"local"` (the bundled backend) or `"server"` (an address the window
-    /// loads); `None` means the user has not decided (yet).
-    mode: Option<String>,
+    /// loads); absent means the user has not decided (yet).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app_mode: Option<String>,
     /// The last server address the user entered, offered again on the start screen.
+    #[serde(skip_serializing_if = "Option::is_none")]
     server_url: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(default)]
 struct WindowState {
     width: f64,
     height: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     x: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     y: Option<f64>,
     maximized: bool,
 }
@@ -75,7 +88,7 @@ impl Default for DesktopConfig {
             window_state: None,
             auto_update: true,
             check_updates_on_start: true,
-            mode: None,
+            app_mode: None,
             server_url: None,
         }
     }
@@ -83,8 +96,10 @@ impl Default for DesktopConfig {
 
 /// What the frontend needs to render: which mode the app runs in, the server
 /// address to offer on the start screen and, in local mode, the URL of the
-/// backend the Rust side started.
+/// backend the Rust side started. Serialized camelCase to match the
+/// `DesktopState` type the webview reads (`baseUrl`, `serverUrl`, …).
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct AppState {
     mode: Option<String>,
     server_url: Option<String>,
@@ -178,7 +193,8 @@ fn process_identity(pid: u32) -> String {
     }
     #[cfg(windows)]
     {
-        let output = silent(Command::new("tasklist"))
+        let mut cmd = Command::new("tasklist");
+        let output = silent(&mut cmd)
             .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
             .output();
         let line = output
@@ -249,9 +265,12 @@ fn reap_stale_backend(app: &AppHandle) {
     let _ = Command::new("kill").arg("-KILL").arg(pid.to_string()).status();
     // /T: take the whole tree down, the backend has children of its own.
     #[cfg(windows)]
-    let _ = silent(Command::new("taskkill"))
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .status();
+    {
+        let mut cmd = Command::new("taskkill");
+        let _ = silent(&mut cmd)
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .status();
+    }
 }
 
 // Start the Python backend
@@ -333,12 +352,11 @@ async fn start_backend(app: &AppHandle, state: State<'_, BackendState>, config: 
         let mut data_dir_lock = state.data_dir.lock().unwrap();
         *data_dir_lock = Some(data_dir.clone());
     }
-    {
-        let mut base_url_lock = state.base_url.lock().unwrap();
-        *base_url_lock = Some(format!("http://127.0.0.1:{}", port));
-    }
 
-    // Wait for backend to be ready
+    // Wait for backend to be ready. `base_url` is published only once the
+    // server answers (below): the window's webview is already loading while
+    // this runs, and `get_app_state` would otherwise hand out a port that is
+    // not listening yet — its first request then fails.
     let base_url = format!("http://127.0.0.1:{}", port);
     let client = Client::new();
 
@@ -349,6 +367,7 @@ async fn start_backend(app: &AppHandle, state: State<'_, BackendState>, config: 
             if response.status().is_success() {
                 if let Ok(edition) = response.json::<EditionResponse>().await {
                     if edition.mode == "local" {
+                        *state.base_url.lock().unwrap() = Some(base_url);
                         return Ok(port);
                     }
                 }
@@ -421,8 +440,8 @@ fn app_state(app: &AppHandle) -> AppState {
         .ok()
         .and_then(|base_url| base_url.clone());
     AppState {
-        needs_choice: config.mode.is_none(),
-        mode: config.mode,
+        needs_choice: config.app_mode.is_none(),
+        mode: config.app_mode,
         server_url: config.server_url,
         base_url,
     }
@@ -461,9 +480,16 @@ fn load_url(app: &AppHandle, url: &str) {
 /// saved geometry can be restored without a flash; show it once the app is
 /// ready for the user.
 fn show_main_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.set_focus();
+    let Some(window) = app.get_webview_window("main") else {
+        eprintln!("show_main_window: no window named 'main'");
+        return;
+    };
+    if let Err(e) = window.show() {
+        eprintln!("show_main_window: show failed: {}", e);
+        return;
+    }
+    if let Err(e) = window.set_focus() {
+        eprintln!("show_main_window: set_focus failed: {}", e);
     }
 }
 
@@ -502,13 +528,13 @@ fn run_local_backend(app: AppHandle) {
     });
 }
 
-/// Remembers the choice from the tray / app menu and brings the window back to
-/// the app's own UI — the start screen when the user asked for a server
-/// address again (`mode` cleared, the last address kept on offer).
-fn switch_mode(app: &AppHandle, mode: Option<&str>) {
+/// Remembers the choice made in the footer's mode menu and brings the window
+/// back to the app's own UI — the start screen when the user asked for a
+/// server address again (`mode` cleared, the last address kept on offer).
+fn apply_mode_change(app: &AppHandle, mode: Option<&str>) {
     {
         let mut config = load_config(app);
-        config.mode = mode.map(str::to_string);
+        config.app_mode = mode.map(str::to_string);
         let _ = save_config(app, &config);
     }
     let app = app.clone();
@@ -525,13 +551,20 @@ fn switch_mode(app: &AppHandle, mode: Option<&str>) {
     });
 }
 
+/// The footer's switch: the same change the tray menu used to make, minus the
+/// native menu. `mode: null` clears the remembered choice, so the start screen
+/// shows again (the last server address stays on offer).
+#[tauri::command]
+async fn switch_mode(app: AppHandle, mode: Option<String>) -> Result<AppState, String> {
+    apply_mode_change(&app, mode.as_deref());
+    Ok(app_state(&app))
+}
+
 // Create system tray menu
 fn create_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>> {
     let show = MenuItem::with_id(app, "show", "Show ReqManTool", true, None::<&str>)?;
-    let local = MenuItem::with_id(app, "local", "Local instance", true, None::<&str>)?;
-    let server = MenuItem::with_id(app, "server", "Server address…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &local, &server, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
     Ok(menu)
 }
 
@@ -565,9 +598,6 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
         .menu(&tray_menu)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "show" => show_main_window(app),
-            "local" => switch_mode(app, Some("local")),
-            // Back to the start screen; the last server address stays on offer.
-            "server" => switch_mode(app, None),
             "quit" => {
                 app.exit(0);
             }
@@ -590,7 +620,7 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
     // What the window shows: a remembered server, the local instance, or the
     // question itself. A dev build skips the question (it is always local).
-    match config.mode.as_deref() {
+    match config.app_mode.as_deref() {
         Some("server") => {
             let url = config
                 .server_url
@@ -599,7 +629,17 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
             load_url(app.handle(), &url);
         }
         Some("local") => start_local(app.handle()),
-        _ if cfg!(debug_assertions) => start_local(app.handle()),
+        // A dev build is always local and never asks: remember that, so the
+        // start screen stays out of the way (the tray menu can still clear the
+        // mode to try it).
+        _ if cfg!(debug_assertions) => {
+            let mut config = load_config(app.handle());
+            if config.app_mode.is_none() {
+                config.app_mode = Some("local".to_string());
+                let _ = save_config(app.handle(), &config);
+            }
+            start_local(app.handle());
+        }
         _ => {
             let app_handle = app.handle().clone();
             app_handle
@@ -613,7 +653,7 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 .show(move |local| {
                     if local {
                         let mut config = load_config(&app_handle);
-                        config.mode = Some("local".to_string());
+                        config.app_mode = Some("local".to_string());
                         let _ = save_config(&app_handle, &config);
                         start_local(&app_handle);
                     } else {
@@ -752,7 +792,7 @@ async fn set_app_mode(
         "local" => {
             {
                 let mut config = load_config(&app);
-                config.mode = Some("local".to_string());
+                config.app_mode = Some("local".to_string());
                 save_config(&app, &config).map_err(|e| e.to_string())?;
             }
             let config = load_config(&app);
@@ -767,7 +807,7 @@ async fn set_app_mode(
             let url = server_url.ok_or_else(|| "A server address is required".to_string())?;
             {
                 let mut config = load_config(&app);
-                config.mode = Some("server".to_string());
+                config.app_mode = Some("server".to_string());
                 config.server_url = Some(url.clone());
                 save_config(&app, &config).map_err(|e| e.to_string())?;
             }
@@ -822,7 +862,8 @@ fn main() {
             restart_backend,
             check_updates,
             get_app_state,
-            set_app_mode
+            set_app_mode,
+            switch_mode
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -35,10 +35,15 @@ ReqManTool runs in two modes:
 - **One-click installers** (`.dmg` macOS, `.msi` Windows, `.AppImage` Linux) via Tauri
 - Bundles Python backend + frontend in a native window (Tauri)
 - **No installation hassle** — runs a local server on a free port, stops on exit
+- **Picks where to run on start**: the *Local instance* (the bundled backend,
+  the default) or a *Server address…* the user types — the window then just
+  loads that server. A release build asks once on first start, the choice and
+  the last address are remembered (app config), and the **app footer** (left:
+  current mode → menu with *Local instance* / *Server address…*) switches at
+  any time; `tauri dev` never asks and always runs local
 - First run asks for data folder (default `~/ReqManData`)
 - Auto-updates from GitHub Releases
 - Uses system `git` if present; history works offline
-- Auto-updates from GitHub Releases
 - **Use when**: working offline, single-user, or team sharing a folder on a NAS
 
 ### 1.2. Web App (Server Edition)
@@ -84,7 +89,8 @@ ReqManTool runs in two modes:
   a tree in the sidebar
 - **Export to ReqIF** (using the [`reqif`](https://github.com/strictdoc-project/reqif)
   package) and **CSV**, and **import a ReqIF document back** — a formatted
-  requirement comes back still formatted
+  requirement comes back still formatted, and an enum attribute keeps its
+  choices
 - **Live sync** — edits in one browser tab/window show up in others without
   a manual refresh
 - A **REST API and a WebSocket JSON-RPC API**, both backed by the same
@@ -169,7 +175,10 @@ The native desktop app (Tauri, `desktop/`) has its own entry point:
 first if they are not already running (it stops only what it started itself,
 and reuses anything already up). `./etc/start-desktop.sh --build` produces
 the installers under `desktop/src-tauri/target/release/bundle/`; extra
-arguments go to `tauri dev` / `tauri build`. See `desktop/README.md`.
+arguments go to `tauri dev` / `tauri build`. The packaged app asks on first
+start whether to run the local instance or connect to a server, remembers
+that choice (and the address) and lets you change it from the tray menu.
+See `desktop/README.md`.
 
 By default, data is stored in `example_database/` at the repo root; change
 it any time from the folder icon in the app header (or `--dir <path>` /
@@ -186,7 +195,8 @@ serves it.
 The tool version lives in one place, `__version__` in
 `backend/reqman/__init__.py`; the frontend build reads it from there. The
 app footer shows `ReqManTool <version> · build <commit> (<date>)` and warns
-when the frontend and backend versions differ. `GET /version` (WebSocket
+when the frontend and backend versions differ; in the desktop app the same
+footer carries the local ⇄ server switch. `GET /version` (WebSocket
 `version.get`) returns the backend's `{version, build}`. The backend's build
 date is the date of the checked-out commit; the frontend's is the date of
 `npm run build`. `npm run dev` shows build `dev`. Set `REQMAN_BUILD` to

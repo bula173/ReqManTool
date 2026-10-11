@@ -35,6 +35,15 @@ export async function setDesktopMode(mode: 'local' | 'server', serverUrl?: strin
 }
 
 /**
+ * The footer's switch: `local` starts the bundled backend and moves the window
+ * back to the app UI, `ask` clears the remembered choice so the start screen
+ * shows again (the last server address stays on offer).
+ */
+export async function requestModeSwitch(target: 'local' | 'ask'): Promise<void> {
+  await invoke('switch_mode', { mode: target === 'local' ? 'local' : null });
+}
+
+/**
  * Waits for the local backend the Rust side started and points the API at it.
  * It may still be coming up (the first run picks a data folder first), so this
  * retries for a while and falls back to the page origin if it never appears.

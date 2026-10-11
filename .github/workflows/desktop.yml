@@ -132,8 +132,8 @@ jobs:
           # Create backend bundle
           mkdir -p desktop/src-tauri/backend
 
-          # Copy backend source (reqman_server too: reqman/middleware.py
-          # imports reqman_server.settings)
+          # Copy backend source (reqman_server is copied for the bundled app;
+          # reqman/middleware.py no longer imports it, so the wheel is clean)
           cp -r backend/reqman desktop/src-tauri/backend/
           cp -r backend/reqman_server desktop/src-tauri/backend/
           cp backend/requirements.txt desktop/src-tauri/backend/
