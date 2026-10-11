@@ -149,12 +149,19 @@ jobs:
           EOF
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v0.1.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: ./desktop
           args: --target ${{ matrix.target }}
+          # Ensure we're building release
+          cargoArgs: --release
+
+      - name: Verify build artifacts
+        run: |
+          echo "=== Build artifacts ==="
+          find desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f -name "*.${{ matrix.artifact }}" -o -name "*.exe" -o -name "*.AppImage" | head -20
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -185,9 +192,21 @@ jobs:
       - name: Test macOS
         if: matrix.os == 'macos-latest'
         run: |
-          hdiutil attach artifact/*.dmg
-          "/Volumes/ReqManTool/ReqManTool.app/Contents/MacOS/ReqManTool" --version
-          hdiutil detach "/Volumes/ReqManTool"
+          set -euo pipefail
+          DMG=$(find artifact -name '*.dmg' -type f | head -1)
+          if [ -z "$DMG" ]; then
+            echo "No DMG found in artifact directory"
+            ls -la artifact/
+            exit 1
+          fi
+          hdiutil attach "$DMG"
+          # Find the mounted volume (might not be exactly "ReqManTool")
+          VOLUME=$(hdiutil info | grep -E '/Volumes/.*ReqManTool' | head -1 | awk '{print $1}' | xargs -I {} hdiutil info | grep -B1 {} | grep 'image-path' | head -1 | cut -d' ' -f3-)
+          if [ -z "$VOLUME" ]; then
+            VOLUME="/Volumes/ReqManTool"
+          fi
+          "$VOLUME/ReqManTool.app/Contents/MacOS/ReqManTool" --version
+          hdiutil detach "$VOLUME"
 
       - name: Test Windows
         if: matrix.os == 'windows-latest'
@@ -219,8 +238,15 @@ jobs:
           # Runners have no usable /dev/fuse for every image.
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
-          chmod +x artifact/*.AppImage
-          ./artifact/*.AppImage --version
+          set -euo pipefail
+          APPIMAGE=$(find artifact -name '*.AppImage' -type f | head -1)
+          if [ -z "$APPIMAGE" ]; then
+            echo "No AppImage found in artifact directory"
+            ls -la artifact/
+            exit 1
+          fi
+          chmod +x "$APPIMAGE"
+          "$APPIMAGE" --version
 
   # Attach the packages of a release tag to the GitHub release.
   release:
