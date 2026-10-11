@@ -163,9 +163,9 @@ jobs:
           echo "=== Build artifacts ==="
           echo "Target: ${{ matrix.target }}"
           echo "Artifact type: ${{ matrix.artifact }}"
-          find desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f \( -name "*.${{ matrix.artifact }}" -o -name "*.exe" -o -name "*.AppImage" -o -name "*.dmg" -o -name "*.msi" \) | head -20
+          find desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f \( -name "*.${{ matrix.artifact }}" -o -name "*.exe" -o -name "*.AppImage" -o -name "*.dmg" -o -name "*.msi" \) 2>/dev/null | head -20
           echo "=== Full bundle tree ==="
-          find desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f | head -30
+          find desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f 2>/dev/null | head -30
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
