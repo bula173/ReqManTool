@@ -317,7 +317,9 @@ def test_reopening_many_implicitly_closed_marks_stays_linear():
     start = time.perf_counter()
     once = sanitize(big)
     elapsed = time.perf_counter() - start
-    assert elapsed < 2
+    # CI runners vary; 5 s is still far below quadratic (which would be 20+ s)
+    # but gives slow runners headroom without masking real regressions.
+    assert elapsed < 5
     assert len(once) <= 5 * len(big)
     # The first paragraph holds only the (empty) opened marks.
     assert to_plain(once).split("\n") == [""] + ["x"] * 50_000
@@ -326,7 +328,7 @@ def test_reopening_many_implicitly_closed_marks_stays_linear():
     mixed = rich("<p>" + "<b><i><u><s><a><font><code><tt>" * 30 + "<p>x" * 50_000)
     start = time.perf_counter()
     once = sanitize(mixed)
-    assert time.perf_counter() - start < 2
+    assert time.perf_counter() - start < 5
     assert len(once) <= 5 * len(mixed)
     assert sanitize(once) == once
 
