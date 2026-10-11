@@ -106,7 +106,7 @@ def _add_inline(paragraph: Any, nodes: Sequence[Any], marks: frozenset = frozens
             # Data URL format: data:image/png;base64,...
             match = re.match(r"^data:image/([a-z+]+);base64,(.+)$", node.src)
             if match:
-                mime_type, b64_data = match.groups()
+                _mime_type, b64_data = match.groups()
                 try:
                     image_data = base64.b64decode(b64_data)
                     image_stream = io.BytesIO(image_data)
@@ -155,6 +155,33 @@ def _restarted_numbering(document: Document, style_name: str) -> str:
     return str(num.numId)
 
 
+def _add_table(document: Document, table: Any, out: list[Any]) -> None:
+    """Add a rich table as a Word table, one row per ``tr`` and one cell per ``td``.
+
+    A cell holds blocks like a list item does; each becomes a paragraph of the
+    cell, the first sharing the cell's single paragraph.
+    """
+    widths = max((len(row) for row in table.rows), default=0)
+    if not widths:
+        return
+    word_table = document.add_table(rows=len(table.rows), cols=widths)
+    word_table.style = "Table Grid"
+    for row_index, row in enumerate(table.rows):
+        for cell_index, cell in enumerate(row):
+            word_cell = word_table.rows[row_index].cells[cell_index]
+            # A cell holds one paragraph at a time; the first block shares it.
+            for block_index, block in enumerate(cell.blocks):
+                if block_index == 0 and not word_cell.paragraphs[0].runs:
+                    paragraph = word_cell.paragraphs[0]
+                else:
+                    paragraph = word_cell.add_paragraph()
+                if isinstance(block, richtext.Paragraph):
+                    _add_inline(paragraph, block.children)
+                    out.append(paragraph)
+                else:
+                    _add_blocks(document, [block], 0, out)
+
+
 def _add_blocks(document: Document, blocks: Sequence[Any], level: int, out: list[Any]) -> None:
     """Add rich ``blocks`` nested ``level`` lists deep as paragraphs, appending each to ``out``."""
     for block in blocks:
@@ -166,6 +193,9 @@ def _add_blocks(document: Document, blocks: Sequence[Any], level: int, out: list
                 _indent_beyond_styles(paragraph, level, hanging=False)
             _add_inline(paragraph, block.children)
             out.append(paragraph)
+            continue
+        if isinstance(block, richtext.Table):
+            _add_table(document, block, out)
             continue
         item_level = level + 1
         style_name = _level_style("List Bullet" if block.tag == "ul" else "List Number", item_level)

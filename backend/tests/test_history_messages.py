@@ -22,6 +22,7 @@ from reqman.history import (
     commit_message,
     describe_changes,
     format_value,
+    is_checkout_subject,
     requirement_history,
     session_of,
 )
@@ -306,6 +307,35 @@ def test_commit_message_packs_subject_to_72_characters_and_lists_all_in_body():
     assert message == f"{a}; {b}; +1 more\n\n{a}\n{b}\n{c}\n\nReqMan-Session: s\n"
     exactly = commit_message(["x" * 35, "y" * 35])  # 35 + 2 + 35 == 72: still fits
     assert exactly == "x" * 35 + "; " + "y" * 35 + "\n"
+
+
+def test_commit_message_with_a_checkout_subject_keeps_the_entries_in_the_body():
+    message = commit_message(["SYRS-0001 added", "SYRS-0002 added"], "s1", "u1", "[syrs][alice][Reworking]")
+    assert message == (
+        "[syrs][alice][Reworking]\n\nSYRS-0001 added\nSYRS-0002 added\n\n"
+        "ReqMan-Session: s1\nReqMan-User: u1\n"
+    )
+    # Without entries the body still says what happened.
+    assert commit_message([], "s2", None, "[syrs][alice][T]") == (
+        "[syrs][alice][T]\n\nUpdate project data\n\nReqMan-Session: s2\n"
+    )
+
+
+def test_commit_message_shortens_a_given_subject_to_the_subject_budget():
+    subject = "[system-module][alice][A checkout name that goes on and on and on for a while]"
+    message = commit_message(["SYRS-0001 added"], None, None, subject)
+    head = message.split("\n\n")[0]
+    assert len(head) <= 72 and head.endswith("…") and head.startswith("[system-module][alice][")
+    assert message.endswith("SYRS-0001 added\n")
+
+
+def test_is_checkout_subject_recognises_a_checkout_subject_only():
+    assert is_checkout_subject("[syrs][alice][Reworking the braking chapter]")
+    assert is_checkout_subject("[syrs][alice][" + "x" * 200 + "]")  # name shortened to the budget
+    assert is_checkout_subject("[syrs][alice][" + "x" * 200 + "…")  # cut off mid-name
+    assert not is_checkout_subject("SYRS-0001 added")
+    assert not is_checkout_subject("Update project data")
+    assert not is_checkout_subject("")
 
 
 def test_session_of_reads_only_the_last_paragraph_trailer():

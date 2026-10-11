@@ -286,9 +286,17 @@ def _xhtml_blocks(blocks: Iterable[Any]) -> str:
         if isinstance(block, richtext.Paragraph):
             texts = iter(_paragraph_texts(block.children))
             out.append(f"<xhtml:p>{_xhtml_inline(block.children, texts)}</xhtml:p>")
-        else:
+        elif isinstance(block, richtext.ListBlock):
             items = "".join(f"<xhtml:li>{_xhtml_blocks(item)}</xhtml:li>" for item in block.items)
             out.append(f"<xhtml:{block.tag}>{items}</xhtml:{block.tag}>")
+        else:
+            rows = "".join(
+                "<tr>"
+                + "".join(f"<td>{_xhtml_blocks(cell.blocks)}</td>" for cell in row)
+                + "</tr>"
+                for row in block.rows
+            )
+            out.append(f"<xhtml:table>{rows}</xhtml:table>")
     return "".join(out)
 
 

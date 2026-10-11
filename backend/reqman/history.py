@@ -35,8 +35,9 @@ _TRAILER_VALUE = re.compile(r"[A-Za-z0-9._@+-]{1,128}")
 
 # Subject line budget: entries are added while the subject stays this short.
 MAX_SUBJECT_LENGTH = 72
-# A checkout's subject: ``[module][username][name]`` (``reqman_server.module_locks``).
-_CHECKOUT_SUBJECT = re.compile(r"^\[[^\[\]\n]*\]\[[^\[\]\n]*\]\[[^\[\]\n]*\]$")
+# A checkout's subject: ``[module][username][name]`` (``reqman_server.module_locks``),
+# possibly shortened by ``_fit_subject`` (the name may be cut, the first two groups never are).
+_CHECKOUT_SUBJECT = re.compile(r"^\[[^\[\]\n]*\]\[[^\[\]\n]*\]\[[^\[\]\n]*")
 # Body lines listed before "… and N more".
 MAX_BODY_ENTRIES = 200
 # Attribute values in messages are cut to this many characters.

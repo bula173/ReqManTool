@@ -5,7 +5,8 @@
  * A value is rich text exactly when it starts with `RICH_TEXT_PREFIX` (an
  * XHTML `div`, as in ReqIF); every other string is plain text, `<` and
  * markup-like text included. Rich text holds an allow-listed XHTML subset:
- * `p`, `br`, `strong`, `em`, `u`, `s`, `ul`, `ol`, `li` and `span` with only
+ * `p`, `br`, `strong`, `em`, `u`, `s`, `ul`, `ol`, `li`, `span`,
+ * `table`, `tr`, `td`, `th`, and `span` with only
  * `color: #rrggbb` / `font-size` (one of `FONT_SIZES`). The server sanitises
  * every write; `sanitizeRichText` applies the same rules on the client before
  * anything is rendered as HTML (hand-edited data and older revisions are
@@ -23,7 +24,7 @@ const DROPPED = new Set([
   'script', 'style', 'template', 'iframe', 'object', 'embed', 'noscript', 'noembed', 'noframes',
   'textarea', 'title', 'head', 'svg', 'math', 'select', 'xmp', 'plaintext', 'frame', 'frameset',
 ]);
-const KEPT = new Set(['br', 'img', 'span', 'p', 'ul', 'ol']);
+const KEPT = new Set(['br', 'img', 'span', 'p', 'ul', 'ol', 'li', 'table', 'tr', 'td', 'th']);
 // Max length of a data: URL for an image (~2 MB decoded = ~2.6 MB base64)
 const MAX_IMG_DATA_URL_LENGTH = 2_800_000;
 const MAX_DEPTH = 200;
@@ -113,7 +114,15 @@ interface List {
   tag: 'ul' | 'ol';
   items: Block[][];
 }
-type Block = Para | List;
+interface Cell {
+  kind: 'cell';
+  blocks: Block[];
+}
+interface Table {
+  kind: 'table';
+  rows: Cell[][];
+}
+type Block = Para | List | Table;
 
 function color(value: string): string | null {
   let m = /^#([0-9a-f]{6})$/.exec(value);
@@ -215,12 +224,34 @@ function blocks(nodes: Node_[], depth = 0): Block[] {
       flush();
       const items = listItems(node.children, depth + 1);
       if (items.length) result.push({ kind: 'list', tag: node.tag, items });
+    } else if (typeof node !== 'string' && node.tag === 'table' && depth < MAX_LIST_DEPTH) {
+      flush();
+      const tableResult = table(node.children);
+      if (tableResult.rows.length) result.push({ kind: 'table', rows: tableResult.rows });
     } else {
       run.push(node);
     }
   }
   flush();
   return result;
+}
+
+function table(nodes: Node_[]): { rows: Cell[][] } {
+  const rows: Cell[][] = [];
+  for (const node of nodes) {
+    if (typeof node !== 'string' && node.tag === 'tr') {
+      const cells: Cell[] = [];
+      for (const cellNode of node.children) {
+        if (typeof cellNode !== 'string' && (cellNode.tag === 'td' || cellNode.tag === 'th')) {
+          cells.push({ kind: 'cell', blocks: blocks(cellNode.children, 0) });
+        }
+      }
+      if (cells.length) rows.push(cells);
+    } else if (typeof node !== 'string' && (node.tag === 'thead' || node.tag === 'tbody' || node.tag === 'tfoot')) {
+      rows.push(...table(node.children).rows);
+    }
+  }
+  return { rows };
 }
 
 function item(nodes: Node_[], depth: number): Block[] {
@@ -300,7 +331,15 @@ function renderBlocks(list: Block[]): string {
     .map((block) =>
       block.kind === 'p'
         ? `<p>${renderInline(block.children)}</p>`
-        : `<${block.tag}>${block.items.map((i) => `<li>${renderBlocks(i)}</li>`).join('')}</${block.tag}>`,
+        : block.kind === 'list'
+          ? `<${block.tag}>${block.items.map((i) => `<li>${renderBlocks(i)}</li>`).join('')}</${block.tag}>`
+          : `<table>${block.rows
+              .map(
+                (row) =>
+                  `<tr>${row
+                    .map((cell) => `<td>${renderBlocks(cell.blocks)}</td>`)
+                    .join('')}</tr>`
+            ).join('')}</table>`
     )
     .join('');
 }
@@ -367,6 +406,12 @@ function blockLines(list: Block[], depth: number): string[] {
       lines.push(...inlineText(block.children).split('\n').map((l) => indent + l));
       continue;
     }
+    if (block.kind === 'table') {
+      for (const row of block.rows) {
+        lines.push(indent + row.map((cell) => blockLines(cell.blocks, 0).join(' / ')).join(' | '));
+      }
+      continue;
+    }
     block.items.forEach((entry, index) => {
       const marker = block.tag === 'ul' ? '- ' : `${index + 1}. `;
       const [first, ...rest] = inlineText((entry[0] as Para).children).split('\n');
@@ -380,7 +425,8 @@ function blockLines(list: Block[], depth: number): string[] {
 
 /**
  * The plain-text projection (search, tooltips, single-line cells, diffs):
- * paragraphs and line breaks become newlines, list items get `- ` / `1. `.
+ * paragraphs and line breaks become newlines, list items get `- ` / `1. `,
+ * and a table is one line per row with its cells joined by ` | `.
  * Any other value is returned as `String(value)` (`''` for null/undefined).
  */
 export function richTextToPlain(value: unknown): string {

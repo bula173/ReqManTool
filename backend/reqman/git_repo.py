@@ -94,6 +94,7 @@ from .history import (
     FileChange,
     Revision,
     commit_message,
+    is_checkout_subject,
     requirement_history,
     session_of,
     user_of,
@@ -1434,6 +1435,9 @@ class GitHistory:
                     changes.append(FileChange(path=path, old=old, new=new))
                 entries = describe(changes) if describe else []
             session = session_of(head.body) if (amend and head) else uuid.uuid4().hex[:12]
+            if subject is None and amend and head and is_checkout_subject(head.subject):
+                # A project-level change of the same session keeps the checkout's label.
+                subject = head.subject
             message = commit_message(entries, session, _request_user_id(), subject)
 
         name, email = identity

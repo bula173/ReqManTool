@@ -18,21 +18,23 @@ allow-list; anything else is stripped, never rejected, and the result is
 deterministic and idempotent (``sanitize(sanitize(v)) == sanitize(v)``):
 
 - Elements: ``p``, ``br``, ``strong``/``b``, ``em``/``i``, ``u``,
-  ``s``/``strike``/``del``, ``ul``, ``ol``, ``li``, ``span``. Aliases are
-  written as ``strong``, ``em`` and ``s``; ``br`` as ``<br/>``.
+  ``s``/``strike``/``del``, ``ul``, ``ol``, ``li``, ``span``, ``table``,
+  ``tr``, ``td``, ``th``. Aliases are written as ``strong``, ``em`` and
+  ``s``; ``br`` as ``<br/>``; ``th`` as ``td``.
 - Attributes: only ``style`` on ``span``, and in it only ``color`` (written
   ``#rrggbb``; ``#rgb`` and ``rgb(r, g, b)`` are converted) and
   ``font-size`` (one of ``FONT_SIZES``). A ``span`` left without a style is
   unwrapped. Every other attribute (event handlers, ``href``, ``class``...)
   is dropped.
 - ``script``, ``style`` and other non-content elements (``DROPPED``) are
-  removed with their content; any other element (``a``, ``div``, ``h1``,
-  ``table``...) is unwrapped, keeping its text. Comments, processing
-  instructions and declarations are removed.
-- Structure: the top level and list items hold paragraphs and lists;
-  stray text is wrapped in a ``p``; a list item starts with a paragraph;
-  newlines inside text become spaces (spaces and tabs are kept as they
-  are, so an edited plain value keeps its exact spacing); empty inline
+  removed with their content; any other element (``a``, ``div``, ``h1``...)
+  is unwrapped, keeping its text. Comments, processing instructions and
+  declarations are removed.
+- Structure: the top level, list items and table cells hold paragraphs,
+  lists and tables; stray text is wrapped in a ``p``; a list item and a
+  table cell start with a paragraph; a table row is its ``td``/``th``
+  cells; newlines inside text become spaces (spaces and tabs are kept as
+  they are, so an edited plain value keeps its exact spacing); empty inline
   elements are dropped. Unclosed ``p`` and ``li`` elements are closed as
   an HTML parser (the browser) closes them.
 - A result with no text is ``""``. A result that is only paragraphs of
@@ -49,7 +51,8 @@ projected in full by ``to_plain``.
 ``to_plain`` is the plain-text projection (search, tooltips, the CSV and
 XLSX exports; the DOCX and ReqIF exports read the formatted tree through
 ``blocks``): paragraphs and line breaks become newlines, list items get
-``- `` / ``1. `` markers, indented two spaces per nesting level.
+``- `` / ``1. `` markers indented two spaces per nesting level, and a table
+is one line per row with its cells joined by `` | ``.
 
 The frontend mirrors these rules in ``frontend/src/components/richText.ts``.
 """
@@ -355,12 +358,19 @@ def _parse(markup: str, strict: bool) -> list[_Element | str]:
 
 
 # --- normalised tree -----------------------------------------------------------
-# Inline: str | _Br | _Mark. Blocks: _Para | _List.
+# Inline: str | _Br | _Mark. Blocks: _Para | _List | _Table.
 
 
 @dataclass
 class _Br:
     pass
+
+
+@dataclass
+class _Cell:
+    """A table cell: its blocks, starting with a ``_Para`` (like a list item)."""
+
+    blocks: list
 
 
 @dataclass
@@ -387,6 +397,11 @@ class _Para:
 class _List:
     tag: str  # ul or ol
     items: list[list]  # each item: its blocks, starting with a _Para
+
+
+@dataclass
+class _Table:
+    rows: list[list[_Cell]]  # each row: its cells
 
 
 def _color(value: str) -> str | None:
@@ -425,7 +440,7 @@ def _style(raw: str) -> str:
 def _is_kept(node: _Element | str) -> bool:
     """True for nodes the normaliser handles itself; others are replaced by their children."""
     return isinstance(node, str) or node.tag in DROPPED or node.tag in MARKS or node.tag in (
-        "br", "img", "span", "p", "ul", "ol"
+        "br", "img", "span", "p", "ul", "ol", "table"
     )
 
 
@@ -495,10 +510,11 @@ def _inline(nodes: list, depth: int = 0) -> list:
 
 
 def _blocks(nodes: list, depth: int = 0) -> list:
-    """Block content: paragraphs and lists; runs of inline content become paragraphs.
+    """Block content: paragraphs, lists and tables; runs of inline content become paragraphs.
 
     ``depth`` is the number of enclosing lists; deeper lists are unwrapped
-    into inline content.
+    into inline content. A table is one block; its cells hold blocks each (a
+    cell with several paragraphs keeps them).
     """
     blocks: list = []
     run: list = []
@@ -518,10 +534,29 @@ def _blocks(nodes: list, depth: int = 0) -> list:
             items = _list_items(node.children, depth + 1)
             if items:
                 blocks.append(_List(node.tag, items))
+        elif isinstance(node, _Element) and node.tag == "table" and depth < MAX_LIST_DEPTH:
+            flush()
+            table = _table(node.children)
+            if table.rows:
+                blocks.append(table)
         else:
             run.append(node)
     flush()
     return blocks
+
+
+def _table(nodes: list) -> _Table:
+    """A ``table``'s rows; content outside a ``tr`` is ignored."""
+    rows: list[list[_Cell]] = []
+    for node in nodes:
+        if isinstance(node, _Element) and node.tag == "tr":
+            cells = [_Cell(_item(cell.children, 0)) for cell in node.children if isinstance(cell, _Element) and cell.tag in ("td", "th")]
+            if cells:
+                rows.append(cells)
+        elif isinstance(node, _Element) and node.tag in ("thead", "tbody", "tfoot"):
+            # A wrapper around the rows: read the rows, not the wrapper.
+            rows.extend(_table(node.children).rows)
+    return _Table(rows)
 
 
 def _item(nodes: list, depth: int) -> list:
@@ -571,6 +606,8 @@ def _has_text(nodes: list) -> bool:
         elif isinstance(node, _List):
             if any(_has_text(item) for item in node.items):
                 return True
+        elif isinstance(node, _Table) and any(_has_text(cell.blocks) for row in node.rows for cell in row):
+            return True
     return False
 
 
@@ -613,10 +650,19 @@ def _render_blocks(blocks: list, count: list[int]) -> str:
     for block in blocks:
         if isinstance(block, _Para):
             out.append(f"<p>{_render_inline(block.children, count)}</p>")
-        else:
+        elif isinstance(block, _List):
             count[0] += len(block.items)
             items = "".join(f"<li>{_render_blocks(item, count)}</li>" for item in block.items)
             out.append(f"<{block.tag}>{items}</{block.tag}>")
+        else:
+            count[0] += len(block.rows)
+            rows = "".join(
+                "<tr>"
+                + "".join(f"<td>{_render_blocks(cell.blocks, count)}</td>" for cell in row)
+                + "</tr>"
+                for row in block.rows
+            )
+            out.append(f"<table>{rows}</table>")
     return "".join(out)
 
 
@@ -689,12 +735,19 @@ def _block_lines(blocks: list, depth: int) -> list[str]:
         if isinstance(block, _Para):
             lines.extend(indent + line for line in _inline_text(block.children).split("\n"))
             continue
-        for number, item in enumerate(block.items, start=1):
-            marker = "- " if block.tag == "ul" else f"{number}. "
-            first, *rest = _inline_text(item[0].children).split("\n")
-            lines.append(indent + marker + first)
-            lines.extend(indent + " " * len(marker) + line for line in rest)
-            lines.extend(_block_lines(item[1:], depth + 1))
+        if isinstance(block, _List):
+            for number, item in enumerate(block.items, start=1):
+                marker = "- " if block.tag == "ul" else f"{number}. "
+                first, *rest = _inline_text(item[0].children).split("\n")
+                lines.append(indent + marker + first)
+                lines.extend(indent + " " * len(marker) + line for line in rest)
+                lines.extend(_block_lines(item[1:], depth + 1))
+            continue
+        # A table: one line per row, cells joined by " | ", so every cell's text
+        # is findable in the projection. A cell with several blocks has them
+        # joined by " / ".
+        for row in block.rows:
+            lines.append(indent + " | ".join(" / ".join(_block_lines(cell.blocks, 0)) for cell in row))
     return lines
 
 
@@ -809,14 +862,17 @@ def _tiptap_text(value: str) -> str | None:
 
 # --- structured read (formatted exports) ---------------------------------------
 # The DOCX and ReqIF exports walk the canonical tree of a rich value instead of
-# re-parsing its markup. Blocks are ``Paragraph`` (``.children``: inline nodes)
-# and ``ListBlock`` (``.tag``: ``ul``/``ol``; ``.items``: each item's blocks,
-# starting with a ``Paragraph``). Inline nodes are ``str``, ``LineBreak``,
-# ``Mark`` (``.tag``: strong, em, u, s or span; ``.style``: the canonical span
-# style, see ``span_style``; ``.children``: inline nodes) and ``Image``.
+# re-parsing its markup. Blocks are ``Paragraph`` (``.children``: inline nodes),
+# ``ListBlock`` (``.tag``: ``ul``/``ol``; ``.items``: each item's blocks,
+# starting with a ``Paragraph``) and ``Table`` (``.rows``: rows of ``_Cell``;
+# each cell's ``.blocks`` start with a ``Paragraph``). Inline nodes are ``str``,
+# ``LineBreak``, ``Mark`` (``.tag``: strong, em, u, s or span; ``.style``: the
+# canonical span style, see ``span_style``; ``.children``: inline nodes) and
+# ``Image``.
 
 Paragraph = _Para
 ListBlock = _List
+Table = _Table
 Mark = _Mark
 LineBreak = _Br
 Image = _Img
