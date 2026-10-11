@@ -1,7 +1,7 @@
 # ReqManTool Desktop App - Build, Test and Release
 #
-# Builds the macOS DMG (universal), Windows MSI + NSIS installer and Linux
-# AppImage on every push to main, every pull request and every release tag,
+# Builds the macOS DMG (universal) and Windows MSI + NSIS installer on every
+# push to main, every pull request and every release tag,
 # runs a smoke test on each package, and attaches them to the GitHub release
 # when the run is a `v*` tag.
 #
@@ -44,12 +44,6 @@ jobs:
             rust_targets: x86_64-pc-windows-msvc
             artifact: msi
             upload_name: ReqManTool-Windows
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            rust_targets: x86_64-unknown-linux-gnu
-            artifact: appimage
-            upload_name: ReqManTool-Linux
-
     # The "Prepare Python backend" step is POSIX shell script (heredoc, cp -r)
     # and the runners default to PowerShell on Windows.
     defaults:
@@ -76,25 +70,6 @@ jobs:
             frontend/package-lock.json
             desktop/package-lock.json
 
-      - name: Install system dependencies (Linux)
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libgtk-3-dev \
-            libglib2.0-dev \
-            libgdk-pixbuf2.0-dev \
-            libsoup2.4-dev \
-            libjavascriptcoregtk-4.1-dev \
-            patchelf \
-            git \
-            curl \
-            python3 \
-            python3-venv \
-            python3-pip
 
       - name: Install system dependencies (macOS)
         if: matrix.os == 'macos-latest'
@@ -174,7 +149,6 @@ jobs:
           path: |
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.${{ matrix.artifact }}
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
-            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
           retention-days: 30
@@ -186,13 +160,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
-          name: ${{ matrix.os == 'macos-latest' && 'ReqManTool-macOS' || matrix.os == 'windows-latest' && 'ReqManTool-Windows' || 'ReqManTool-Linux' }}
+          name: ${{ matrix.os == 'macos-latest' && 'ReqManTool-macOS' || 'ReqManTool-Windows' }}
           path: artifact
 
       - name: Test macOS
@@ -250,24 +224,6 @@ jobs:
           msiexec /x $msi /qn
           if ($LASTEXITCODE -ne 0) { throw "msiexec uninstall failed: $LASTEXITCODE" }
 
-      - name: Test Linux
-        if: matrix.os == 'ubuntu-latest'
-        env:
-          # Runners have no usable /dev/fuse for every image.
-          APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: |
-          set -euo pipefail
-          echo "=== Searching for AppImage ==="
-          APPIMAGE=$(find artifact -type f -name "*.AppImage" | head -1)
-          if [ -z "$APPIMAGE" ]; then
-            echo "No AppImage found in artifact directory"
-            find artifact -type f
-            exit 1
-          fi
-          echo "Found AppImage: $APPIMAGE"
-          chmod +x "$APPIMAGE"
-          "$APPIMAGE" --version
-
   # Attach the packages of a release tag to the GitHub release.
   release:
     name: Create Release
@@ -284,7 +240,7 @@ jobs:
       - name: Create checksums
         run: |
           cd artifacts
-          for file in */*.dmg */*.msi */*.exe */*.AppImage; do
+          for file in */*.dmg */*.msi */*.exe; do
             if [ -f "$file" ]; then
               sha256sum "$file" >> SHA256SUMS.txt
             fi
@@ -305,7 +261,7 @@ jobs:
             artifacts/**/*.dmg
             artifacts/**/*.msi
             artifacts/**/*.exe
-            artifacts/**/*.AppImage
+            
             artifacts/SHA256SUMS.txt
           body: |
             ## ReqManTool Desktop App ${{ github.ref_name }}
@@ -315,12 +271,12 @@ jobs:
             ### Installation
             - **macOS**: download the `.dmg`, open it, drag ReqManTool to Applications
             - **Windows**: run the `.msi` (or the `-setup.exe`)
-            - **Linux**: download the `.AppImage`, `chmod +x`, run it
 
             ### Requirements
             - Python 3.11+ on the machine (found as `python3`, `python` or the `py` launcher)
             - Git, for the version history features
             - WebView2 Runtime on Windows (the installer offers to fetch it)
+            - macOS 10.15+ or Windows 10+
 
             ### First run
             The app asks whether to start a local instance or to connect to an
