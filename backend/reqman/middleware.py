@@ -1,17 +1,18 @@
-"""Rate limiting and security headers middleware for the server edition."""
+"""Rate limiting and security headers middleware.
+
+These are plain ASGI middleware with no import of the server edition
+(``reqman_server``), so ``reqman/middleware.py`` imports cleanly from an
+installed wheel, which does not ship the server package. ``app.py`` only
+installs them when the server edition is loaded.
+"""
 
 from __future__ import annotations
 
 import time
 from collections import defaultdict
-from typing import Any, Callable, Awaitable
 
-from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
-
-from reqman_server.settings import ServerSettings
 
 
 class RateLimitMiddleware:
@@ -108,9 +109,9 @@ class SecurityHeadersMiddleware:
                     (b"x-xss-protection", b"1; mode=block"),
                     (b"referrer-policy", b"strict-origin-when-cross-origin"),
                     (b"content-security-policy", b"default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'"),
+                    (b"strict-transport-security", f"max-age={self.hsts_max_age}; includeSubDomains".encode()),
                 ])
-                # HSTS - only on HTTPS
-                # Note: We check if we're on HTTPS by looking at the URL scheme
-                # This is a simplified check - in production you'd want to check the actual scheme
                 message["headers"] = headers
-            await self.app(scope, receive, send_with_headers)
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
