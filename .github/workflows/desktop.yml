@@ -189,7 +189,9 @@ jobs:
           fi
           echo "Mounted at: $VOLUME"
           "$VOLUME/ReqManTool.app/Contents/MacOS/ReqManTool" --version
+          echo "Version check passed, detaching..."
           hdiutil detach "$VOLUME"
+          echo "Detached successfully"
 
       - name: Test Windows
         if: matrix.os == 'windows-latest'
@@ -206,11 +208,13 @@ jobs:
 
           # Install with verbose logging to capture any errors
           $logFile = "msi_install.log"
-          $result = msiexec /i $msi /qn /norestart /l*v $logFile
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "msiexec install failed with exit code $LASTEXITCODE"
+          Write-Host "Installing MSI with verbose logging to $logFile..."
+          $exitCode = (msiexec /i $msi /qn /norestart /l*v $logFile).ExitCode
+          Write-Host "msiexec exit code: $exitCode"
+          if ($exitCode -ne 0) {
+            Write-Error "msiexec install failed with exit code $exitCode"
             if (Test-Path $logFile) { Get-Content $logFile }
-            exit $LASTEXITCODE
+            exit $exitCode
           }
 
           # The install location is wherever the MSI decided to put it; ask
