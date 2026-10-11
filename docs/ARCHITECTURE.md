@@ -2439,6 +2439,11 @@ backend/reqman/
                    project has one): rich values are written from their
                    canonical tree as one xhtml:div (u/s become styled
                    spans), plain values as escaped text with xhtml:br.
+                   An "enum" attribute is ATTRIBUTE-DEFINITION-ENUMERATION
+                   with its own DATATYPE-DEFINITION-ENUMERATION holding its
+                   choices as SPECIFIED-VALUES; a choice that cannot be
+                   written as an EMBEDDED-VALUE KEY (reqif writes a KEY
+                   unescaped) is carried by its escaped LONG-NAME.
   providers.py     GitLab/GitHub connections, keychain tokens and the
                    provider REST clients (stdlib urllib); called only by
                    ProjectService. See "GitLab and GitHub integration".

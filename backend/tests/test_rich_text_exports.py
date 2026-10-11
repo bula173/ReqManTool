@@ -217,7 +217,9 @@ def test_reqif_text_attributes_are_xhtml(service, module):
     assert definitions["object_text"] == ("ATTRIBUTE-DEFINITION-XHTML", "DATATYPE-XHTML")
     assert definitions["note"] == ("ATTRIBUTE-DEFINITION-XHTML", "DATATYPE-XHTML")
     assert definitions["title"] == ("ATTRIBUTE-DEFINITION-STRING", "DATATYPE-STRING")
-    assert definitions["kind"] == ("ATTRIBUTE-DEFINITION-STRING", "DATATYPE-STRING")
+    # An enum is a real ENUMERATION, with its own datatype holding the choices.
+    assert definitions["kind"] == ("ATTRIBUTE-DEFINITION-ENUMERATION", "DATATYPE-ENUMERATION-kind")
+    assert datatypes["DATATYPE-DEFINITION-ENUMERATION"] == "DATATYPE-ENUMERATION-kind"
 
 
 def test_reqif_formatting_round_trips_into_xhtml_elements(service, module):
@@ -339,14 +341,25 @@ def test_reqif_drops_lone_surrogates_from_text_values():
 def test_reqif_string_and_enum_values_drop_characters_xml_cannot_hold():
     attrs = [
         SimpleNamespace(id="title", name="Title", type="string"),
-        SimpleNamespace(id="kind", name="Kind", type="enum"),
+        SimpleNamespace(id="kind", name="Kind", type="enum", choices=["Head", "Ta\x0bil"]),
     ]
     project = SimpleNamespace(id="p", name="P", description="", attributes=attrs)
     module = SimpleNamespace(id="m", name="M", description="")
-    req = SimpleNamespace(id="R-1", attributes={"title": "x\x01y\udc80", "kind": "H\x0bead"}, parent_id=None)
-    root = _reqif(export_project_to_reqif(project, [(module, [req])]))
+    req = SimpleNamespace(id="R-1", attributes={"title": "x\x01y\udc80", "kind": "Ta\x0bil"}, parent_id=None)
+    xml = export_project_to_reqif(project, [(module, [req])])
+    # The document stays well-formed, so the characters are gone rather than
+    # silently breaking the export of an otherwise valid value.
+    root = _reqif(xml)
     values = sorted(v.get("THE-VALUE") for v in root.iter(REQIF + "ATTRIBUTE-VALUE-STRING"))
-    assert values == ["Head", "xy"]
+    assert values == ["xy"]
+    # The choice's LONG-NAME has the control character dropped too, and the
+    # value still points at that choice rather than being written raw.
+    (specified_value,) = [
+        v for v in root.iter(f"{REQIF}ENUM-VALUE") if v.get("LONG-NAME", "").startswith("Ta")
+    ]
+    assert specified_value.get("LONG-NAME") == "Tail"
+    (enum_value,) = list(root.iter(REQIF + "ATTRIBUTE-VALUE-ENUMERATION"))
+    assert enum_value.find(f"{REQIF}VALUES")[0].text == specified_value.get("IDENTIFIER")
 
 
 def test_reqif_without_text_attributes_has_no_xhtml_datatype():
@@ -782,8 +795,23 @@ def test_rich_looking_value_of_a_non_text_attribute_stays_literal_in_every_expor
     texts = [p.text for p in _rows(_docx(service, project_id), req.id)]
     assert f"Title: {value}" in texts and f"Choice: {enum_value}" in texts
     root = _reqif(service.export_reqif(project_id))
+    # A string attribute still carries its value as text; an enum carries the
+    # choice as an ENUM-VALUE-REF, and the choice itself — markup and all, as
+    # the literal it is — as the SPECIFIED-VALUE's LONG-NAME.
     strings = {v.find(f"{REQIF}DEFINITION")[0].text: v.get("THE-VALUE") for v in root.iter(REQIF + "ATTRIBUTE-VALUE-STRING")}
-    assert strings == {"title": value, "choice": enum_value}
+    assert strings == {"title": value}
+    (enum_value_element,) = list(root.iter(REQIF + "ATTRIBUTE-VALUE-ENUMERATION"))
+    assert enum_value_element.find(f"{REQIF}DEFINITION")[0].text == "choice"
+    assert enum_value_element.find(f"{REQIF}VALUES")[0].text == "ENUM-VALUE-choice-2"
+    # The tag is ENUM-VALUE (the parent container is SPECIFIED-VALUES).
+    (specified_value,) = [
+        v for v in root.iter(f"{REQIF}ENUM-VALUE") if v.get("IDENTIFIER") == "ENUM-VALUE-choice-2"
+    ]
+    assert specified_value.get("LONG-NAME") == enum_value
+    # A choice that cannot be written as a KEY carries no EMBEDDED-VALUE.
+    assert specified_value.find(f"{REQIF}PROPERTIES") is None
+    # The choice is not an attribute value that would be mistaken for rich text.
+    assert rich("<p><em>e</em></p>") == P + "<p><em>e</em></p></div>"
 
 
 # --- ReqIF: more value shapes ------------------------------------------------------------
@@ -838,6 +866,89 @@ def test_reqif_round_trips_through_the_reqif_parser_with_every_value_shape(servi
     )
     assert "&lt;tags&gt; &amp; ctl" in values["note"].value_stripped_xhtml
     assert values["title"].value == "Title"
-    assert values["kind"].value == "Req"
+    # An enum value is the ENUM-VALUE-REF naming its choice.
+    assert values["kind"].value == ["ENUM-VALUE-kind-2"]
     # The library writes the parsed bundle back out without error.
     assert req.id in ReqIFUnparser.unparse(bundle)
+
+
+def test_reqif_enum_choices_survive_the_round_trip(service, module):
+    """An enum attribute's choices and values come back through the import."""
+    from reqman.reqif_import import import_reqif_from_string
+
+    project_id, module_id = module
+    service.add_attribute_definition(project_id, "status", "Status", "enum", choices=["draft", "in review", "final"])
+    service.add_requirement(project_id, module_id, {"object_text": "a", "status": "in review"})
+    service.add_requirement(project_id, module_id, {"object_text": "b", "status": "final"})
+
+    imported = import_reqif_from_string(service.export_reqif(project_id))
+    (attribute,) = [a for a in imported.attributes if a.id == "status"]
+    assert attribute.type == "enum"
+    assert attribute.choices == ["draft", "in review", "final"]
+    assert [r.attributes["status"] for r in imported.modules[0].requirements] == ["in review", "final"]
+
+
+def test_reqif_enum_choice_with_characters_that_would_break_xml(service, module):
+    """A choice holding a quote, an ampersand or a control character still exports.
+
+    ``reqif`` writes an EMBEDDED-VALUE KEY unescaped, so such a choice is carried
+    by the escaped LONG-NAME alone; the document stays well-formed and the
+    choice comes back exactly as it was.
+    """
+    import xml.etree.ElementTree as ET
+
+    from reqman.reqif_import import import_reqif_from_string
+
+    project_id, module_id = module
+    choices = ["a & b", 'say "hi"', "5 < 6", "semi;colon"]
+    service.add_attribute_definition(project_id, "odd", "Odd", "enum", choices=choices)
+    for choice in choices:
+        service.add_requirement(project_id, module_id, {"object_text": "x", "odd": choice})
+
+    xml = service.export_reqif(project_id)
+    ET.fromstring(xml)  # well-formed: nothing was written unescaped
+    imported = import_reqif_from_string(xml)
+    (attribute,) = [a for a in imported.attributes if a.id == "odd"]
+    assert attribute.choices == choices
+    assert [r.attributes["odd"] for r in imported.modules[0].requirements] == choices
+
+
+def test_reqif_enum_choice_with_a_tab_is_written_as_a_space(service, module):
+    """XML attribute-value normalization turns a tab into a space, so it cannot round trip.
+
+    This is the same for a plain string value (its THE-VALUE is an attribute
+    too), so it is a limit of the format rather than of the enum mapping.
+    """
+    from reqman.reqif_import import import_reqif_from_string
+
+    project_id, module_id = module
+    service.add_attribute_definition(project_id, "odd", "Odd", "enum", choices=["tab\there"])
+    service.add_requirement(project_id, module_id, {"object_text": "x", "odd": "tab\there"})
+
+    imported = import_reqif_from_string(service.export_reqif(project_id))
+    (attribute,) = [a for a in imported.attributes if a.id == "odd"]
+    assert attribute.choices == ["tab here"]
+
+
+def test_reqif_enum_value_that_names_no_choice_is_omitted(service, module):
+    """A stored value that is not one of the choices has no SPECIFIED-VALUE to point at."""
+    from dataclasses import replace
+
+    from reqman.reqif_import import import_reqif_from_string
+
+    project_id, module_id = module
+    service.add_attribute_definition(project_id, "status", "Status", "enum", choices=["draft", "final"])
+    service.add_requirement(project_id, module_id, {"object_text": "a", "status": "draft"})
+    # Hand-edited data: a value the attribute no longer accepts.
+    requirement = service.add_requirement(project_id, module_id, {"object_text": "b", "status": "final"})
+    stored = service.store.load_requirement(project_id, module_id, requirement.id)
+    service.store.save_requirement(
+        project_id,
+        module_id,
+        replace(stored, attributes={**stored.attributes, "status": "not a choice"}),
+    )
+
+    imported = import_reqif_from_string(service.export_reqif(project_id))
+    (first, second) = imported.modules[0].requirements
+    assert first.attributes["status"] == "draft"
+    assert "status" not in second.attributes

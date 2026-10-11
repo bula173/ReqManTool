@@ -11,22 +11,29 @@ with ``reqif.unparser.ReqIFUnparser``.
 
 Mapping decisions (see also the docstring of ``export_project_to_reqif``):
 
-- Every ReqMan attribute type is mapped to a *simple* ReqIF datatype/attribute
-  kind that this package can unparse (and re-parse) without any special
-  handling:
-    - "string", "enum"  -> ATTRIBUTE-DEFINITION-STRING / DATATYPE-DEFINITION-STRING
-    - "text"            -> ATTRIBUTE-DEFINITION-XHTML / DATATYPE-DEFINITION-XHTML
-    - "integer"         -> ATTRIBUTE-DEFINITION-INTEGER / DATATYPE-DEFINITION-INTEGER
-    - "boolean"         -> ATTRIBUTE-DEFINITION-BOOLEAN / DATATYPE-DEFINITION-BOOLEAN
-    - "date"            -> ATTRIBUTE-DEFINITION-DATE / DATATYPE-DEFINITION-DATE
+- Every ReqMan attribute type is mapped to a ReqIF datatype/attribute kind
+  that this package can unparse (and re-parse) without any special handling:
+    - "string"           -> ATTRIBUTE-DEFINITION-STRING / DATATYPE-DEFINITION-STRING
+    - "text"             -> ATTRIBUTE-DEFINITION-XHTML / DATATYPE-DEFINITION-XHTML
+    - "integer"          -> ATTRIBUTE-DEFINITION-INTEGER / DATATYPE-DEFINITION-INTEGER
+    - "boolean"          -> ATTRIBUTE-DEFINITION-BOOLEAN / DATATYPE-DEFINITION-BOOLEAN
+    - "date"             -> ATTRIBUTE-DEFINITION-DATE / DATATYPE-DEFINITION-DATE
+    - "enum"             -> ATTRIBUTE-DEFINITION-ENUMERATION, with a
+      DATATYPE-DEFINITION-ENUMERATION of its own holding its choices
   A date value ``YYYY-MM-DD`` is written as the ``xsd:dateTime``
   ``YYYY-MM-DDT00:00:00`` (no time zone: a calendar date, not an instant);
   a stored value that is not a valid date (hand-edited data) is omitted.
   DATATYPE-DATE is declared only when the project has a date attribute, so
   exports of projects without one are unchanged.
-  "enum" is NOT exported as ENUMERATION with a proper enum-values datatype
-  definition but as a plain string, losing the "one of a fixed set of
-  choices" information in the ReqIF file itself.
+  An enum attribute's choices are written as the datatype's SPECIFIED-VALUES,
+  one per choice, so the "one of a fixed set of choices" information survives
+  the file. A choice is written as the value's EMBEDDED-VALUE KEY when it is
+  safe to do so and as its LONG-NAME otherwise: ``reqif`` writes a KEY
+  unescaped, and a ReqMan choice is an arbitrary string, so a choice holding a
+  character that cannot sit in an attribute value (``"``, ``&``, ``<``, ``>``)
+  or that ReqMan itself strips from text (a control character) is carried by
+  the escaped LONG-NAME alone. A stored value that names no choice
+  (hand-edited data) is omitted, like an invalid date.
 - Every "text" attribute (``ObjectText`` included) is XHTML, whatever its
   values: ReqIF gives each attribute one datatype, and a text attribute may
   hold plain and rich values side by side. Each value's THE-VALUE is one
@@ -47,8 +54,7 @@ Mapping decisions (see also the docstring of ``export_project_to_reqif``):
       paragraph (split at ``br``) taken as one text across its inline marks.
     - a value with no text (``""``, a rich value of blanks) is an empty div.
   Text is escaped and characters XML 1.0 cannot hold are dropped, so the
-  document is always well-formed; "string" and "enum" values are filtered
-  the same way.
+  document is always well-formed; "string" values are filtered the same way.
 - One SPEC-OBJECT-TYPE is created for the whole project, with one
   ATTRIBUTE-DEFINITION-* per ``AttributeDefinition``.
 - One SPEC-OBJECT is created per requirement (across all modules).
@@ -73,9 +79,11 @@ from reqif.models.reqif_core_content import ReqIFCoreContent
 from reqif.models.reqif_data_type import (
     ReqIFDataTypeDefinitionBoolean,
     ReqIFDataTypeDefinitionDateIdentifier,
+    ReqIFDataTypeDefinitionEnumeration,
     ReqIFDataTypeDefinitionInteger,
     ReqIFDataTypeDefinitionString,
     ReqIFDataTypeDefinitionXHTML,
+    ReqIFEnumValue,
 )
 from reqif.models.reqif_namespace_info import ReqIFNamespaceInfo
 from reqif.models.reqif_req_if_content import ReqIFReqIFContent
@@ -109,14 +117,30 @@ _ISO_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 SPEC_OBJECT_TYPE_ID = "SPEC-OBJECT-TYPE-REQUIREMENT"
 
 # Our AttributeDefinition.type -> reqif SpecObjectAttributeType / datatype id.
+# "enum" is not here: each enum attribute needs its own DATATYPE-DEFINITION-
+# ENUMERATION, because the choices belong to the attribute, so its datatype id
+# is derived from the attribute id (see ``_enum_datatype_id``).
 _ATTRIBUTE_TYPE_MAP = {
     "string": (SpecObjectAttributeType.STRING, DATATYPE_STRING_ID),
     "text": (SpecObjectAttributeType.XHTML, DATATYPE_XHTML_ID),
-    "enum": (SpecObjectAttributeType.STRING, DATATYPE_STRING_ID),
     "integer": (SpecObjectAttributeType.INTEGER, DATATYPE_INTEGER_ID),
     "boolean": (SpecObjectAttributeType.BOOLEAN, DATATYPE_BOOLEAN_ID),
     "date": (SpecObjectAttributeType.DATE, DATATYPE_DATE_ID),
 }
+
+# Characters that cannot sit in an attribute value as ``reqif`` writes it.
+# ``reqif`` escapes an EMBEDDED-VALUE's LONG-NAME but writes its KEY verbatim,
+# so a choice holding one of these (or any character XML 1.0 forbids, which
+# ReqMan drops elsewhere) cannot be a KEY. It is written as the SPECIFIED-VALUE's
+# LONG-NAME alone, and a reader that has no key to take falls back to that.
+_UNSAFE_IN_ATTRIBUTE_VALUE = re.compile(r'["&<>]')
+
+
+def _as_xml_key(choice: str) -> str | None:
+    """``choice`` as an EMBEDDED-VALUE KEY, or None if writing it verbatim would break the XML."""
+    if _UNSAFE_IN_ATTRIBUTE_VALUE.search(choice) or richtext.xml_text(choice) != choice:
+        return None
+    return choice
 
 
 def _date_value(value: Any) -> str | None:
@@ -128,6 +152,64 @@ def _date_value(value: Any) -> str | None:
     except ValueError:
         return None
     return f"{value}T00:00:00"
+
+
+def _enum_datatype_id(attribute_id: str) -> str:
+    """The DATATYPE-DEFINITION-ENUMERATION identifier of an enum attribute."""
+    return f"DATATYPE-ENUMERATION-{attribute_id}"
+
+
+def _enum_value_id(attribute_id: str, index: int) -> str:
+    """The SPECIFIED-VALUE identifier of an enum attribute's ``index``-th choice.
+
+    Numbered rather than named after the choice, so a choice of any content
+    still yields an identifier ReqIF accepts (an IDENTIFIER is an NCName: no
+    spaces, quotes or punctuation that is not a letter, digit or ``-``).
+    """
+    return f"ENUM-VALUE-{attribute_id}-{index + 1}"
+
+
+def _enum_choices(attribute: Any) -> list[str]:
+    """``attribute``'s choices, the strings among them (hand-edited data may hold others)."""
+    return [choice for choice in (getattr(attribute, "choices", None) or []) if isinstance(choice, str)]
+
+
+def _enum_values(attribute: Any) -> list[Any]:
+    """``attribute``'s choices as ReqIFEnumValue, one per choice, in order."""
+    return [
+        ReqIFEnumValue(
+            identifier=_enum_value_id(attribute.id, index),
+            key=_as_xml_key(choice),
+            long_name=richtext.xml_text(choice),
+        )
+        for index, choice in enumerate(_enum_choices(attribute))
+    ]
+
+
+def _enum_datatype(attribute: Any) -> Any:
+    """The DATATYPE-DEFINITION-ENUMERATION holding an enum attribute's choices."""
+    values = _enum_values(attribute)
+    return ReqIFDataTypeDefinitionEnumeration(
+        identifier=_enum_datatype_id(attribute.id),
+        long_name=attribute.name,
+        is_self_closed=not values,
+        values=values or None,
+    )
+
+
+def _enum_value(attribute: Any, value: Any) -> list[str] | None:
+    """An enum value as the ENUM-VALUE-REF of its choice, or None if it names no choice.
+
+    A stored value that is not one of the attribute's choices (hand-edited data)
+    has no SPECIFIED-VALUE to point at and is omitted, like a value that is not
+    a valid date.
+    """
+    if not isinstance(value, str):
+        return None
+    choices = _enum_choices(attribute)
+    if value not in choices:
+        return None
+    return [_enum_value_id(attribute.id, choices.index(value))]
 
 
 def _relation_type_id(config_id: str) -> str:
@@ -245,17 +327,27 @@ def _xhtml_value(value: Any) -> str:
     return f"<xhtml:div>{body}</xhtml:div>"
 
 
-def _format_attribute_value(attr_type: str, value: Any) -> str:
-    """Serialize a requirement's raw attribute value to the ReqIF THE-VALUE string."""
+def _format_attribute_value(attr_type: str, value: Any) -> Any:
+    """Serialize a requirement's raw attribute value to the ReqIF THE-VALUE.
+
+    An "enum" value is the list of ENUM-VALUE-REFs naming its choice (``reqif``
+    expects a list there, not a string), or None when the value names no choice
+    and is therefore left out.
+    """
     if attr_type == "boolean":
         return "true" if value else "false"
     if attr_type == "integer":
         return str(int(value))
     if attr_type == "text":
         return _xhtml_value(value)
-    # "string", "enum", and anything else: plain text, without the
-    # characters XML 1.0 cannot hold.
+    # "string" and anything else: plain text, without the characters XML 1.0
+    # cannot hold.
     return richtext.xml_text(str(value))
+
+
+def _format_enum_value(attr: Any, value: Any) -> list[str] | None:
+    """An "enum" value as the ENUM-VALUE-REFs naming its choice, or None to leave it out."""
+    return _enum_value(attr, value)
 
 
 def export_project_to_reqif(
@@ -292,11 +384,9 @@ def export_project_to_reqif(
     Limitations (see module docstring for more detail):
         - "text" attributes are exported as ATTRIBUTE-VALUE-XHTML (rich
           values with their formatting, plain values as escaped text).
-        - "enum" attributes are exported as ATTRIBUTE-VALUE-STRING (the raw
-          value, as ``str()``), not as a proper ATTRIBUTE-VALUE-ENUMERATION
-          backed by a DATATYPE-DEFINITION-ENUMERATION with SPECIFIED-VALUES.
-          ``AttributeDefinition.choices`` is not represented in the ReqIF
-          output at all.
+        - "enum" attributes are exported as ATTRIBUTE-VALUE-ENUMERATION backed
+          by a DATATYPE-DEFINITION-ENUMERATION with SPECIFIED-VALUES, so
+          ``AttributeDefinition.choices`` is represented in the ReqIF output.
         - A requirement attribute whose key is missing from
           ``requirement.attributes`` (or whose value is ``None``) is simply
           omitted from that SPEC-OBJECT's VALUES; ``AttributeDefinition.default``
@@ -322,11 +412,19 @@ def export_project_to_reqif(
         data_types.append(ReqIFDataTypeDefinitionXHTML(identifier=DATATYPE_XHTML_ID, is_self_closed=True))
     if any(attr.type == "date" for attr in project.attributes):
         data_types.append(ReqIFDataTypeDefinitionDateIdentifier(identifier=DATATYPE_DATE_ID, is_self_closed=True))
+    # One enumeration per enum attribute: the choices belong to the attribute,
+    # so they cannot share a datatype the way the simple ones do. Declared only
+    # for the attributes there are, so a project without one is unchanged.
+    enum_attributes = [attr for attr in project.attributes if attr.type == "enum"]
+    data_types.extend(_enum_datatype(attr) for attr in enum_attributes)
 
     # --- SPEC-TYPES: one SPEC-OBJECT-TYPE for the whole project ---------
     attribute_definitions = []
     for attr in project.attributes:
-        spec_attr_type, datatype_id = _ATTRIBUTE_TYPE_MAP[attr.type]
+        if attr.type == "enum":
+            spec_attr_type, datatype_id = SpecObjectAttributeType.ENUMERATION, _enum_datatype_id(attr.id)
+        else:
+            spec_attr_type, datatype_id = _ATTRIBUTE_TYPE_MAP[attr.type]
         attribute_definitions.append(
             SpecAttributeDefinition.create(
                 attribute_type=spec_attr_type,
@@ -365,12 +463,20 @@ def export_project_to_reqif(
             if raw_value is None:
                 continue
             if attr.type == "date":
-                the_value = _date_value(raw_value)
+                the_value: Any = _date_value(raw_value)
+                if the_value is None:
+                    continue
+            elif attr.type == "enum":
+                the_value = _format_enum_value(attr, raw_value)
                 if the_value is None:
                     continue
             else:
                 the_value = _format_attribute_value(attr.type, raw_value)
-            spec_attr_type, _datatype_id = _ATTRIBUTE_TYPE_MAP[attr.type]
+            spec_attr_type = (
+                SpecObjectAttributeType.ENUMERATION
+                if attr.type == "enum"
+                else _ATTRIBUTE_TYPE_MAP[attr.type][0]
+            )
             values.append(
                 SpecObjectAttribute(
                     attribute_type=spec_attr_type,

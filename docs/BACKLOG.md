@@ -163,16 +163,12 @@ area by area once phase A is complete.
       background so an unreachable remote never stalls edits.
       (3) `_is_non_fast_forward` matches "[rejected]" but not "[remote
       rejected]", so some remote rejections map to 400 instead of 409.
-- [ ] Rich text slice 2: follow-ups (2026-10-10). (1) Rich-text
+- [ ] Rich text slice 2: follow-ups (2026-10-11). (1) Rich-text
       tables and images (the later slice; `img` is already stored and
-      exported, tables are not). (2) ReqIF: the export still writes an
-      "enum" attribute as a plain string (no ENUMERATION datatype), so
-      enum types and choices survive only one way through a ReqManTool
-      file — the import now reads a real enumeration from another tool,
-      but a ReqManTool export/import round trip returns an enum as a
-      string attribute; writing a DATATYPE-DEFINITION-ENUMERATION with
-      SPECIFIED-VALUES and ATTRIBUTE-VALUE-ENUMERATION would fix it (it
-      changes every file ReqManTool writes, so it is its own decision).
+      exported, tables are not). (2) ReqIF: a tab in a value cannot
+      round trip (XML attribute-value normalization turns it into a
+      space, for an enum choice and a plain string alike — a limit of
+      the format, not of the mapping).
 - [ ] Commit browser: follow-ups (2026-10-08). (1) Structured module
       rename/reorder/folder entries in the compare engine (today shown as
       text notes from `describe_changes`). (2) Text search matching hash
@@ -476,17 +472,17 @@ area by area once phase A is complete.
 - [ ] Repository-permission roles: follow-ups (2026-10-08). (1)
       `copy_requirement` copies a Reviewed/Approved status without the
       status guards, and editing an Approved requirement does not reset
-      its status. (2) Test-result import is not status-guarded. (3)
-      Reviewers cannot check out modules, so `server.require_module_checkout`
-      blocks their sign-off. (4) The frontend's status-name matching
-      duplicates the backend list. (5) Comments for reviewers do not exist
-      (with the comments item). (6) Row styles, references and folders
-      still need editor, not project-admin. (7) No background role refresh
-      (only at login, on cache expiry and "Sync access now"). (8) The
+      its status. (2) Test-result import is not status-guarded. (3) The
+      frontend's status-name matching
+      duplicates the backend list. (4) Comments for reviewers do not exist
+      (with the comments item). (5) Row styles, references and folders
+      still need editor, not project-admin. (6) No background role refresh
+      (only at login, on cache expiry and "Sync access now"). (7) The
       member list shows repository users only once their role has been
-      resolved. (9) No tests for `backend/reqman_server/` at all (phase B;
-      fake-forge end-to-end scripts are in the session scratchpad,
-      `e2e5/`).
+      resolved. (8) Tests for `backend/reqman_server/` are still mostly
+      missing (phase B; the module locks have `backend/tests/
+      test_module_locks.py`; fake-forge end-to-end scripts are in the
+      session scratchpad, `e2e5/`).
 
 ### Open decisions
 

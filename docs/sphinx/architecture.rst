@@ -100,7 +100,7 @@ Key Files
    * - ``git_repo.py`` | ``GitHistory`` — auto-commit, baselines, history, remotes
    * - ``history.py`` | Commit messages, snapshots, blame, comparison
    * - ``templates.py`` | Project/module templates, validation, import/export
-   * - ``*_export.py`` | ReqIF, CSV, XLSX, DOCX export (duck-typed)
+   * - ``*_export.py`` | ReqIF, CSV, XLSX, DOCX export (duck-typed); ReqIF enums keep their choices
    * - ``csv_import.py`` | CSV import with link support
    * - ``reqif_import.py`` | ReqIF import; XHTML values become rich text again, SPEC-RELATIONs become links
    * - ``test_results_import.py`` | JUnit/Robot Framework import

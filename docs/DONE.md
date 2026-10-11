@@ -2262,3 +2262,36 @@ Newest entries are appended at the end.
       - Files: `backend/reqman/reqif_import.py`, `backend/reqman/service.py`,
         `backend/tests/test_reqif_import.py`,
         `frontend/src/{api/types.ts,components/ImportReqifModal.tsx}`.
+- [x] **ReqIF export: an enum attribute keeps its choices** (2026-10-11; the
+      second half of the "Rich text slice 2" follow-up, the mirror of the import
+      work above). An "enum" attribute was exported as a plain string, so the
+      "one of a fixed set of choices" information was lost in the file itself and
+      a ReqManTool export/import round trip returned an enum as a string
+      attribute. It is now a real ENUMERATION:
+      - Each enum attribute gets its own `DATATYPE-DEFINITION-ENUMERATION`
+        (the choices belong to the attribute, so they cannot share a datatype
+        the way the simple ones do), with one `SPECIFIED-VALUE` per choice, in
+        order. The datatype is declared only for the attributes there are, so a
+        project without one is unchanged.
+      - A choice is written as the value's `EMBEDDED-VALUE` `KEY` when it is
+        safe to do so and as its `LONG-NAME` otherwise. `reqif` writes a `KEY`
+        unescaped, and a ReqMan choice is an arbitrary string, so a choice
+        holding a character that cannot sit in an attribute value (`"`, `&`,
+        `<`, `>`) or that ReqMan itself strips from text (a control character)
+        is carried by the escaped `LONG-NAME` alone. The `SPECIFIED-VALUE`
+        identifier is numbered (`ENUM-VALUE-<attribute>-<n>`) rather than named
+        after the choice, so a choice of any content still yields an identifier
+        ReqIF accepts.
+      - A stored value that names no choice (hand-edited data) has no
+        `SPECIFIED-VALUE` to point at and is omitted, like a value that is not
+        a valid date.
+      - A tab in a choice cannot round trip: XML attribute-value normalization
+        turns it into a space, which is the same for a plain string value (its
+        `THE-VALUE` is an attribute too), so it is a limit of the format rather
+        than of the enum mapping.
+      - Tests: `backend/tests/test_rich_text_exports.py` — the datatype and
+        attribute-definition mapping, a choice that is itself markup, a choice
+        with a control character, a choice with `&`/quotes/`<`, a tab, a value
+        that names no choice, and a full export→import round trip.
+      - Files: `backend/reqman/reqif_export.py`,
+        `backend/tests/test_rich_text_exports.py`.
