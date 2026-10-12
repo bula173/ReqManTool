@@ -39,6 +39,7 @@ from .ldap_auth import LdapClient, LdapError
 from .oidc import OidcClient, OidcError, pkce_pair
 from .saml_auth import SamlClient, SamlError
 from .proxy_header_auth import ProxyHeaderClient, ProxyHeaderError
+from .memberships import MembershipRegistry
 from .permissions import Permissions
 from .repo_access import RepoAccess
 from .sessions import PENDING_LOGIN_TTL, PendingLogin, PendingLogins, SessionStore
@@ -48,6 +49,8 @@ from .users import InactiveUserError, UserRegistry
 logger = logging.getLogger("reqman_server.auth")
 
 LOGIN_COOKIE = "reqman_login"
+
+AuthClient = OidcClient | GitHubOAuthClient | LdapClient | SamlClient | ProxyHeaderClient
 
 
 def safe_next(value: str | None) -> str:
@@ -71,6 +74,7 @@ def build_router(
     audit: AuditLog | None = None,
     repo: RepoAccess | None = None,
     login_account: Any = None,
+    memberships: MembershipRegistry | None = None,
 ) -> APIRouter:
     router = APIRouter()
 

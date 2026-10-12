@@ -102,55 +102,19 @@ jobs:
         working-directory: ./desktop
         run: npm ci
 
-      - name: Prepare Python backend
+      - name: Build Desktop App via PowerShell
+        shell: pwsh
         run: |
-          # Create backend bundle
-          mkdir -p desktop/src-tauri/backend
+          # Ensure PowerShell execution policy allows script running
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+          # Run the unified build script which handles frontend, backend, Tauri build, and copies installers to dist/desktop
+          .\etc\build-dist.ps1 --desktop
 
-          # Copy backend source (reqman_server is copied for the bundled app;
-          # reqman/middleware.py no longer imports it, so the wheel is clean)
-          cp -r backend/reqman desktop/src-tauri/backend/
-          cp -r backend/reqman_server desktop/src-tauri/backend/
-          cp backend/requirements.txt desktop/src-tauri/backend/
-          cp backend/pyproject.toml desktop/src-tauri/backend/
-          cp LICENSE desktop/src-tauri/backend/
-
-          # Create a minimal entry point
-          cat > desktop/src-tauri/backend/__main__.py << 'EOF'
-          """python -m reqman runs the CLI."""
-          import sys
-          from reqman.cli import main
-          sys.exit(main())
-          EOF
-
-      - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v1.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: ./desktop
-          args: --target ${{ matrix.target }}
-          # Ensure we're building release
-          cargoArgs: --release
-
-      - name: Debug build artifacts
-        run: |
-          echo "=== Build artifacts ==="
-          echo "Target: ${{ matrix.target }}"
-          echo "Artifact type: ${{ matrix.artifact }}"
-          find desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f \( -name "*.${{ matrix.artifact }}" -o -name "*.exe" -o -name "*.AppImage" -o -name "*.dmg" -o -name "*.msi" \) 2>/dev/null | head -20
-          echo "=== Full bundle tree ==="
-          find desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f 2>/dev/null | head -30
-
-      - name: Upload artifacts
+      - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.upload_name }}
-          path: |
-            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.${{ matrix.artifact }}
-            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
-            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
-            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
+          path: dist/desktop/*
           retention-days: 30
 
   # Smoke test: the package installs/starts and the binary answers `--version`.

@@ -109,6 +109,30 @@ GITLAB_API_SCOPE = "read_api"
 _PROVIDER_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
+# OIDC presets: pre-configured templates for common providers
+OIDC_PRESETS: dict[str, dict[str, Any]] = {
+    "keycloak": {
+        "scopes": ("openid", "profile", "email", "groups"),
+        "group_claim": "groups",
+    },
+    "entra_id": {
+        "scopes": ("openid", "profile", "email", "groups"),
+        "group_claim": "groups",
+    },
+    "okta": {
+        "scopes": ("openid", "profile", "email", "groups"),
+        "group_claim": "groups",
+    },
+    "google_workspace": {
+        "scopes": ("openid", "profile", "email", "groups"),
+        "group_claim": "groups",
+    },
+    "authentik": {
+        "scopes": ("openid", "profile", "email", "groups"),
+        "group_claim": "groups",
+    },
+}
+
 
 class ServerConfigError(ValueError):
     """The ``server`` section of the config file is missing or invalid."""
@@ -356,8 +380,8 @@ def _parse_provider(raw: Any, index: int, env: dict[str, str], repo_roles: bool 
         name = _str(raw.get("name"), f"{what}.name") or "Single sign-on"
         # Apply OIDC preset if specified
         preset = _str(raw.get("oidc_preset"), f"{what}.oidc_preset") or ""
+        preset_config = OIDC_PRESETS.get(preset) if preset else None
         if preset:
-            preset_config = OIDC_PRESETS.get(preset)
             if not preset_config:
                 raise ServerConfigError(f"{what}.oidc_preset must be one of {', '.join(OIDC_PRESETS.keys())}, got {preset!r}")
             # Apply preset defaults (can be overridden by explicit config)
@@ -365,7 +389,9 @@ def _parse_provider(raw: Any, index: int, env: dict[str, str], repo_roles: bool 
                 scopes = preset_config["scopes"]
             # Note: group_claim is used by OidcClient.identity_from_tokens
         # Parse OIDC group claim (can be overridden by explicit config)
-        oidc_group_claim = _str(raw.get("oidc_group_claim"), f"{what}.oidc_group_claim") or preset_config.get("group_claim", "groups")
+        oidc_group_claim = _str(raw.get("oidc_group_claim"), f"{what}.oidc_group_claim") or (
+            preset_config.get("group_claim", "groups") if preset_config else "groups"
+        )
         if oidc_group_claim and not isinstance(oidc_group_claim, str):
             raise ServerConfigError(f"{what}.oidc_group_claim must be a string")
     elif provider_type == "ldap":
@@ -391,33 +417,9 @@ def _parse_provider(raw: Any, index: int, env: dict[str, str], repo_roles: bool 
             raise ServerConfigError(f"{what}.url must be an ldap:// or ldaps:// URL")
         # LDAP URLs don't go through check_endpoint_url
 
-    # OIDC presets: pre-configured templates for common providers
-    OIDC_PRESETS = {
-        "keycloak": {
-            "scopes": ("openid", "profile", "email", "groups"),
-            "group_claim": "groups",
-        },
-        "entra_id": {
-            "scopes": ("openid", "profile", "email", "groups"),
-            "group_claim": "groups",
-        },
-        "okta": {
-            "scopes": ("openid", "profile", "email", "groups"),
-            "group_claim": "groups",
-        },
-        "google_workspace": {
-            "scopes": ("openid", "profile", "email", "groups"),
-            "group_claim": "groups",
-        },
-        "authentik": {
-            "scopes": ("openid", "profile", "email", "groups"),
-            "group_claim": "groups",
-        },
-    }
-
     key = _env_key(provider_id)
     if provider_type in ("gitlab", "github", "oidc", "saml", "gerrit"):
-        client_id = env.get(f"REQMAN_AUTH_{_env_key(provider_id)}_CLIENT_ID", "").strip() or _str(raw.get("client_id"), f"{what}.client_id")
+        client_id = env.get(f"REQMAN_AUTH_{key}_CLIENT_ID", "").strip() or _str(raw.get("client_id"), f"{what}.client_id")
         if not client_id:
             raise ServerConfigError(f"{what}.client_id is required (or REQMAN_AUTH_{_env_key(provider_id)}_CLIENT_ID)")
         secret_env = _str(raw.get("client_secret_env"), f"{what}.client_secret_env")

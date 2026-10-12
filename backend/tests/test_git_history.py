@@ -38,7 +38,9 @@ class Clock:
 def git(path: Path, *args: str, check: bool = True) -> str:
     assert CHECKOUT not in [path.resolve(), *path.resolve().parents], "never run git in the checkout"
     env = {k: v for k, v in os.environ.items() if k not in ("GIT_DIR", "GIT_WORK_TREE")}
-    result = subprocess.run(["git", *args], cwd=path, capture_output=True, text=True, env=env, check=False)
+    result = subprocess.run(
+        ["git", *args], cwd=path, capture_output=True, text=True, encoding="utf-8", env=env, check=False
+    )
     if check:
         assert result.returncode == 0, result.stderr
     return result.stdout
@@ -102,7 +104,7 @@ def test_template_project_repo_survives_staging_rename(service, root):
     template_id = service.list_templates()[0]["id"]
     project = service.create_project("From Template", template_id=template_id)
     folder = root / project.id
-    assert git(folder, "rev-parse", "--show-toplevel").strip() == str(folder.resolve())
+    assert Path(git(folder, "rev-parse", "--show-toplevel").strip()).resolve() == folder.resolve()
     assert "modules/" in git(folder, "ls-files")
     assert git(folder, "status", "--porcelain") == ""
     assert not (root / ".reqman-staging").exists()

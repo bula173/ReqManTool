@@ -169,6 +169,7 @@ class ServerEditionImpl:
                 settings, clients, sessions, PendingLogins(), users, permissions,
                 locks=lock_registry, broadcast=context.broadcast, audit=audit, repo=repo_roles,
                 login_account=login_account,
+                memberships=memberships,
             )
         )
         admin = AdminService(

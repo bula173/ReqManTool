@@ -33,3 +33,7 @@ tauri-build = { version = "2", features = [] }
 strip = true
 lto = true
 codegen-units = 1
+
+# Ensure the built binary is a Windows GUI application (no console)
+[package.metadata.tauri]
+windows = { subsystem = "windows" }

@@ -121,7 +121,7 @@ def _write_json(path: Path, data: Any) -> None:
     the replace, the target may still hold its previous (complete) contents.
     """
     text = json.dumps(data, indent=2) + "\n"
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    tmp = path.with_name(f".{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     try:
         with open(tmp, "x", encoding="utf-8") as handle:
             handle.write(text)
@@ -431,7 +431,7 @@ class ProjectStore:
         project was published.
         """
         staging_parent = self.root / STAGING_DIR_NAME
-        staging_root = staging_parent / uuid.uuid4().hex
+        staging_root = staging_parent / uuid.uuid4().hex[:12]
         try:
             yield ProjectStore(staging_root)
         finally:
@@ -477,7 +477,7 @@ class ProjectStore:
             raise ValueError(f"Project '{project_id}' is not inside the data directory; remove it by hand")
         staging_parent = self.root / STAGING_DIR_NAME
         staging_parent.mkdir(exist_ok=True)
-        trash = staging_parent / f"removed-{uuid.uuid4().hex}"
+        trash = staging_parent / f"del-{uuid.uuid4().hex[:8]}"
         os.rename(folder, trash)
         self._format_cache.pop(project_id, None)
 

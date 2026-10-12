@@ -1,0 +1,2 @@
+#! /usr/bin/env python\n\n"""\nThin wrapper used as the PyInstaller entry point.\nIt imports the FastAPI `app` from the server package and starts uvicorn.\n\nRunning this script via PyInstaller produces a single executable that starts the\nbackend server.\n"""\n\nimport uvicorn\nfrom . import app  # The FastAPI instance defined in reqman_server/__init__.py\n\nif __name__ == "__main__":\n    # Use import‑string form so uvicorn can manage reload/worker options if needed.\n    uvicorn.run("reqman_server:app", host="127.0.0.1", port=8000, reload=False)\n
+

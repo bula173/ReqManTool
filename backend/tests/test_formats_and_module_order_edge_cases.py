@@ -59,6 +59,7 @@ def _snapshot(directory: Path) -> dict[str, bytes]:
 def _set_raw(path: Path, **changes) -> None:
     data = json.loads(path.read_text())
     data.update(changes)
+    path.unlink(missing_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
@@ -66,6 +67,7 @@ def _delete_raw(path: Path, *keys) -> None:
     data = json.loads(path.read_text())
     for key in keys:
         data.pop(key, None)
+    path.unlink(missing_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
