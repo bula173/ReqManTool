@@ -209,7 +209,8 @@ jobs:
           # Install with verbose logging to capture any errors
           $logFile = "msi_install.log"
           Write-Host "Installing MSI with verbose logging to $logFile..."
-          $exitCode = (msiexec /i $msi /qn /norestart /l*v $logFile).ExitCode
+          $process = Start-Process msiexec -ArgumentList "/i", "`"$msi`"", "/qn", "/norestart", "/l*v", "$logFile" -Wait -PassThru
+          $exitCode = $process.ExitCode
           Write-Host "msiexec exit code: $exitCode"
           if ($exitCode -ne 0) {
             Write-Error "msiexec install failed with exit code $exitCode"
